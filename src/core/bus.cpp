@@ -23,6 +23,10 @@
 #include <utility>
 Log_SetChannel(Bus);
 
+namespace CPU {
+extern int TickCounts[];
+}
+
 namespace Bus {
 
 union MEMDELAY
@@ -153,6 +157,9 @@ bool Initialize()
   return true;
 }
 
+int InstructionFetches[0x7F80000] = {0};
+int InstructionCacheMisses[0x7F80000] = {0};
+
 void Shutdown()
 {
   std::free(m_fastmem_lut);
@@ -167,6 +174,19 @@ void Shutdown()
   m_fastmem_mode = CPUFastmemMode::Disabled;
 
   ReleaseMemory();
+  
+  FILE* f = fopen("/tmp/duckstation-profiler.out", "wb");
+  fprintf(f, "%d\n", getpid());
+  for (int i = 0; i < 0x7F80000; i++) {
+    int addr = i<<2;
+    int tickCount = CPU::TickCounts[i];
+    int iFetch = InstructionFetches[i];
+    int iMiss = InstructionCacheMisses[i];
+    if (tickCount > 0 || iFetch > 0 || iMiss > 0) {
+      fprintf(f, "%x %d %d %d\n", addr, tickCount, iFetch, iMiss);
+    }
+  }
+  fclose(f);
 }
 
 void Reset()
@@ -1727,6 +1747,10 @@ bool FetchInstruction()
   DebugAssert(Common::IsAlignedPow2(g_state.regs.npc, 4));
 
   const PhysicalMemoryAddress address = g_state.regs.npc;
+  
+  const u32 arrAddress = (address&0x1FDFFFFF)>>2;
+  Bus::InstructionFetches[arrAddress]++;
+  
   switch (address >> 29)
   {
     case 0x00: // KUSEG 0M-512M
@@ -1735,18 +1759,23 @@ bool FetchInstruction()
 #if 0
       DoInstructionRead<true, false, 1, false>(address, &g_state.next_instruction.bits);
 #else
-      if (CompareICacheTag(address))
+      if (CompareICacheTag(address)) {
         g_state.next_instruction.bits = ReadICache(address);
-      else
+      }
+      else {
         g_state.next_instruction.bits = FillICache(address);
+        Bus::InstructionCacheMisses[arrAddress]++;
+      }
 #endif
     }
     break;
 
     case 0x05: // KSEG1 - physical memory uncached
     {
-      if (!DoInstructionRead<true, false, 1, true>(address, &g_state.next_instruction.bits))
+      if (!DoInstructionRead<true, false, 1, true>(address, &g_state.next_instruction.bits)) {
+        Bus::InstructionCacheMisses[arrAddress]++;
         return false;
+      }
     }
     break;
 
@@ -1761,6 +1790,7 @@ bool FetchInstruction()
                                                                       g_state.current_instruction_in_branch_delay_slot,
                                                                       g_state.current_instruction_was_branch_taken, 0),
                           address);
+      Bus::InstructionCacheMisses[arrAddress]++;
       return false;
     }
   }

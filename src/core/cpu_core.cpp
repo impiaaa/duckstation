@@ -1874,6 +1874,8 @@ ALWAYS_INLINE_RELEASE static bool BreakpointCheck()
   return System::IsPaused();
 }
 
+int TickCounts[0x7F80000] = {0};
+
 template<PGXPMode pgxp_mode, bool debug>
 static void ExecuteImpl()
 {
@@ -1911,9 +1913,13 @@ static void ExecuteImpl()
       g_state.branch_was_taken = false;
       g_state.exception_raised = false;
 
+      const int fetchTickStart = g_state.pending_ticks;
       // fetch the next instruction - even if this fails, it'll still refetch on the flush so we can continue
       if (!FetchInstruction())
         continue;
+      TickCounts[(g_state.regs.npc&0x1FDFFFFF)>>2] += (g_state.pending_ticks-fetchTickStart);
+
+      const int tickStart = g_state.pending_ticks;
 
       // trace functionality
       if constexpr (debug)
@@ -1932,6 +1938,8 @@ static void ExecuteImpl()
 
       // execute the instruction we previously fetched
       ExecuteInstruction<pgxp_mode, debug>();
+
+      TickCounts[(g_state.current_instruction_pc&0x1FDFFFFF)>>2] += g_state.pending_ticks-tickStart;
 
       // next load delay
       UpdateLoadDelay();
