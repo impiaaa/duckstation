@@ -1,6 +1,11 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "coverdownloaddialog.h"
+
+#include "core/game_list.h"
+
 #include "common/assert.h"
-#include "frontend-common/game_list.h"
 
 CoverDownloadDialog::CoverDownloadDialog(QWidget* parent /*= nullptr*/) : QDialog(parent)
 {

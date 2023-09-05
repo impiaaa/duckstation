@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "common/bitfield.h"
 #include "common/progress_callback.h"
@@ -8,9 +11,7 @@
 #include <tuple>
 #include <vector>
 
-namespace Common {
 class Error;
-}
 
 class CDImage
 {
@@ -143,6 +144,12 @@ public:
       BitField<u8, bool, 6, 1> data;
       BitField<u8, bool, 7, 1> four_channel_audio;
 
+      Control() = default;
+
+      Control(u8 bits_) : bits(bits_) {}
+
+      Control(const Control& rhs) : bits(rhs.bits) {}
+
       Control& operator=(const Control& rhs)
       {
         bits = rhs.bits;
@@ -169,10 +176,14 @@ public:
 
     static u16 ComputeCRC(const Data& data);
 
-    Control GetControl() const { return Control{control_bits}; }
+    Control GetControl() const { return Control(control_bits); }
     bool IsData() const { return GetControl().data; }
 
     bool IsCRCValid() const;
+
+    SubChannelQ() = default;
+
+    SubChannelQ(const SubChannelQ& q) : data(q.data) {}
 
     SubChannelQ& operator=(const SubChannelQ& q)
     {
@@ -217,57 +228,30 @@ public:
   static bool IsDeviceName(const char* filename);
 
   // Opening disc image.
-  static std::unique_ptr<CDImage> Open(const char* filename, bool allow_patches, Common::Error* error);
-  static std::unique_ptr<CDImage> OpenBinImage(const char* filename, Common::Error* error);
-  static std::unique_ptr<CDImage> OpenCueSheetImage(const char* filename, Common::Error* error);
-  static std::unique_ptr<CDImage> OpenCHDImage(const char* filename, Common::Error* error);
-  static std::unique_ptr<CDImage> OpenEcmImage(const char* filename, Common::Error* error);
-  static std::unique_ptr<CDImage> OpenMdsImage(const char* filename, Common::Error* error);
-  static std::unique_ptr<CDImage> OpenPBPImage(const char* filename, Common::Error* error);
-  static std::unique_ptr<CDImage> OpenM3uImage(const char* filename, bool apply_patches, Common::Error* error);
-  static std::unique_ptr<CDImage> OpenDeviceImage(const char* filename, Common::Error* error);
+  static std::unique_ptr<CDImage> Open(const char* filename, bool allow_patches, Error* error);
+  static std::unique_ptr<CDImage> OpenBinImage(const char* filename, Error* error);
+  static std::unique_ptr<CDImage> OpenCueSheetImage(const char* filename, Error* error);
+  static std::unique_ptr<CDImage> OpenCHDImage(const char* filename, Error* error);
+  static std::unique_ptr<CDImage> OpenEcmImage(const char* filename, Error* error);
+  static std::unique_ptr<CDImage> OpenMdsImage(const char* filename, Error* error);
+  static std::unique_ptr<CDImage> OpenPBPImage(const char* filename, Error* error);
+  static std::unique_ptr<CDImage> OpenM3uImage(const char* filename, bool apply_patches, Error* error);
+  static std::unique_ptr<CDImage> OpenDeviceImage(const char* filename, Error* error);
   static std::unique_ptr<CDImage>
   CreateMemoryImage(CDImage* image, ProgressCallback* progress = ProgressCallback::NullProgressCallback);
   static std::unique_ptr<CDImage> OverlayPPFPatch(const char* filename, std::unique_ptr<CDImage> parent_image,
                                                   ProgressCallback* progress = ProgressCallback::NullProgressCallback);
 
   // Accessors.
-  const std::string& GetFileName() const
-  {
-    return m_filename;
-  }
-  LBA GetPositionOnDisc() const
-  {
-    return m_position_on_disc;
-  }
-  Position GetMSFPositionOnDisc() const
-  {
-    return Position::FromLBA(m_position_on_disc);
-  }
-  LBA GetPositionInTrack() const
-  {
-    return m_position_in_track;
-  }
-  Position GetMSFPositionInTrack() const
-  {
-    return Position::FromLBA(m_position_in_track);
-  }
-  LBA GetLBACount() const
-  {
-    return m_lba_count;
-  }
-  u32 GetIndexNumber() const
-  {
-    return m_current_index->index_number;
-  }
-  u32 GetTrackNumber() const
-  {
-    return m_current_index->track_number;
-  }
-  u32 GetTrackCount() const
-  {
-    return static_cast<u32>(m_tracks.size());
-  }
+  const std::string& GetFileName() const { return m_filename; }
+  LBA GetPositionOnDisc() const { return m_position_on_disc; }
+  Position GetMSFPositionOnDisc() const { return Position::FromLBA(m_position_on_disc); }
+  LBA GetPositionInTrack() const { return m_position_in_track; }
+  Position GetMSFPositionInTrack() const { return Position::FromLBA(m_position_in_track); }
+  LBA GetLBACount() const { return m_lba_count; }
+  u32 GetIndexNumber() const { return m_current_index->index_number; }
+  u32 GetTrackNumber() const { return m_current_index->track_number; }
+  u32 GetTrackCount() const { return static_cast<u32>(m_tracks.size()); }
   LBA GetTrackStartPosition(u8 track) const;
   Position GetTrackStartMSFPosition(u8 track) const;
   LBA GetTrackLength(u8 track) const;
@@ -275,26 +259,11 @@ public:
   TrackMode GetTrackMode(u8 track) const;
   LBA GetTrackIndexPosition(u8 track, u8 index) const;
   LBA GetTrackIndexLength(u8 track, u8 index) const;
-  u32 GetFirstTrackNumber() const
-  {
-    return m_tracks.front().track_number;
-  }
-  u32 GetLastTrackNumber() const
-  {
-    return m_tracks.back().track_number;
-  }
-  u32 GetIndexCount() const
-  {
-    return static_cast<u32>(m_indices.size());
-  }
-  const std::vector<Track>& GetTracks() const
-  {
-    return m_tracks;
-  }
-  const std::vector<Index>& GetIndices() const
-  {
-    return m_indices;
-  }
+  u32 GetFirstTrackNumber() const { return m_tracks.front().track_number; }
+  u32 GetLastTrackNumber() const { return m_tracks.back().track_number; }
+  u32 GetIndexCount() const { return static_cast<u32>(m_indices.size()); }
+  const std::vector<Track>& GetTracks() const { return m_tracks; }
+  const std::vector<Index>& GetIndices() const { return m_indices; }
   const Track& GetTrack(u32 track) const;
   const Index& GetIndex(u32 i) const;
 
@@ -338,7 +307,7 @@ public:
   virtual u32 GetCurrentSubImage() const;
 
   // Changes the current sub-image. If this fails, the image state is unchanged.
-  virtual bool SwitchSubImage(u32 index, Common::Error* error);
+  virtual bool SwitchSubImage(u32 index, Error* error);
 
   // Retrieve sub-image metadata.
   virtual std::string GetSubImageMetadata(u32 index, const std::string_view& type) const;

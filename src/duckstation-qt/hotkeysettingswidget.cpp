@@ -1,6 +1,9 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "hotkeysettingswidget.h"
 #include "controllersettingsdialog.h"
-#include "frontend-common/input_manager.h"
+#include "util/input_manager.h"
 #include "inputbindingwidgets.h"
 #include "qtutils.h"
 #include "settingwidgetbinder.h"
@@ -70,8 +73,8 @@ void HotkeySettingsWidget::createButtons()
     QLabel* label = new QLabel(qApp->translate("Hotkeys", hotkey->display_name), m_container);
     layout->addWidget(label, target_row, 0);
 
-    InputBindingWidget* bind =
-      new InputBindingWidget(m_container, m_dialog->getProfileSettingsInterface(), "Hotkeys", hotkey->name);
+    InputBindingWidget* bind = new InputBindingWidget(m_container, m_dialog->getProfileSettingsInterface(),
+                                                      InputBindingInfo::Type::Button, "Hotkeys", hotkey->name);
     bind->setMinimumWidth(300);
     layout->addWidget(bind, target_row, 1);
   }

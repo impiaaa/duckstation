@@ -1,15 +1,24 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
-#include <QtCore/QThread>
-#include <QtWidgets/QLabel>
-#include <QtWidgets/QMainWindow>
-#include <QtWidgets/QStackedWidget>
-#include <memory>
 
 #include "controllersettingsdialog.h"
-#include "core/types.h"
 #include "displaywidget.h"
 #include "settingsdialog.h"
 #include "ui_mainwindow.h"
+
+#include "core/types.h"
+
+#include "util/window_info.h"
+
+#include <QtCore/QThread>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QMainWindow>
+#include <QtWidgets/QMenu>
+#include <QtWidgets/QStackedWidget>
+#include <memory>
+#include <optional>
 
 class QLabel;
 class QThread;
@@ -23,12 +32,10 @@ class CheatManagerDialog;
 class DebuggerWindow;
 class MainWindow;
 
-class HostDisplay;
+class GPUDevice;
 namespace GameList {
 struct Entry;
 }
-
-class GDBServer;
 
 class MainWindow final : public QMainWindow
 {
@@ -94,9 +101,10 @@ public Q_SLOTS:
   void cancelGameListRefresh();
 
   void runOnUIThread(const std::function<void()>& func);
-  bool requestShutdown(bool allow_confirm = true, bool allow_save_to_state = true, bool save_state = true, bool block_until_done = false);
-  void requestExit(bool allow_save_to_state = true);
+  bool requestShutdown(bool allow_confirm = true, bool allow_save_to_state = true, bool save_state = true);
+  void requestExit(bool allow_confirm = true);
   void checkForSettingChanges();
+  void getWindowInfo(WindowInfo* wi);
 
   void checkForUpdates(bool display_message);
 
@@ -105,10 +113,11 @@ public Q_SLOTS:
 private Q_SLOTS:
   void reportError(const QString& title, const QString& message);
   bool confirmMessage(const QString& title, const QString& message);
-  bool createDisplay(bool fullscreen, bool render_to_main);
-  bool updateDisplay(bool fullscreen, bool render_to_main, bool surfaceless);
-  void displaySizeRequested(qint32 width, qint32 height);
-  void destroyDisplay();
+
+  std::optional<WindowInfo> acquireRenderWindow(bool recreate_window, bool fullscreen, bool render_to_main,
+                                                bool surfaceless, bool use_main_window_pos);
+  void displayResizeRequested(qint32 width, qint32 height);
+  void releaseRenderWindow();
   void focusDisplayWidget();
   void onMouseModeRequested(bool relative_mode, bool hide_cursor);
 
@@ -133,6 +142,8 @@ private Q_SLOTS:
   void onLoadStateMenuAboutToShow();
   void onSaveStateMenuAboutToShow();
   void onCheatsMenuAboutToShow();
+  void onStartFullscreenUITriggered();
+  void onFullscreenUIStateChange(bool running);
   void onRemoveDiscActionTriggered();
   void onViewToolbarActionToggled(bool checked);
   void onViewLockToolbarActionToggled(bool checked);
@@ -150,6 +161,7 @@ private Q_SLOTS:
   void onToolsCoverDownloaderTriggered();
   void onToolsCheatManagerTriggered();
   void onToolsOpenDataDirectoryTriggered();
+  void onSettingsTriggeredFromToolbar();
 
   void onGameListRefreshComplete();
   void onGameListRefreshProgress(const QString& status, int current, int total);
@@ -178,7 +190,6 @@ private:
   static void setIconThemeFromSettings();
   void setupAdditionalUi();
   void connectSignals();
-  void addThemeToMenu(const QString& name, const QString& key);
 
   void updateEmulationActions(bool starting, bool running, bool cheevos_challenge_mode);
   void updateStatusBarWidgetVisibility();
@@ -202,10 +213,10 @@ private:
   void restoreGeometryFromConfig();
   void saveDisplayWindowGeometryToConfig();
   void restoreDisplayWindowGeometryFromConfig();
-  void createDisplayWidget(bool fullscreen, bool render_to_main, bool is_exclusive_fullscreen);
+  void createDisplayWidget(bool fullscreen, bool render_to_main, bool use_main_window_pos);
   void destroyDisplayWidget(bool show_game_list);
   void updateDisplayWidgetCursor();
-  void setDisplayFullscreen(const std::string& fullscreen_mode);
+  void updateDisplayRelatedActions(bool has_surface, bool render_to_main, bool fullscreen);
 
   SettingsDialog* getSettingsDialog();
   void doSettings(const char* category = nullptr);
@@ -219,7 +230,9 @@ private:
   void updateMenuSelectedTheme();
   std::string getDeviceDiscPath(const QString& title);
   void setGameListEntryCoverImage(const GameList::Entry* entry);
+  void clearGameListEntryPlayTime(const GameList::Entry* entry);
   void setTheme(const QString& theme);
+  void updateTheme();
   void recreate();
 
   void registerForDeviceNotifications();
@@ -255,6 +268,8 @@ private:
   QLabel* m_status_vps_widget = nullptr;
   QLabel* m_status_resolution_widget = nullptr;
 
+  QMenu* m_settings_toolbar_menu = nullptr;
+
   SettingsDialog* m_settings_dialog = nullptr;
   ControllerSettingsDialog* m_controller_settings_dialog = nullptr;
 
@@ -263,8 +278,9 @@ private:
   CheatManagerDialog* m_cheat_manager_dialog = nullptr;
   DebuggerWindow* m_debugger_window = nullptr;
 
-  std::string m_current_game_title;
-  std::string m_current_game_serial;
+  QString m_current_game_path;
+  QString m_current_game_title;
+  QString m_current_game_serial;
 
   bool m_was_paused_by_focus_loss = false;
   bool m_open_debugger_on_start = false;
@@ -276,8 +292,6 @@ private:
   bool m_was_paused_on_surface_loss = false;
   bool m_was_disc_change_request = false;
   bool m_is_closing = false;
-
-  GDBServer* m_gdb_server = nullptr;
 
 #ifdef _WIN32
   void* m_device_notification_handle = nullptr;

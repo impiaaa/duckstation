@@ -48,15 +48,11 @@
     <ClCompile Include="enhancementsettingswidget.cpp" />
     <ClCompile Include="displaysettingswidget.cpp" />
     <ClCompile Include="memorycardeditordialog.cpp" />
-    <ClCompile Include="postprocessingchainconfigwidget.cpp" />
-    <ClCompile Include="postprocessingshaderconfigwidget.cpp" />
     <ClCompile Include="postprocessingsettingswidget.cpp" />
     <ClCompile Include="$(IntDir)moc_biossettingswidget.cpp" />
     <ClCompile Include="$(IntDir)moc_enhancementsettingswidget.cpp" />
     <ClCompile Include="$(IntDir)moc_displaysettingswidget.cpp" />
     <ClCompile Include="$(IntDir)moc_memorycardeditordialog.cpp" />
-    <ClCompile Include="$(IntDir)moc_postprocessingchainconfigwidget.cpp" />
-    <ClCompile Include="$(IntDir)moc_postprocessingshaderconfigwidget.cpp" />
     <ClCompile Include="$(IntDir)moc_postprocessingsettingswidget.cpp" />
     <ClCompile Include="cheatmanagerdialog.cpp" />
     <ClCompile Include="cheatcodeeditordialog.cpp" />
@@ -91,12 +87,19 @@
     <ClCompile Include="$(IntDir)moc_foldersettingswidget.cpp" />
     <ClCompile Include="$(IntDir)moc_gamesummarywidget.cpp" />
     <ClCompile Include="qttranslations.cpp" />
+    <ClCompile Include="coverdownloaddialog.cpp" />
+    <ClCompile Include="$(IntDir)moc_coverdownloaddialog.cpp" />
+    <ClCompile Include="colorpickerbutton.cpp" />
+    <ClCompile Include="$(IntDir)moc_colorpickerbutton.cpp" />
+    <ClCompile Include="pch.cpp" />
+    <ClCompile Include="setupwizarddialog.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="qtutils.h" />
     <ClInclude Include="settingwidgetbinder.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="controllersettingwidgetbinder.h" />
+    <ClInclude Include="pch.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="resources">
@@ -132,8 +135,6 @@
     <QtMoc Include="enhancementsettingswidget.h" />
     <QtMoc Include="memorycardeditordialog.h" />
     <QtMoc Include="displaysettingswidget.h" />
-    <QtMoc Include="postprocessingchainconfigwidget.h" />
-    <QtMoc Include="postprocessingshaderconfigwidget.h" />
     <QtMoc Include="postprocessingsettingswidget.h" />
     <QtMoc Include="cheatmanagerdialog.h" />
     <QtMoc Include="cheatcodeeditordialog.h" />
@@ -150,6 +151,9 @@
     <QtMoc Include="gamelistrefreshthread.h" />
     <QtMoc Include="gamesummarywidget.h" />
     <QtMoc Include="foldersettingswidget.h" />
+    <QtMoc Include="coverdownloaddialog.h" />
+    <QtMoc Include="colorpickerbutton.h" />
+    <QtMoc Include="setupwizarddialog.h" />
   </ItemGroup>
   <ItemGroup>
     <QtUi Include="consolesettingswidget.ui" />
@@ -165,7 +169,6 @@
     <QtUi Include="biossettingswidget.ui" />
     <QtUi Include="enhancementsettingswidget.ui" />
     <QtUi Include="displaysettingswidget.ui" />
-    <QtUi Include="postprocessingchainconfigwidget.ui" />
     <QtUi Include="postprocessingsettingswidget.ui" />
     <QtUi Include="memorycardeditordialog.ui" />
     <QtUi Include="cheatmanagerdialog.ui" />
@@ -189,6 +192,9 @@
     <QtUi Include="controllermacrowidget.ui" />
     <QtUi Include="controllermacroeditwidget.ui" />
     <QtUi Include="controllerbindingwidget_mouse.ui" />
+    <QtUi Include="coverdownloaddialog.ui" />
+    <QtUi Include="controllerledsettingsdialog.ui" />
+    <QtUi Include="setupwizarddialog.ui" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="qt5.natvis" />
@@ -250,6 +256,9 @@
       <Filter>translations</Filter>
     </QtTs>
     <QtTs Include="translations\duckstation-qt_pl.ts">
+      <Filter>translations</Filter>
+    </QtTs>
+    <QtTs Include="translations\duckstation-qt_ko.ts">
       <Filter>translations</Filter>
     </QtTs>
   </ItemGroup>

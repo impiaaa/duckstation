@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 
 #include <atomic>
@@ -26,10 +29,10 @@ public:
   void SetDefaultConfig(SettingsInterface& si) override;
 
   bool CreatePlatformWindow(std::string title) override;
+  bool HasPlatformWindow() const override;
   void DestroyPlatformWindow() override;
   std::optional<WindowInfo> GetPlatformWindowInfo() override;
   void SetPlatformWindowTitle(std::string title) override;
-  void* GetPlatformWindowHandle() override;
 
   std::optional<u32> ConvertHostKeyboardStringToCode(const std::string_view& str) override;
   std::optional<std::string> ConvertHostKeyboardCodeToString(u32 code) override;

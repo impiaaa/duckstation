@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "gpu_hw_shadergen.h"
 #include "common/assert.h"
 #include <cstdio>
@@ -1084,6 +1087,96 @@ float3 SampleVRAM24Smoothed(uint2 icoords)
   return ss.str();
 }
 
+std::string GPU_HW_ShaderGen::GenerateWireframeGeometryShader()
+{
+  std::stringstream ss;
+  WriteHeader(ss);
+  WriteCommonFunctions(ss);
+
+  if (m_glsl)
+  {
+    ss << R"(
+layout(triangles) in;
+layout(line_strip, max_vertices = 6) out;
+
+void main()
+{
+  gl_Position = gl_in[0].gl_Position;
+  EmitVertex();
+  gl_Position = gl_in[1].gl_Position;
+  EmitVertex();
+  EndPrimitive();
+  gl_Position = gl_in[1].gl_Position;
+  EmitVertex();
+  gl_Position = gl_in[2].gl_Position;
+  EmitVertex();
+  EndPrimitive();
+  gl_Position = gl_in[2].gl_Position;
+  EmitVertex();
+  gl_Position = gl_in[0].gl_Position;
+  EmitVertex();
+  EndPrimitive();
+}
+)";
+  }
+  else
+  {
+    ss << R"(
+struct GSInput
+{
+  float4 col0 : COLOR0;
+  float4 pos : SV_Position;
+};
+
+struct GSOutput
+{
+  float4 pos : SV_Position;
+};
+
+GSOutput GetVertex(GSInput vi)
+{
+  GSOutput vo;
+  vo.pos = vi.pos;
+  return vo;
+}
+
+[maxvertexcount(6)]
+void main(triangle GSInput input[3], inout LineStream<GSOutput> output)
+{
+  output.Append(GetVertex(input[0]));
+  output.Append(GetVertex(input[1]));
+  output.RestartStrip();
+
+  output.Append(GetVertex(input[1]));
+  output.Append(GetVertex(input[2]));
+  output.RestartStrip();
+
+  output.Append(GetVertex(input[2]));
+  output.Append(GetVertex(input[0]));
+  output.RestartStrip();
+}
+)";
+  }
+
+  return ss.str();
+}
+
+std::string GPU_HW_ShaderGen::GenerateWireframeFragmentShader()
+{
+  std::stringstream ss;
+  WriteHeader(ss);
+  WriteCommonFunctions(ss);
+
+  DeclareFragmentEntryPoint(ss, 0, 0, {}, false, 1);
+  ss << R"(
+{
+  o_col0 = float4(1.0, 1.0, 1.0, 0.5);
+}
+)";
+
+  return ss.str();
+}
+
 std::string GPU_HW_ShaderGen::GenerateVRAMReadFragmentShader()
 {
   std::stringstream ss;
@@ -1159,6 +1252,8 @@ std::string GPU_HW_ShaderGen::GenerateVRAMWriteFragmentShader(bool use_ssbo)
     ss << "layout(std430";
     if (IsVulkan())
       ss << ", set = 0, binding = 0";
+    else if (IsMetal())
+      ss << ", set = 0, binding = 1";
     else if (m_use_glsl_binding_layout)
       ss << ", binding = 0";
 
@@ -1324,13 +1419,37 @@ std::string GPU_HW_ShaderGen::GenerateVRAMUpdateDepthFragmentShader()
   return ss.str();
 }
 
+void GPU_HW_ShaderGen::WriteAdaptiveDownsampleUniformBuffer(std::stringstream& ss)
+{
+  DeclareUniformBuffer(ss, {"float2 u_uv_min", "float2 u_uv_max", "float2 u_rcp_resolution", "float u_lod"}, true);
+}
+
+std::string GPU_HW_ShaderGen::GenerateAdaptiveDownsampleVertexShader()
+{
+  std::stringstream ss;
+  WriteHeader(ss);
+  WriteAdaptiveDownsampleUniformBuffer(ss);
+  DeclareVertexEntryPoint(ss, {}, 0, 1, {}, true);
+  ss << R"(
+{
+  v_tex0 = float2(float((v_id << 1) & 2u), float(v_id & 2u));
+  v_pos = float4(v_tex0 * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
+  v_tex0 = u_uv_min + (u_uv_max - u_uv_min) * v_tex0;
+  #if API_OPENGL || API_OPENGL_ES || API_VULKAN
+    v_pos.y = -v_pos.y;
+  #endif
+}
+)";
+  return ss.str();
+}
+
 std::string GPU_HW_ShaderGen::GenerateAdaptiveDownsampleMipFragmentShader(bool first_pass)
 {
   std::stringstream ss;
   WriteHeader(ss);
   WriteCommonFunctions(ss);
+  WriteAdaptiveDownsampleUniformBuffer(ss);
   DeclareTexture(ss, "samp0", 0, false);
-  DeclareUniformBuffer(ss, {"float2 u_uv_min", "float2 u_uv_max", "float2 u_rcp_resolution"}, true);
   DefineMacro(ss, "FIRST_PASS", first_pass);
 
   // mipmap_energy.glsl ported from parallel-rsx.
@@ -1365,16 +1484,16 @@ float4 get_bias(float4 c00, float4 c01, float4 c10, float4 c11)
 {
   float2 uv = v_tex0 - (u_rcp_resolution * 0.25);
 #ifdef FIRST_PASS
-   vec3 c00 = SAMPLE_TEXTURE_OFFSET(samp0, uv, int2(0, 0)).rgb;
-   vec3 c01 = SAMPLE_TEXTURE_OFFSET(samp0, uv, int2(0, 1)).rgb;
-   vec3 c10 = SAMPLE_TEXTURE_OFFSET(samp0, uv, int2(1, 0)).rgb;
-   vec3 c11 = SAMPLE_TEXTURE_OFFSET(samp0, uv, int2(1, 1)).rgb;
+   vec3 c00 = SAMPLE_TEXTURE_LEVEL_OFFSET(samp0, uv, u_lod, int2(0, 0)).rgb;
+   vec3 c01 = SAMPLE_TEXTURE_LEVEL_OFFSET(samp0, uv, u_lod, int2(0, 1)).rgb;
+   vec3 c10 = SAMPLE_TEXTURE_LEVEL_OFFSET(samp0, uv, u_lod, int2(1, 0)).rgb;
+   vec3 c11 = SAMPLE_TEXTURE_LEVEL_OFFSET(samp0, uv, u_lod, int2(1, 1)).rgb;
    o_col0 = get_bias(c00, c01, c10, c11);
 #else
-   vec4 c00 = SAMPLE_TEXTURE_OFFSET(samp0, uv, int2(0, 0));
-   vec4 c01 = SAMPLE_TEXTURE_OFFSET(samp0, uv, int2(0, 1));
-   vec4 c10 = SAMPLE_TEXTURE_OFFSET(samp0, uv, int2(1, 0));
-   vec4 c11 = SAMPLE_TEXTURE_OFFSET(samp0, uv, int2(1, 1));
+   vec4 c00 = SAMPLE_TEXTURE_LEVEL_OFFSET(samp0, uv, u_lod, int2(0, 0));
+   vec4 c01 = SAMPLE_TEXTURE_LEVEL_OFFSET(samp0, uv, u_lod, int2(0, 1));
+   vec4 c10 = SAMPLE_TEXTURE_LEVEL_OFFSET(samp0, uv, u_lod, int2(1, 0));
+   vec4 c11 = SAMPLE_TEXTURE_LEVEL_OFFSET(samp0, uv, u_lod, int2(1, 1));
    o_col0 = get_bias(c00, c01, c10, c11);
 #endif
 }
@@ -1388,9 +1507,8 @@ std::string GPU_HW_ShaderGen::GenerateAdaptiveDownsampleBlurFragmentShader()
   std::stringstream ss;
   WriteHeader(ss);
   WriteCommonFunctions(ss);
+  WriteAdaptiveDownsampleUniformBuffer(ss);
   DeclareTexture(ss, "samp0", 0, false);
-  DeclareUniformBuffer(ss, {"float2 u_uv_min", "float2 u_uv_max", "float2 u_rcp_resolution", "float sample_level"},
-                       true);
 
   // mipmap_blur.glsl ported from parallel-rsx.
   DeclareFragmentEntryPoint(ss, 0, 1, {}, false, 1, false, false, false, false);
@@ -1440,24 +1558,26 @@ std::string GPU_HW_ShaderGen::GenerateAdaptiveDownsampleCompositeFragmentShader(
   return ss.str();
 }
 
-std::string GPU_HW_ShaderGen::GenerateBoxSampleDownsampleFragmentShader()
+std::string GPU_HW_ShaderGen::GenerateBoxSampleDownsampleFragmentShader(u32 factor)
 {
   std::stringstream ss;
   WriteHeader(ss);
   WriteCommonFunctions(ss);
   DeclareTexture(ss, "samp0", 0, false);
 
+  ss << "#define FACTOR " << factor << "\n";
+
   DeclareFragmentEntryPoint(ss, 0, 1, {}, true, 1, false, false, false, false);
   ss << R"(
 {
   float3 color = float3(0.0, 0.0, 0.0);
-  uint2 base_coords = uint2(v_pos.xy) * uint2(RESOLUTION_SCALE, RESOLUTION_SCALE);
-  for (uint offset_x = 0u; offset_x < RESOLUTION_SCALE; offset_x++)
+  uint2 base_coords = uint2(v_pos.xy) * uint2(FACTOR, FACTOR);
+  for (uint offset_x = 0u; offset_x < FACTOR; offset_x++)
   {
-    for (uint offset_y = 0u; offset_y < RESOLUTION_SCALE; offset_y++)
+    for (uint offset_y = 0u; offset_y < FACTOR; offset_y++)
       color += LOAD_TEXTURE(samp0, int2(base_coords + uint2(offset_x, offset_y)), 0).rgb;
   }
-  color /= float(RESOLUTION_SCALE * RESOLUTION_SCALE);
+  color /= float(FACTOR * FACTOR);
   o_col0 = float4(color, 1.0);
 }
 )";

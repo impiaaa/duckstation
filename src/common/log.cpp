@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "log.h"
 #include "assert.h"
 #include "file_system.h"
@@ -127,12 +130,12 @@ static int FormatLogMessageForDisplay(char* buffer, size_t buffer_size, const ch
 
     if (level <= LOGLEVEL_PERF)
     {
-      return std::snprintf(buffer, buffer_size, "%s[%10.4f] %c(%s): %s%s%s", color_start, message_time,
+      return std::snprintf(buffer, buffer_size, "[%10.4f] %s%c(%s): %s%s%s", message_time, color_start,
                            s_log_level_characters[level], functionName, message, color_end, message_end);
     }
     else
     {
-      return std::snprintf(buffer, buffer_size, "%s[%10.4f] %c/%s: %s%s%s", color_start, message_time,
+      return std::snprintf(buffer, buffer_size, "[%10.4f] %s%c/%s: %s%s%s", message_time, color_start,
                            s_log_level_characters[level], channelName, message, color_end, message_end);
     }
   }
@@ -185,7 +188,8 @@ static ALWAYS_INLINE void FormatLogMessageAndPrintW(const char* channelName, con
   char* message_buf = buf;
   int message_len;
   if ((message_len = FormatLogMessageForDisplay(message_buf, sizeof(buf), channelName, functionName, level, message,
-                                                timestamp, ansi_color_code, newline)) > (sizeof(buf) - 1))
+                                                timestamp, ansi_color_code, newline)) >
+      static_cast<int>(sizeof(buf) - 1))
   {
     message_buf = static_cast<char*>(std::malloc(message_len + 1));
     message_len = FormatLogMessageForDisplay(message_buf, message_len + 1, channelName, functionName, level, message,
@@ -198,8 +202,8 @@ static ALWAYS_INLINE void FormatLogMessageAndPrintW(const char* channelName, con
   // anyway...
   wchar_t wbuf[512];
   wchar_t* wmessage_buf = wbuf;
-  int wmessage_buflen = countof(wbuf) - 1;
-  if (message_len >= countof(wbuf))
+  int wmessage_buflen = static_cast<int>(std::size(wbuf) - 1);
+  if (message_len >= static_cast<int>(std::size(wbuf)))
   {
     wmessage_buflen = message_len;
     wmessage_buf = static_cast<wchar_t*>(std::malloc((wmessage_buflen + 1) * sizeof(wchar_t)));

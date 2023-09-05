@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "multitap.h"
 #include "common/log.h"
 #include "common/types.h"
@@ -59,7 +62,7 @@ void Multitap::ResetTransferState()
 
 bool Multitap::TransferController(u32 slot, const u8 data_in, u8* data_out) const
 {
-  Controller* const selected_controller = g_pad.GetController(m_base_index + slot);
+  Controller* const selected_controller = Pad::GetController(m_base_index + slot);
   if (!selected_controller)
   {
     *data_out = 0xFF;
@@ -71,7 +74,7 @@ bool Multitap::TransferController(u32 slot, const u8 data_in, u8* data_out) cons
 
 bool Multitap::TransferMemoryCard(u32 slot, const u8 data_in, u8* data_out) const
 {
-  MemoryCard* const selected_memcard = g_pad.GetMemoryCard(m_base_index + slot);
+  MemoryCard* const selected_memcard = Pad::GetMemoryCard(m_base_index + slot);
   if (!selected_memcard)
   {
     *data_out = 0xFF;

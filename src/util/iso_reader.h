@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "common/types.h"
 #include <memory>
@@ -140,6 +143,7 @@ public:
   std::vector<std::string> GetFilesInDirectory(const char* path);
 
   bool ReadFile(const char* path, std::vector<u8>* data);
+  bool FileExists(const char* path);
 
 private:
   bool ReadPVD();

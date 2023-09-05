@@ -1,7 +1,12 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 
+#include "util/gpu_device.h"
+
 #include "common/types.h"
-#include "core/host_display.h"
+
 #include <functional>
 #include <memory>
 #include <optional>
@@ -21,11 +26,11 @@ public:
   virtual void SetDefaultConfig(SettingsInterface& si) = 0;
 
   virtual bool CreatePlatformWindow(std::string title) = 0;
+  virtual bool HasPlatformWindow() const = 0;
   virtual void DestroyPlatformWindow() = 0;
 
   virtual std::optional<WindowInfo> GetPlatformWindowInfo() = 0;
   virtual void SetPlatformWindowTitle(std::string title) = 0;
-  virtual void* GetPlatformWindowHandle() = 0;
 
   virtual std::optional<u32> ConvertHostKeyboardStringToCode(const std::string_view& str) = 0;
   virtual std::optional<std::string> ConvertHostKeyboardCodeToString(u32 code) = 0;
@@ -44,15 +49,14 @@ public:
 #ifdef _WIN32
   static std::unique_ptr<NoGUIPlatform> CreateWin32Platform();
 #endif
-
+#ifdef __APPLE__
+  static std::unique_ptr<NoGUIPlatform> CreateCocoaPlatform();
+#endif
 #ifdef NOGUI_PLATFORM_WAYLAND
   static std::unique_ptr<NoGUIPlatform> CreateWaylandPlatform();
 #endif
 #ifdef NOGUI_PLATFORM_X11
   static std::unique_ptr<NoGUIPlatform> CreateX11Platform();
-#endif
-#ifdef NOGUI_PLATFORM_VTY
-  static std::unique_ptr<NoGUIPlatform> CreateVTYPlatform();
 #endif
 
 protected:

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "http_downloader_winhttp.h"
 #include "assert.h"
 #include "log.h"
@@ -6,8 +9,6 @@
 #include <VersionHelpers.h>
 #include <algorithm>
 Log_SetChannel(HTTPDownloaderWinHttp);
-
-#pragma comment(lib, "winhttp.lib")
 
 namespace Common {
 

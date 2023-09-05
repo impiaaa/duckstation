@@ -1,5 +1,12 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
+
+#include "util/window_info.h"
+
 #include "common/types.h"
+
 #include <QtCore/QByteArray>
 #include <QtCore/QMetaType>
 #include <QtCore/QString>
@@ -22,7 +29,7 @@ class QUrl;
 enum class ConsoleRegion;
 enum class DiscRegion : u8;
 namespace GameDatabase {
-enum class CompatibilityRating : u32;
+enum class CompatibilityRating : u8;
 }
 namespace GameList {
 enum class EntryType;
@@ -90,5 +97,11 @@ QIcon GetIconForRegion(DiscRegion region);
 /// Returns icon for entry type.
 QIcon GetIconForEntryType(GameList::EntryType type);
 QIcon GetIconForCompatibility(GameDatabase::CompatibilityRating rating);
+
+/// Returns the pixel ratio/scaling factor for a widget.
+qreal GetDevicePixelRatioForWidget(const QWidget* widget);
+
+/// Returns the common window info structure for a Qt widget.
+std::optional<WindowInfo> GetWindowInfoForWidget(QWidget* widget);
 
 } // namespace QtUtils

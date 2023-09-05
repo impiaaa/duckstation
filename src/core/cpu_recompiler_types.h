@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "common/platform.h"
 #include "cpu_types.h"
@@ -63,7 +66,7 @@ enum class Condition : u8
 
 #if defined(CPU_X64)
 
-using HostReg = Xbyak::Operand::Code;
+using HostReg = unsigned;
 using CodeEmitter = Xbyak::CodeGenerator;
 using LabelType = Xbyak::Label;
 enum : u32
@@ -123,6 +126,13 @@ constexpr RegSize HostPointerSize = RegSize_64;
 // A reasonable "maximum" number of bytes per instruction.
 constexpr u32 MAX_NEAR_HOST_BYTES_PER_INSTRUCTION = 64;
 constexpr u32 MAX_FAR_HOST_BYTES_PER_INSTRUCTION = 128;
+
+// Alignment of code stoarge.
+constexpr u32 CODE_STORAGE_ALIGNMENT = 4096;
+
+#elif defined(CPU_RISCV64)
+
+using HostReg = unsigned;
 
 // Alignment of code stoarge.
 constexpr u32 CODE_STORAGE_ALIGNMENT = 4096;

@@ -1,6 +1,9 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "common/types.h"
-#include "frontend-common/input_manager.h"
+#include "util/input_manager.h"
 #include "ui_controllersettingsdialog.h"
 #include <QtCore/QList>
 #include <QtCore/QPair>

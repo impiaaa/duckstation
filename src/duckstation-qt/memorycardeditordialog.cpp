@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "memorycardeditordialog.h"
 #include "common/file_system.h"
 #include "common/path.h"
@@ -14,7 +17,7 @@ static constexpr char MEMORY_CARD_IMAGE_FILTER[] = QT_TRANSLATE_NOOP(
 static constexpr char MEMORY_CARD_IMPORT_FILTER[] =
   QT_TRANSLATE_NOOP("MemoryCardEditorDialog", "All Importable Memory Card Types (*.mcd *.mcr *.mc *.gme)");
 static constexpr char SINGLE_SAVEFILE_FILTER[] =
-  TRANSLATABLE("MemoryCardEditorDialog", "Single Save Files (*.mcs);;All Files (*.*)");
+  TRANSLATE_NOOP("MemoryCardEditorDialog", "Single Save Files (*.mcs);;All Files (*.*)");
 
 MemoryCardEditorDialog::MemoryCardEditorDialog(QWidget* parent) : QDialog(parent)
 {

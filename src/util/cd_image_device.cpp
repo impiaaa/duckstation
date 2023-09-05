@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "assert.h"
 #include "cd_image.h"
 #include "common/error.h"
@@ -69,7 +72,7 @@ public:
   CDImageDeviceWin32();
   ~CDImageDeviceWin32() override;
 
-  bool Open(const char* filename, Common::Error* error);
+  bool Open(const char* filename, Error* error);
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
   bool HasNonStandardSubchannel() const override;
@@ -109,7 +112,7 @@ CDImageDeviceWin32::~CDImageDeviceWin32()
     CloseHandle(m_hDevice);
 }
 
-bool CDImageDeviceWin32::Open(const char* filename, Common::Error* error)
+bool CDImageDeviceWin32::Open(const char* filename, Error* error)
 {
   m_filename = filename;
   m_hDevice = CreateFile(filename, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
@@ -132,8 +135,8 @@ bool CDImageDeviceWin32::Open(const char* filename, Common::Error* error)
   }
 
   // Set it to 4x speed. A good balance between readahead and spinning up way too high.
-  static constexpr u32 READ_SPEED_MULTIPLIER = 4;
-  static constexpr u32 READ_SPEED_KBS = (DATA_SECTOR_SIZE * FRAMES_PER_SECOND * 8) / 1024;
+  static constexpr u32 READ_SPEED_MULTIPLIER = 8;
+  static constexpr u32 READ_SPEED_KBS = (DATA_SECTOR_SIZE * FRAMES_PER_SECOND * READ_SPEED_MULTIPLIER) / 1024;
   CDROM_SET_SPEED set_speed = {CdromSetSpeed, READ_SPEED_KBS, 0, CdromDefaultRotation};
   if (!DeviceIoControl(m_hDevice, IOCTL_CDROM_SET_SPEED, &set_speed, sizeof(set_speed), nullptr, 0, nullptr, nullptr))
     Log_WarningPrintf("DeviceIoControl(IOCTL_CDROM_SET_SPEED) failed: %08X", GetLastError());
@@ -241,8 +244,7 @@ bool CDImageDeviceWin32::Open(const char* filename, Common::Error* error)
   if (m_tracks.empty())
   {
     Log_ErrorPrintf("File '%s' contains no tracks", filename);
-    if (error)
-      error->SetFormattedMessage("File '%s' contains no tracks", filename);
+    Error::SetString(error, fmt::format("File '{}' contains no tracks", filename));
     return false;
   }
 
@@ -267,9 +269,7 @@ bool CDImageDeviceWin32::Open(const char* filename, Common::Error* error)
   if (!DetermineReadMode())
   {
     Log_ErrorPrintf("Could not determine read mode");
-    if (error)
-      error->SetMessage("Could not determine read mode");
-
+    Error::SetString(error, "Could not determine read mode");
     return false;
   }
 
@@ -473,7 +473,7 @@ bool CDImageDeviceWin32::DetermineReadMode()
   return false;
 }
 
-std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Common::Error* error)
+std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Error* error)
 {
   std::unique_ptr<CDImageDeviceWin32> image = std::make_unique<CDImageDeviceWin32>();
   if (!image->Open(filename, error))
@@ -525,7 +525,7 @@ bool CDImage::IsDeviceName(const char* filename)
 
 #else
 
-std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Common::Error* error)
+std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Error* error)
 {
   return {};
 }

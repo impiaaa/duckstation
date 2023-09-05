@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>.
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "types.h"
 #include <optional>
@@ -55,17 +58,16 @@ struct PSEXEHeader
 static_assert(sizeof(PSEXEHeader) == 0x800);
 #pragma pack(pop)
 
-Hash GetHash(const Image& image);
 std::optional<Image> LoadImageFromFile(const char* filename);
-std::optional<Hash> GetHashForFile(const char* filename);
+Hash GetImageHash(const Image& image);
 
-const ImageInfo* GetImageInfoForHash(const Hash& hash);
-bool IsValidHashForRegion(ConsoleRegion region, const Hash& hash);
+const ImageInfo* GetInfoForImage(const Image& image);
+const ImageInfo* GetInfoForImage(const Image& image, const Hash& hash);
+bool IsValidBIOSForRegion(ConsoleRegion console_region, ConsoleRegion bios_region);
 
 void PatchBIOS(u8* image, u32 image_size, u32 address, u32 value, u32 mask = UINT32_C(0xFFFFFFFF));
 
-bool PatchBIOSEnableTTY(u8* image, u32 image_size, const Hash& hash);
-bool PatchBIOSFastBoot(u8* image, u32 image_size, const Hash& hash);
+bool PatchBIOSFastBoot(u8* image, u32 image_size);
 bool PatchBIOSForEXE(u8* image, u32 image_size, u32 r_pc, u32 r_gp, u32 r_sp, u32 r_fp);
 
 bool IsValidPSExeHeader(const PSEXEHeader& header, u32 file_size);
@@ -77,6 +79,9 @@ std::optional<std::vector<u8>> GetBIOSImage(ConsoleRegion region);
 /// Searches for a BIOS image for the specified region in the specified directory. If no match is found, the first
 /// BIOS image within 512KB and 4MB will be used.
 std::optional<std::vector<u8>> FindBIOSImageInDirectory(ConsoleRegion region, const char* directory);
+
+/// Returns a BIOS image which matches the specified hash.
+std::string FindBIOSPathWithHash(const char* directory, const BIOS::Hash& hash);
 
 /// Returns a list of filenames and descriptions for BIOS images in a directory.
 std::vector<std::pair<std::string, const BIOS::ImageInfo*>> FindBIOSImagesInDirectory(const char* directory);

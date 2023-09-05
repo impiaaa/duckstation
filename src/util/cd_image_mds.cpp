@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "assert.h"
 #include "cd_image.h"
 #include "cd_subchannel_replacement.h"
@@ -36,7 +39,7 @@ public:
   CDImageMds();
   ~CDImageMds() override;
 
-  bool OpenAndParse(const char* filename, Common::Error* error);
+  bool OpenAndParse(const char* filename, Error* error);
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
   bool HasNonStandardSubchannel() const override;
@@ -58,15 +61,12 @@ CDImageMds::~CDImageMds()
     std::fclose(m_mdf_file);
 }
 
-bool CDImageMds::OpenAndParse(const char* filename, Common::Error* error)
+bool CDImageMds::OpenAndParse(const char* filename, Error* error)
 {
-  std::FILE* mds_fp = FileSystem::OpenCFile(filename, "rb");
+  std::FILE* mds_fp = FileSystem::OpenCFile(filename, "rb", error);
   if (!mds_fp)
   {
     Log_ErrorPrintf("Failed to open mds '%s': errno %d", filename, errno);
-    if (error)
-      error->SetErrno(errno);
-
     return false;
   }
 
@@ -75,20 +75,15 @@ bool CDImageMds::OpenAndParse(const char* filename, Common::Error* error)
   if (!mds_data_opt.has_value() || mds_data_opt->size() < 0x54)
   {
     Log_ErrorPrintf("Failed to read mds file '%s'", filename);
-    if (error)
-      error->SetFormattedMessage("Failed to read mds file '%s'", filename);
-
+    Error::SetString(error, fmt::format("Failed to read mds file '{}'", filename));
     return false;
   }
 
   std::string mdf_filename(Path::ReplaceExtension(filename, "mdf"));
-  m_mdf_file = FileSystem::OpenCFile(mdf_filename.c_str(), "rb");
+  m_mdf_file = FileSystem::OpenCFile(mdf_filename.c_str(), "rb", error);
   if (!m_mdf_file)
   {
     Log_ErrorPrintf("Failed to open mdf file '%s': errno %d", mdf_filename.c_str(), errno);
-    if (error)
-      error->SetFormattedMessage("Failed to open mdf file '%s': errno %d", mdf_filename.c_str(), errno);
-
     return false;
   }
 
@@ -97,9 +92,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Common::Error* error)
   if (std::memcmp(&mds[0], expected_signature, sizeof(expected_signature) - 1) != 0)
   {
     Log_ErrorPrintf("Incorrect signature in '%s'", filename);
-    if (error)
-      error->SetFormattedMessage("Incorrect signature in '%s'", filename);
-
+    Error::SetString(error, fmt::format("Incorrect signature in '{}'", filename));
     return false;
   }
 
@@ -108,9 +101,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Common::Error* error)
   if ((session_offset + 24) > mds.size())
   {
     Log_ErrorPrintf("Invalid session offset in '%s'", filename);
-    if (error)
-      error->SetFormattedMessage("Invalid session offset in '%s'", filename);
-
+    Error::SetString(error, fmt::format("Invalid session offset in '{}'", filename));
     return false;
   }
 
@@ -121,9 +112,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Common::Error* error)
   if (track_count > 99 || track_offset >= mds.size())
   {
     Log_ErrorPrintf("Invalid track count/block offset %u/%u in '%s'", track_count, track_offset, filename);
-    if (error)
-      error->SetFormattedMessage("Invalid track count/block offset %u/%u in '%s'", track_count, track_offset, filename);
-
+    Error::SetString(error, fmt::format("Invalid track count/block offset {}/{} in '{}'", track_count, track_offset, filename));
     return false;
   }
 
@@ -142,9 +131,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Common::Error* error)
     if ((track_offset + sizeof(TrackEntry)) > mds.size())
     {
       Log_ErrorPrintf("End of file in '%s' at track %u", filename, track_number);
-      if (error)
-        error->SetFormattedMessage("End of file in '%s' at track %u", filename, track_number);
-
+      Error::SetString(error, fmt::format("End of file in '{}' at track {}", filename, track_number));
       return false;
     }
 
@@ -155,9 +142,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Common::Error* error)
     if (PackedBCDToBinary(track.track_number) != track_number)
     {
       Log_ErrorPrintf("Unexpected track number 0x%02X in track %u", track.track_number, track_number);
-      if (error)
-        error->SetFormattedMessage("Unexpected track number 0x%02X in track %u", track.track_number, track_number);
-
+      Error::SetString(error, fmt::format("Unexpected track number 0x{:02X} in track {}", track.track_number, track_number));
       return false;
     }
 
@@ -168,9 +153,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Common::Error* error)
     if ((track.extra_offset + sizeof(u32) + sizeof(u32)) > mds.size())
     {
       Log_ErrorPrintf("Invalid extra offset %u in track %u", track.extra_offset, track_number);
-      if (error)
-        error->SetFormattedMessage("Invalid extra offset %u in track %u", track.extra_offset, track_number);
-
+      Error::SetString(error, fmt::format("Invalid extra offset {} in track {}", track.extra_offset, track_number));
       return false;
     }
 
@@ -193,9 +176,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Common::Error* error)
       if (track_pregap > track_start_lba)
       {
         Log_ErrorPrintf("Track pregap %u is too large for start lba %u", track_pregap, track_start_lba);
-        if (error)
-          error->SetFormattedMessage("Track pregap %u is too large for start lba %u", track_pregap, track_start_lba);
-
+        Error::SetString(error, fmt::format("Track pregap {} is too large for start lba {}", track_pregap, track_start_lba));
         return false;
       }
 
@@ -244,9 +225,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Common::Error* error)
   if (m_tracks.empty())
   {
     Log_ErrorPrintf("File '%s' contains no tracks", filename);
-    if (error)
-      error->SetFormattedMessage("File '%s' contains no tracks", filename);
-
+    Error::SetString(error, fmt::format("File '{}' contains no tracks", filename));
     return false;
   }
 
@@ -294,7 +273,7 @@ bool CDImageMds::ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_i
   return true;
 }
 
-std::unique_ptr<CDImage> CDImage::OpenMdsImage(const char* filename, Common::Error* error)
+std::unique_ptr<CDImage> CDImage::OpenMdsImage(const char* filename, Error* error)
 {
   std::unique_ptr<CDImageMds> image = std::make_unique<CDImageMds>();
   if (!image->OpenAndParse(filename, error))

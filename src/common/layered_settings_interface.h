@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "settings_interface.h"
 #include <array>
@@ -45,6 +48,9 @@ public:
   void SetStringList(const char* section, const char* key, const std::vector<std::string>& items) override;
   bool RemoveFromStringList(const char* section, const char* key, const char* item) override;
   bool AddToStringList(const char* section, const char* key, const char* item) override;
+
+  std::vector<std::pair<std::string, std::string>> GetKeyValueList(const char* section) const override;
+  void SetKeyValueList(const char* section, const std::vector<std::pair<std::string, std::string>>& items) override;
 
   // default parameter overloads
   using SettingsInterface::GetBoolValue;

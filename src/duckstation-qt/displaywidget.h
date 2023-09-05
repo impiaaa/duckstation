@@ -1,6 +1,12 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
+
+#include "util/window_info.h"
+
 #include "common/types.h"
-#include "common/window_info.h"
+
 #include <QtWidgets/QStackedWidget>
 #include <QtWidgets/QWidget>
 #include <optional>
@@ -19,7 +25,6 @@ public:
 
   int scaledWindowWidth() const;
   int scaledWindowHeight() const;
-  qreal devicePixelRatioFromScreen() const;
 
   std::optional<WindowInfo> getWindowInfo();
 
@@ -33,7 +38,6 @@ Q_SIGNALS:
   void windowRestoredEvent();
   void windowKeyEvent(int key_code, bool pressed);
   void windowTextEntered(const QString& text);
-  void windowMouseMoveEvent(bool relative, float x, float y);
   void windowMouseButtonEvent(int button, bool pressed);
   void windowMouseWheelEvent(const QPoint& angle_delta);
 

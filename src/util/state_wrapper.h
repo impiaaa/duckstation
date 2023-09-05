@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "common/byte_stream.h"
 #include "common/fifo_queue.h"
@@ -71,7 +74,7 @@ public:
   }
 
   /// Overload for POD types, such as structs.
-  template<typename T, std::enable_if_t<std::is_pod_v<T>, int> = 0>
+  template<typename T, std::enable_if_t<std::is_standard_layout_v<T> && std::is_trivial_v<T>, int> = 0>
   void DoPOD(T* value_ptr)
   {
     if (m_mode == Mode::Read)
@@ -101,6 +104,7 @@ public:
   }
 
   void DoBytes(void* data, size_t length);
+  void DoBytesEx(void* data, size_t length, u32 version_introduced, const void* default_value);
 
   void Do(bool* value_ptr);
   void Do(std::string* value_ptr);
@@ -113,7 +117,7 @@ public:
   }
 
   template<typename T, size_t N>
-  void Do(HeapArray<T, N>* data)
+  void Do(FixedHeapArray<T, N>* data)
   {
     DoArray(data->data(), data->size());
   }
@@ -179,7 +183,7 @@ public:
   template<typename T>
   void DoEx(T* data, u32 version_introduced, T default_value)
   {
-    if (m_version < version_introduced)
+    if (m_mode == Mode::Read && m_version < version_introduced)
     {
       *data = std::move(default_value);
       return;

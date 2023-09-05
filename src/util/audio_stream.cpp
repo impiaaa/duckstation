@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "audio_stream.h"
 #include "SoundTouch.h"
 #include "common/align.h"
 #include "common/assert.h"
 #include "common/log.h"
 #include "common/make_array.h"
+#include "common/platform.h"
 #include "common/timer.h"
 #include <algorithm>
 #include <cmath>
@@ -19,7 +23,7 @@
 #include <arm64_neon.h>
 #elif defined(__aarch64__)
 #include <arm_neon.h>
-#elif defined(_M_IX86) || defined(_M_AMD64)
+#elif defined(CPU_X86) || defined(CPU_X64)
 #include <emmintrin.h>
 #endif
 
@@ -361,7 +365,7 @@ void AudioStream::EndWrite(u32 num_frames)
 static constexpr float S16_TO_FLOAT = 1.0f / 32767.0f;
 static constexpr float FLOAT_TO_S16 = 32767.0f;
 
-#if defined(_M_ARM64) || defined(__aarch64__)
+#if defined(CPU_AARCH64)
 
 static void S16ChunkToFloat(const s32* src, float* dst)
 {
@@ -414,7 +418,7 @@ static void FloatChunkToS16(s32* dst, const float* src, uint size)
   }
 }
 
-#elif defined(_M_IX86) || defined(_M_AMD64)
+#elif defined(CPU_X86) || defined(CPU_X64)
 
 static void S16ChunkToFloat(const s32* src, float* dst)
 {

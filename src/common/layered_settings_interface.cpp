@@ -1,5 +1,9 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "layered_settings_interface.h"
 #include "common/assert.h"
+#include <unordered_set>
 
 LayeredSettingsInterface::LayeredSettingsInterface() = default;
 
@@ -8,7 +12,6 @@ LayeredSettingsInterface::~LayeredSettingsInterface() = default;
 bool LayeredSettingsInterface::Save()
 {
   Panic("Attempting to save layered settings interface");
-  return false;
 }
 
 void LayeredSettingsInterface::Clear()
@@ -179,11 +182,41 @@ void LayeredSettingsInterface::SetStringList(const char* section, const char* ke
 bool LayeredSettingsInterface::RemoveFromStringList(const char* section, const char* key, const char* item)
 {
   Panic("Attempt to call RemoveFromStringList() on layered settings interface");
-  return false;
 }
 
 bool LayeredSettingsInterface::AddToStringList(const char* section, const char* key, const char* item)
 {
   Panic("Attempt to call AddToStringList() on layered settings interface");
-  return true;
+}
+
+std::vector<std::pair<std::string, std::string>> LayeredSettingsInterface::GetKeyValueList(const char* section) const
+{
+  std::unordered_set<std::string_view> seen;
+  std::vector<std::pair<std::string, std::string>> ret;
+  for (u32 layer = FIRST_LAYER; layer <= LAST_LAYER; layer++)
+  {
+    if (SettingsInterface* sif = m_layers[layer])
+    {
+      const size_t newly_added_begin = ret.size();
+      std::vector<std::pair<std::string, std::string>> entries = sif->GetKeyValueList(section);
+      for (std::pair<std::string, std::string>& entry : entries)
+      {
+        if (seen.find(entry.first) != seen.end())
+          continue;
+        ret.push_back(std::move(entry));
+      }
+
+      // Mark keys as seen after processing all entries in case the layer has multiple entries for a specific key
+      for (auto cur = ret.begin() + newly_added_begin, end = ret.end(); cur < end; cur++)
+        seen.insert(cur->first);
+    }
+  }
+
+  return ret;
+}
+
+void LayeredSettingsInterface::SetKeyValueList(const char* section,
+                                               const std::vector<std::pair<std::string, std::string>>& items)
+{
+  Panic("Attempt to call SetKeyValueList() on layered settings interface");
 }

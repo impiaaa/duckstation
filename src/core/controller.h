@@ -1,5 +1,9 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "common/image.h"
+#include "input_types.h"
 #include "settings.h"
 #include "types.h"
 #include <memory>
@@ -13,21 +17,9 @@ class SettingsInterface;
 class StateWrapper;
 class HostInterface;
 
-enum class GenericInputBinding : u8;
-
 class Controller
 {
 public:
-  enum class ControllerBindingType : u8
-  {
-    Unknown,
-    Button,
-    Axis,
-    HalfAxis,
-    Motor,
-    Macro
-  };
-
   enum class VibrationCapabilities : u8
   {
     NoVibration,
@@ -41,7 +33,7 @@ public:
     const char* name;
     const char* display_name;
     u32 bind_index;
-    ControllerBindingType type;
+    InputBindingInfo::Type type;
     GenericInputBinding generic_mapping;
   };
 
@@ -96,7 +88,7 @@ public:
   virtual void LoadSettings(SettingsInterface& si, const char* section);
 
   /// Returns the software cursor to use for this controller, if any.
-  virtual bool GetSoftwareCursor(const Common::RGBA8Image** image, float* image_scale, bool* relative_mode);
+  virtual bool GetSoftwareCursor(std::string* image_path, float* image_scale, bool* relative_mode);
 
   /// Creates a new controller of the specified type.
   static std::unique_ptr<Controller> Create(ControllerType type, u32 index);

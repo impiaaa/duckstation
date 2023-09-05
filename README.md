@@ -1,9 +1,9 @@
 # DuckStation - PlayStation 1, aka. PSX Emulator
-[Latest News](#latest-news) | [Features](#features) | [Screenshots](#screenshots) | [Downloading and Running](#downloading-and-running) | [Building](#building) | [Disclaimers](#disclaimers)
+[Latest News](#latest-news) | [Features](#features) | [Downloading and Running](#downloading-and-running) | [Building](#building) | [Disclaimers](#disclaimers)
 
-**Discord Server:** https://discord.gg/Buktv3t
+**Latest Builds for Windows and Linux (AppImage):** https://github.com/stenzek/duckstation/releases/tag/latest
 
-**Latest Builds for Windows and Linux (AppImage)** https://github.com/stenzek/duckstation/releases/tag/latest
+**Latest Builds for Windows, Linux (AppImage/Flatpak), and macOS:** https://github.com/stenzek/duckstation/releases/tag/preview
 
 **Game Compatibility List:** https://docs.google.com/spreadsheets/d/1H66MxViRjjE5f8hOl5RQmF5woS1murio2dsLn14kEqo/edit
 
@@ -24,42 +24,46 @@ DuckStation features a fully-featured frontend built using Qt, as well as a full
 
 Other features include:
 
- - CPU Recompiler/JIT (x86-64, armv7/AArch32 and AArch64)
- - Hardware (D3D11, D3D12, OpenGL, Vulkan) and software rendering
- - Upscaling, texture filtering, and true colour (24-bit) in hardware renderers
- - PGXP for geometry precision, texture correction, and depth buffer emulation
- - Adaptive downsampling filter
- - Post processing shader chains
- - "Fast boot" for skipping BIOS splash/intro
- - Save state support
- - Windows, Linux, **highly experimental** macOS support
+ - CPU Recompiler/JIT (x86-64, armv7/AArch32 and AArch64).
+ - Hardware (D3D11, D3D12, OpenGL, Vulkan, Metal) and software rendering.
+ - Upscaling, texture filtering, and true colour (24-bit) in hardware renderers.
+ - PGXP for geometry precision, texture correction, and depth buffer emulation.
+ - Adaptive downsampling filter.
+ - Post processing shader chains (GLSL and experimental Reshade FX).
+ - "Fast boot" for skipping BIOS splash/intro.
+ - Save state support.
+ - Windows, Linux, macOS support.
  - Supports bin/cue images, raw bin/img files, MAME CHD, single-track ECM, MDS/MDF, and unencrypted PBP formats.
- - Direct booting of homebrew executables
- - Direct loading of Portable Sound Format (psf) files
- - Digital and analog controllers for input (rumble is forwarded to host)
- - Namco GunCon lightgun support (simulated with mouse)
- - NeGcon support
- - Qt and "Big Picture" UI
- - Automatic updates for Windows builds
- - Automatic content scanning - game titles/hashes are provided by redump.org
- - Optional automatic switching of memory cards for each game
- - Supports loading cheats from existing lists
- - Memory card editor and save importer
- - Emulated CPU overclocking
- - Integrated and remote debugging
- - Multitap controllers (up to 8 devices)
- - RetroAchievements
- - Automatic loading/applying of PPF patches
+ - Direct booting of homebrew executables.
+ - Direct loading of Portable Sound Format (psf) files.
+ - Digital and analog controllers for input (rumble is forwarded to host).
+ - Namco GunCon lightgun support (simulated with mouse).
+ - NeGcon support.
+ - Qt and "Big Picture" UI.
+ - Automatic updates for Windows builds.
+ - Automatic content scanning - game titles/hashes are provided by redump.org.
+ - Optional automatic switching of memory cards for each game.
+ - Supports loading cheats from existing lists.
+ - Memory card editor and save importer.
+ - Emulated CPU overclocking.
+ - Integrated and remote debugging.
+ - Multitap controllers (up to 8 devices).
+ - RetroAchievements.
+ - Automatic loading/applying of PPF patches.
 
 ## System Requirements
  - A CPU faster than a potato. But it needs to be x86_64, AArch32/armv7, or AArch64/ARMv8, otherwise you won't get a recompiler and it'll be slow.
- - For the hardware renderers, a GPU capable of OpenGL 3.1/OpenGL ES 3.0/Direct3D 11 Feature Level 10.0 (or Vulkan 1.0) and above. So, basically anything made in the last 10 years or so.
- - SDL, XInput or DInput compatible game controller (e.g. XB360/XBOne). DualShock 3 users on Windows will need to install the official DualShock 3 drivers included as part of PlayStation Now.
+ - For the hardware renderers, a GPU capable of OpenGL 3.1/OpenGL ES 3.1/Direct3D 11 Feature Level 10.0 (or Vulkan 1.0) and above. So, basically anything made in the last 10 years or so.
+ - SDL, XInput or DInput compatible game controller (e.g. XB360/XBOne/XBSeries). DualShock 3 users on Windows will need to install the official DualShock 3 drivers included as part of PlayStation Now.
 
 ## Downloading and running
-Binaries of DuckStation for Windows x64/ARM64, Linux x86_64 (in AppImage format), and Android ARMv7/ARMv8 are available via GitHub Releases and are automatically built with every commit/push. Binaries or packages distributed through other sources may be out of date and are not supported by the developer, please speak to them for support, not us.
+Binaries of DuckStation for Windows x64/ARM64, Linux x86_64 (in AppImage/Flatpak formats), and macOS Universal Binaries are available via GitHub Releases and are automatically built with every commit/push. Binaries or packages distributed through other sources may be out of date and are not supported by the developer, please speak to them for support, not us.
 
 ### Windows
+
+As of 2023/08/16, Preview releases of DuckStation **require Windows 10**. I have hit several issues in new features I am working on that are present in Qt 6.1, but not in 6.5.
+
+For now, this only applies to the **Preview** build, the "Latest Rolling Release" will still work on Windows 7/8/8.1 for now, with the disclaimer below. Once the new in-progress features are ready for widespread use, this build will move to legacy status.
 
 **Windows 10 is the only version of Windows supported by the developer.** Windows 7/8 may work, but is not supported. I am aware some users are still using Windows 7, but it is no longer supported by Microsoft and too much effort to get running on modern hardware. Game bugs are unlikely to be affected by the operating system, however performance issues should be verified on Windows 10 before reporting.
 
@@ -74,6 +78,8 @@ To set up:
 2. If using the Qt frontend, add the directories containing your disc images by clicking `Settings->Add Game Directory`.
 2. Select a game from the list, or open a disc image file and enjoy.
 
+If you are using the preview release, the setup wizard will guide you through these steps.
+
 **If you get an error about `vcruntime140_1.dll` being missing, you will need to update your Visual C++ runtime.** You can do that from this page: https://support.microsoft.com/en-au/help/2977003/the-latest-supported-visual-c-downloads. Specifically, you want the x64 runtime, which can be downloaded from https://aka.ms/vs/17/release/vc_redist.x64.exe.
 
 **Windows 7 users, TLS 1.2 is not supported by default and you will not be able to use the automatic updater or RetroAchievements.** This knowledge base article contains instructions for enabling TLS 1.1/1.2: https://support.microsoft.com/en-us/topic/update-to-enable-tls-1-1-and-tls-1-2-as-default-secure-protocols-in-winhttp-in-windows-c4bd73d2-31d7-761e-0178-11268bb10392
@@ -82,17 +88,28 @@ The Qt frontend includes an automatic update checker. Builds downloaded after 20
 
 ### Linux
 
-The only supported version of DuckStation for Linux are the AppImages in the releases page. The AppImages require a distribution equivalent to Ubuntu 20.04 or newer to run, which is also the minimum requirement for Qt 6. If you are using a packaged version of DuckStation from another source, please do not ask us for assistance and speak to your packager instead, they have a history of breaking things and there's a good chance that's the issue.
+The only supported version of DuckStation for Linux are the AppImage and Flatpak in the releases page. Other AppImages or Flatpaks, **including Flathub**/"Discover" store **are not supported**, and if history is any indication, **likely broken** because packagers tend to modify things they don't understand.
 
-#### Binaries
+#### AppImage
 
-To download:
- - Go to https://github.com/stenzek/duckstation/releases/tag/preview, and download `duckstation-qt.AppImage`.
+The AppImages require a distribution equivalent to Ubuntu 22.04 or newer to run.
+
+ - Go to https://github.com/stenzek/duckstation/releases/tag/preview, and download `duckstation-x64.AppImage`.
  - Run `chmod a+x` on the downloaded AppImage -- following this step, the AppImage can be run like a typical executable.
+
+#### Flatpak
+
+ - Go to https://github.com/stenzek/duckstation/releases/tag/preview, and download `duckstation-x64.flatpak`.
+ - Run `flatpak install ./duckstation-x64.flatpak`.
+ - Use `flatpak run org.duckstation.duckstation` to start, or select `DuckStation` in the launcher of your desktop environment.
  
 ### macOS
 
-Universal MacOS builds are provided for both x64 and ARM64 (Apple Silicon). However, due to lack of hardware, investigating issues is difficult, so we can't guarantee everything functions as intended.
+Universal MacOS builds are provided for both x64 and ARM64 (Apple Silicon).
+
+Using the Preview channel and Metal renderer is recommended, MoltenVK is reported to have issues with some games.
+
+MacOS Big Sir (11.0) is required, as this is also the minimum requirement for Qt.
 
 To download:
  - Go to https://github.com/stenzek/duckstation/releases/tag/preview, and download `duckstation-mac-release.zip`.
@@ -106,13 +123,9 @@ You will need a device with armv7 (32-bit ARM), AArch64 (64-bit ARM), or x86_64 
 
 Google Play is the preferred distribution mechanism and will result in smaller download sizes: https://play.google.com/store/apps/details?id=com.github.stenzek.duckstation
 
-**No support is provided for the Android app**, it is free and your expectations should be in line with that. Please **do not** email me about issues about it, they will be ignored. This repository should also not be used to raise issues about the app, as it does not contain the app code, only the desktop versions.
+**No support is provided for the Android app**, it is free and your expectations should be in line with that. Please **do not** email me about issues about it, they will be ignored.
 
-If you must use an APK, download links are:
-
-Download link: https://www.duckstation.org/android/duckstation-android.apk
-
-Changelog link: https://www.duckstation.org/android/changelog.txt
+If you must use an APK, download links are listed in https://www.duckstation.org/android/
 
 To use:
 1. Install and run the app for the first time.
@@ -135,26 +148,25 @@ For example, if your disc image was named `Spyro3.cue`, you would place the SBI 
 Requirements:
  - Visual Studio 2022
 
-1. Clone the respository with submodules (`git clone --recursive https://github.com/stenzek/duckstation.git`).
-2. Open the Visual Studio solution `duckstation.sln` in the root, or "Open Folder" for cmake build.
-3. Build solution.
-4. Binaries are located in `bin/x64`.
-5. Run `duckstation-qt-x64-Release.exe` or whichever config you used.
+1. Clone the respository: `git clone https://github.com/stenzek/duckstation.git`.
+2. Download the dependencies pack from https://github.com/stenzek/duckstation-ext-qt-minimal/releases/download/latest/deps-x64.7z, and extract it to `dep\msvc`.
+3. Open the Visual Studio solution `duckstation.sln` in the root, or "Open Folder" for cmake build.
+4. Build solution.
+5. Binaries are located in `bin/x64`.
+6. Run `duckstation-qt-x64-Release.exe` or whichever config you used.
 
 ### Linux
 Requirements (Debian/Ubuntu package names):
  - CMake (`cmake`)
- - SDL2 (at least version 2.0.22) (`libsdl2-dev`, `libxrandr-dev`)
+ - SDL2 (at least version 2.28.2) (`libsdl2-dev` `libxrandr-dev`)
  - pkgconfig (`pkg-config`)
- - Qt 6 (at least version 6.1.0) (`qtbase6-dev`, `qtbase6-private-dev`, `qtbase6-dev-tools`, `qttools6-dev`)
- - libevdev (`libevdev-dev`)
+ - Qt 6 (at least version 6.5.1) (`qt6-base-dev` `qt6-base-private-dev` `qt6-base-dev-tools` `qt6-tools-dev` `libqt6svg6`)
  - git (`git`) (Note: needed to clone the repository and at build time)
- - When Wayland is enabled (default): `libwayland-dev` `libwayland-egl-backend-dev` `extra-cmake-modules`
+ - When Wayland is enabled (default): (`libwayland-dev` `libwayland-egl-backend-dev` `extra-cmake-modules` `qt6-wayland`)
  - Optional for RetroAchievements (on by default): libcurl (`libcurl4-gnutls-dev`)
- - Optional for framebuffer output: DRM/GBM (`libgbm-dev`, `libdrm-dev`)
  - Optional for faster building: Ninja (`ninja-build`)
 
-1. Clone the repository. Submodules aren't necessary, there is only one and it is only used for Windows (`git clone https://github.com/stenzek/duckstation.git -b dev`).
+1. Clone the repository: `git clone https://github.com/stenzek/duckstation.git -b dev`.
 2. Create a build directory, either in-tree or elsewhere.
 3. Run CMake to configure the build system. Assuming a build subdirectory of `build-release`, run `cmake -Bbuild-release -DCMAKE_BUILD_TYPE=Release`. If you have installed Ninja, add `-GNinja` at the end of the CMake command line for faster builds.
 4. Compile the source code. For the example above, run `cmake --build build-release --parallel`.
@@ -165,14 +177,14 @@ Requirements (Debian/Ubuntu package names):
 
 Requirements:
  - CMake
- - SDL2 (at least version 2.0.22)
- - Qt 6 (at least version 6.1.0)
+ - SDL2 (at least version 2.28.2)
+ - Qt 6 (at least version 6.5.1)
 
 Optional (recommended for faster builds):
  - Ninja
 
-1. Clone the repository. Submodules aren't necessary; there is only one and it is only used for Windows (`git clone https://github.com/stenzek/duckstation.git`).
-2. Run CMake to configure the build system: `cmake -Bbuild-release -DCMAKE_BUILD_TYPE=Release -DBUILD_QT_FRONTEND=ON -DUSE_SDL2=ON`. You may need to specify `-DQt6_DIR` depending on your system. If you have installed Ninja, add `-GNinja` at the end of the CMake command line for faster builds.
+1. Clone the repository: `git clone https://github.com/stenzek/duckstation.git`.
+2. Run CMake to configure the build system: `cmake -Bbuild-release -DCMAKE_BUILD_TYPE=Release`. You may need to specify `-DQt6_DIR` depending on your system. If you have installed Ninja, add `-GNinja` at the end of the CMake command line for faster builds.
 4. Compile the source code: `cmake --build build-release --parallel`.
 5. Run the binary, located in the build directory under `bin/DuckStation.app`.
 
@@ -216,22 +228,6 @@ Hotkeys:
  - **F11:** Toggle fullscreen
  - **Tab:** Temporarily disable speed limiter
  - **Space:** Pause/resume emulation
-
-## Screenshots
-<p align="center">
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/monkey.jpg"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/monkey.jpg" alt="Monkey Hero" width="400" /></a>
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/rrt4.jpg"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/rrt4.jpg" alt="Ridge Racer Type 4" width="400" /></a>
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/tr2.jpg"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/tr2.jpg" alt="Tomb Raider 2" width="400" /></a>
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/quake2.jpg"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/quake2.jpg" alt="Quake 2" width="400" /></a>
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/croc.jpg"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/croc.jpg" alt="Croc" width="400" /></a>
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/croc2.jpg"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/croc2.jpg" alt="Croc 2" width="400" /></a>
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/ff7.jpg"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/ff7.jpg" alt="Final Fantasy 7" width="400" /></a>
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/mm8.jpg"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/mm8.jpg" alt="Mega Man 8" width="400" /></a>
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/ff8.jpg"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/ff8.jpg" alt="Final Fantasy 8 in Fullscreen UI" width="400" /></a>
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/spyro.jpg"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/spyro.jpg" alt="Spyro in Fullscreen UI" width="400" /></a>
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/tof.jpg"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/tof.jpg" alt="Threads of Fate in Fullscreen UI" width="400" /></a>
-  <a href="https://raw.githubusercontent.com/stenzek/duckstation/md-images/gamegrid.png"><img src="https://raw.githubusercontent.com/stenzek/duckstation/md-images/gamegrid.png" alt="Game Grid" width="400" /></a>
-</p>
 
 ## Disclaimers
 

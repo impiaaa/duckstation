@@ -1,4 +1,13 @@
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "game_database.h"
+#include "host.h"
+#include "system.h"
+
+#include "util/cd_image.h"
+#include "util/imgui_manager.h"
+
 #include "common/assert.h"
 #include "common/byte_stream.h"
 #include "common/heterogeneous_containers.h"
@@ -6,33 +15,30 @@
 #include "common/path.h"
 #include "common/string_util.h"
 #include "common/timer.h"
-#include "host.h"
+
 #include "rapidjson/document.h"
 #include "rapidjson/error/en.h"
-#include "system.h"
-#include "tinyxml2.h"
-#include "util/cd_image.h"
+
 #include <iomanip>
 #include <memory>
 #include <optional>
 #include <sstream>
+
 Log_SetChannel(GameDatabase);
 
 #ifdef _WIN32
 #include "common/windows_headers.h"
 #endif
-#include "SimpleIni.h"
 
 namespace GameDatabase {
 
 enum : u32
 {
   GAME_DATABASE_CACHE_SIGNATURE = 0x45434C48,
-  GAME_DATABASE_CACHE_VERSION = 2,
+  GAME_DATABASE_CACHE_VERSION = 5,
 };
 
 static Entry* GetMutableEntry(const std::string_view& serial);
-static const Entry* GetEntryForId(const std::string_view& code);
 
 static bool LoadFromCache();
 static bool SaveToCache();
@@ -40,31 +46,29 @@ static bool SaveToCache();
 static bool LoadGameDBJson();
 static bool ParseJsonEntry(Entry* entry, const rapidjson::Value& value);
 static bool ParseJsonCodes(u32 index, const rapidjson::Value& value);
-static bool LoadGameSettingsIni();
-static bool ParseGameSettingsIniEntry(const CSimpleIniA& ini, const char* section);
-static bool LoadGameCompatibilityXml();
 static bool LoadTrackHashes();
 
-std::array<std::pair<const char*, const char*>, static_cast<u32>(GameDatabase::Trait::Count)> s_trait_names = {{
-  {"ForceInterpreter", TRANSLATABLE("GameSettingsTrait", "Force Interpreter")},
-  {"ForceSoftwareRenderer", TRANSLATABLE("GameSettingsTrait", "Force Software Renderer")},
-  {"ForceSoftwareRendererForReadbacks", TRANSLATABLE("GameSettingsTrait", "Force Software Renderer For Readbacks")},
-  {"ForceInterlacing", TRANSLATABLE("GameSettingsTrait", "Force Interlacing")},
-  {"DisableTrueColor", TRANSLATABLE("GameSettingsTrait", "Disable True Color")},
-  {"DisableUpscaling", TRANSLATABLE("GameSettingsTrait", "Disable Upscaling")},
-  {"DisableScaledDithering", TRANSLATABLE("GameSettingsTrait", "Disable Scaled Dithering")},
-  {"DisableForceNTSCTimings", TRANSLATABLE("GameSettingsTrait", "Disallow Forcing NTSC Timings")},
-  {"DisableWidescreen", TRANSLATABLE("GameSettingsTrait", "Disable Widescreen")},
-  {"DisablePGXP", TRANSLATABLE("GameSettingsTrait", "Disable PGXP")},
-  {"DisablePGXPCulling", TRANSLATABLE("GameSettingsTrait", "Disable PGXP Culling")},
-  {"DisablePGXPTextureCorrection", TRANSLATABLE("GameSettingsTrait", "Disable PGXP Perspective Correct Textures")},
-  {"DisablePGXPColorCorrection", TRANSLATABLE("GameSettingsTrait", "Disable PGXP Perspective Correct Colors")},
-  {"DisablePGXPDepthBuffer", TRANSLATABLE("GameSettingsTrait", "Disable PGXP Depth Buffer")},
-  {"ForcePGXPVertexCache", TRANSLATABLE("GameSettingsTrait", "Force PGXP Vertex Cache")},
-  {"ForcePGXPCPUMode", TRANSLATABLE("GameSettingsTrait", "Force PGXP CPU Mode")},
-  {"ForceRecompilerMemoryExceptions", TRANSLATABLE("GameSettingsTrait", "Force Recompiler Memory Exceptions")},
-  {"ForceRecompilerICache", TRANSLATABLE("GameSettingsTrait", "Force Recompiler ICache")},
-  {"ForceRecompilerLUTFastmem", TRANSLATABLE("GameSettingsTrait", "Force Recompiler LUT Fastmem")},
+std::array<const char*, static_cast<u32>(GameDatabase::Trait::Count)> s_trait_names = {{
+  "ForceInterpreter",
+  "ForceSoftwareRenderer",
+  "ForceSoftwareRendererForReadbacks",
+  "ForceInterlacing",
+  "DisableTrueColor",
+  "DisableUpscaling",
+  "DisableScaledDithering",
+  "DisableForceNTSCTimings",
+  "DisableWidescreen",
+  "DisablePGXP",
+  "DisablePGXPCulling",
+  "DisablePGXPTextureCorrection",
+  "DisablePGXPColorCorrection",
+  "DisablePGXPDepthBuffer",
+  "ForcePGXPVertexCache",
+  "ForcePGXPCPUMode",
+  "ForceRecompilerMemoryExceptions",
+  "ForceRecompilerICache",
+  "ForceRecompilerLUTFastmem",
+  "IsLibCryptProtected",
 }};
 
 static bool s_loaded = false;
@@ -91,8 +95,6 @@ void GameDatabase::EnsureLoaded()
     s_code_lookup = {};
 
     LoadGameDBJson();
-    LoadGameSettingsIni();
-    LoadGameCompatibilityXml();
     SaveToCache();
   }
 
@@ -108,9 +110,12 @@ void GameDatabase::Unload()
 
 const GameDatabase::Entry* GameDatabase::GetEntryForId(const std::string_view& code)
 {
+  if (code.empty())
+    return nullptr;
+
   EnsureLoaded();
 
-  auto iter = UnorderedStringMapFind(s_code_lookup, code);
+  auto iter = s_code_lookup.find(code);
   return (iter != s_code_lookup.end()) ? &s_entries[iter->second] : nullptr;
 }
 
@@ -141,7 +146,8 @@ std::string GameDatabase::GetSerialForPath(const char* path)
 
 const GameDatabase::Entry* GameDatabase::GetEntryForDisc(CDImage* image)
 {
-  std::string id(System::GetGameIdFromImage(image, false));
+  std::string id;
+  System::GetGameDetailsFromImage(image, &id, nullptr);
   if (!id.empty())
   {
     const Entry* entry = GetEntryForId(id);
@@ -149,15 +155,7 @@ const GameDatabase::Entry* GameDatabase::GetEntryForDisc(CDImage* image)
       return entry;
   }
 
-  std::string hash_id(System::GetGameHashIdFromImage(image));
-  if (!hash_id.empty())
-  {
-    const Entry* entry = GetEntryForId(hash_id);
-    if (entry)
-      return entry;
-  }
-
-  Log_WarningPrintf("No entry found for disc (exe code: '%s', hash code: '%s')", id.c_str(), hash_id.c_str());
+  Log_WarningPrintf("No entry found for disc '%s'", id.c_str());
   return nullptr;
 }
 
@@ -182,13 +180,7 @@ GameDatabase::Entry* GameDatabase::GetMutableEntry(const std::string_view& seria
 const char* GameDatabase::GetTraitName(Trait trait)
 {
   DebugAssert(trait < Trait::Count);
-  return s_trait_names[static_cast<u32>(trait)].first;
-}
-
-const char* GameDatabase::GetTraitDisplayName(Trait trait)
-{
-  DebugAssert(trait < Trait::Count);
-  return s_trait_names[static_cast<u32>(trait)].second;
+  return s_trait_names[static_cast<u32>(trait)];
 }
 
 const char* GameDatabase::GetCompatibilityRatingName(CompatibilityRating rating)
@@ -201,20 +193,20 @@ const char* GameDatabase::GetCompatibilityRatingName(CompatibilityRating rating)
 const char* GameDatabase::GetCompatibilityRatingDisplayName(CompatibilityRating rating)
 {
   static constexpr std::array<const char*, static_cast<size_t>(CompatibilityRating::Count)> names = {
-    {TRANSLATABLE("GameListCompatibilityRating", "Unknown"),
-     TRANSLATABLE("GameListCompatibilityRating", "Doesn't Boot"),
-     TRANSLATABLE("GameListCompatibilityRating", "Crashes In Intro"),
-     TRANSLATABLE("GameListCompatibilityRating", "Crashes In-Game"),
-     TRANSLATABLE("GameListCompatibilityRating", "Graphical/Audio Issues"),
-     TRANSLATABLE("GameListCompatibilityRating", "No Issues")}};
+    {TRANSLATE_NOOP("GameListCompatibilityRating", "Unknown"),
+     TRANSLATE_NOOP("GameListCompatibilityRating", "Doesn't Boot"),
+     TRANSLATE_NOOP("GameListCompatibilityRating", "Crashes In Intro"),
+     TRANSLATE_NOOP("GameListCompatibilityRating", "Crashes In-Game"),
+     TRANSLATE_NOOP("GameListCompatibilityRating", "Graphical/Audio Issues"),
+     TRANSLATE_NOOP("GameListCompatibilityRating", "No Issues")}};
   return (rating >= CompatibilityRating::Unknown && rating < CompatibilityRating::Count) ?
-           names[static_cast<int>(rating)] :
+           Host::TranslateToCString("GameListCompatibilityRating", names[static_cast<int>(rating)]) :
            "";
 }
 
 void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_messages) const
 {
-  constexpr float osd_duration = 10.0f;
+  constexpr float osd_duration = 5.0f;
 
   if (display_active_start_offset.has_value())
     settings.display_active_start_offset = display_active_start_offset.value();
@@ -242,8 +234,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.cpu_execution_mode != CPUExecutionMode::Interpreter)
     {
       Host::AddKeyedOSDMessage("gamedb_force_interpreter",
-                               Host::TranslateStdString("OSDMessage", "CPU interpreter forced by game settings."),
-                               osd_duration);
+                               TRANSLATE_STR("OSDMessage", "CPU interpreter forced by game settings."), osd_duration);
     }
 
     settings.cpu_execution_mode = CPUExecutionMode::Interpreter;
@@ -254,11 +245,22 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_renderer != GPURenderer::Software)
     {
       Host::AddKeyedOSDMessage("gamedb_force_software",
-                               Host::TranslateStdString("OSDMessage", "Software renderer forced by game settings."),
-                               osd_duration);
+                               TRANSLATE_STR("OSDMessage", "Software renderer forced by game settings."), osd_duration);
     }
 
     settings.gpu_renderer = GPURenderer::Software;
+  }
+
+  if (HasTrait(Trait::ForceSoftwareRendererForReadbacks))
+  {
+    if (display_osd_messages && settings.gpu_renderer != GPURenderer::Software)
+    {
+      Host::AddKeyedOSDMessage(
+        "gamedb_force_software_rb",
+        TRANSLATE_STR("OSDMessage", "Using software renderer for readbacks based on game settings."), osd_duration);
+    }
+
+    settings.gpu_use_software_renderer_for_readbacks = true;
   }
 
   if (HasTrait(Trait::ForceInterlacing))
@@ -266,8 +268,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_disable_interlacing)
     {
       Host::AddKeyedOSDMessage("gamedb_force_interlacing",
-                               Host::TranslateStdString("OSDMessage", "Interlacing forced by game settings."),
-                               osd_duration);
+                               TRANSLATE_STR("OSDMessage", "Interlacing forced by game settings."), osd_duration);
     }
 
     settings.gpu_disable_interlacing = false;
@@ -278,8 +279,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_true_color)
     {
       Host::AddKeyedOSDMessage("gamedb_disable_true_color",
-                               Host::TranslateStdString("OSDMessage", "True color disabled by game settings."),
-                               osd_duration);
+                               TRANSLATE_STR("OSDMessage", "True color disabled by game settings."), osd_duration);
     }
 
     settings.gpu_true_color = false;
@@ -290,8 +290,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_resolution_scale > 1)
     {
       Host::AddKeyedOSDMessage("gamedb_disable_upscaling",
-                               Host::TranslateStdString("OSDMessage", "Upscaling disabled by game settings."),
-                               osd_duration);
+                               TRANSLATE_STR("OSDMessage", "Upscaling disabled by game settings."), osd_duration);
     }
 
     settings.gpu_resolution_scale = 1;
@@ -302,7 +301,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_scaled_dithering)
     {
       Host::AddKeyedOSDMessage("gamedb_disable_scaled_dithering",
-                               Host::TranslateStdString("OSDMessage", "Scaled dithering disabled by game settings."),
+                               TRANSLATE_STR("OSDMessage", "Scaled dithering disabled by game settings."),
                                osd_duration);
     }
 
@@ -315,8 +314,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
         (settings.display_aspect_ratio == DisplayAspectRatio::R16_9 || settings.gpu_widescreen_hack))
     {
       Host::AddKeyedOSDMessage("gamedb_disable_widescreen",
-                               Host::TranslateStdString("OSDMessage", "Widescreen disabled by game settings."),
-                               osd_duration);
+                               TRANSLATE_STR("OSDMessage", "Widescreen disabled by game settings."), osd_duration);
     }
 
     settings.display_aspect_ratio = DisplayAspectRatio::R4_3;
@@ -327,9 +325,9 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   {
     if (display_osd_messages && settings.gpu_force_ntsc_timings)
     {
-      Host::AddKeyedOSDMessage(
-        "gamedb_disable_force_ntsc_timings",
-        Host::TranslateStdString("OSDMessage", "Forcing NTSC Timings disallowed by game settings."), osd_duration);
+      Host::AddKeyedOSDMessage("gamedb_disable_force_ntsc_timings",
+                               TRANSLATE_STR("OSDMessage", "Forcing NTSC Timings disallowed by game settings."),
+                               osd_duration);
     }
 
     settings.gpu_force_ntsc_timings = false;
@@ -339,9 +337,9 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   {
     if (display_osd_messages && settings.gpu_pgxp_enable)
     {
-      Host::AddKeyedOSDMessage(
-        "gamedb_disable_pgxp",
-        Host::TranslateStdString("OSDMessage", "PGXP geometry correction disabled by game settings."), osd_duration);
+      Host::AddKeyedOSDMessage("gamedb_disable_pgxp",
+                               TRANSLATE_STR("OSDMessage", "PGXP geometry correction disabled by game settings."),
+                               osd_duration);
     }
 
     settings.gpu_pgxp_enable = false;
@@ -352,8 +350,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_culling)
     {
       Host::AddKeyedOSDMessage("gamedb_disable_pgxp_culling",
-                               Host::TranslateStdString("OSDMessage", "PGXP culling disabled by game settings."),
-                               osd_duration);
+                               TRANSLATE_STR("OSDMessage", "PGXP culling disabled by game settings."), osd_duration);
     }
 
     settings.gpu_pgxp_culling = false;
@@ -365,8 +362,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     {
       Host::AddKeyedOSDMessage(
         "gamedb_disable_pgxp_texture",
-        Host::TranslateStdString("OSDMessage", "PGXP perspective corrected textures disabled by game settings."),
-        osd_duration);
+        TRANSLATE_STR("OSDMessage", "PGXP perspective corrected textures disabled by game settings."), osd_duration);
     }
 
     settings.gpu_pgxp_texture_correction = false;
@@ -379,8 +375,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     {
       Host::AddKeyedOSDMessage(
         "gamedb_disable_pgxp_texture",
-        Host::TranslateStdString("OSDMessage", "PGXP perspective corrected colors disabled by game settings."),
-        osd_duration);
+        TRANSLATE_STR("OSDMessage", "PGXP perspective corrected colors disabled by game settings."), osd_duration);
     }
 
     settings.gpu_pgxp_color_correction = false;
@@ -391,8 +386,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_pgxp_enable && !settings.gpu_pgxp_vertex_cache)
     {
       Host::AddKeyedOSDMessage("gamedb_force_pgxp_vertex_cache",
-                               Host::TranslateStdString("OSDMessage", "PGXP vertex cache forced by game settings."),
-                               osd_duration);
+                               TRANSLATE_STR("OSDMessage", "PGXP vertex cache forced by game settings."), osd_duration);
     }
 
     settings.gpu_pgxp_vertex_cache = true;
@@ -403,8 +397,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_pgxp_enable && !settings.gpu_pgxp_cpu)
     {
       Host::AddKeyedOSDMessage("gamedb_force_pgxp_cpu",
-                               Host::TranslateStdString("OSDMessage", "PGXP CPU mode forced by game settings."),
-                               osd_duration);
+                               TRANSLATE_STR("OSDMessage", "PGXP CPU mode forced by game settings."), osd_duration);
     }
 
     settings.gpu_pgxp_cpu = true;
@@ -415,7 +408,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_pgxp_enable && settings.gpu_pgxp_depth_buffer)
     {
       Host::AddKeyedOSDMessage("gamedb_disable_pgxp_depth",
-                               Host::TranslateStdString("OSDMessage", "PGXP Depth Buffer disabled by game settings."),
+                               TRANSLATE_STR("OSDMessage", "PGXP Depth Buffer disabled by game settings."),
                                osd_duration);
     }
 
@@ -440,9 +433,9 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     settings.cpu_fastmem_mode = CPUFastmemMode::LUT;
   }
 
-#define BIT_FOR(ctype) (static_cast<u32>(1) << static_cast<u32>(ctype))
+#define BIT_FOR(ctype) (static_cast<u16>(1) << static_cast<u32>(ctype))
 
-  if (supported_controllers != 0 && supported_controllers != static_cast<u32>(-1))
+  if (supported_controllers != 0 && supported_controllers != static_cast<u16>(-1))
   {
     for (u32 i = 0; i < NUM_CONTROLLER_AND_CARD_PORTS; i++)
     {
@@ -473,29 +466,20 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
           if (!supported_controller_string.IsEmpty())
             supported_controller_string.AppendString(", ");
 
-          supported_controller_string.AppendString(
-            Host::TranslateString("ControllerType", Settings::GetControllerTypeDisplayName(supported_ctype)));
+          supported_controller_string.AppendString(Settings::GetControllerTypeDisplayName(supported_ctype));
         }
 
         Host::AddKeyedFormattedOSDMessage(
           "gamedb_controller_unsupported", 30.0f,
-          Host::TranslateString("OSDMessage",
-                                "Controller in port %u (%s) is not supported for %s.\nSupported controllers: "
-                                "%s\nPlease configure a supported controller from the list above."),
-          i + 1u, Host::TranslateString("ControllerType", Settings::GetControllerTypeDisplayName(ctype)).GetCharArray(),
-          System::GetRunningTitle().c_str(), supported_controller_string.GetCharArray());
+          TRANSLATE("OSDMessage", "Controller in port %u (%s) is not supported for %s.\nSupported controllers: "
+                                  "%s\nPlease configure a supported controller from the list above."),
+          i + 1u, Settings::GetControllerTypeDisplayName(ctype), System::GetGameTitle().c_str(),
+          supported_controller_string.GetCharArray());
       }
     }
   }
 
 #undef BIT_FOR
-}
-
-static void GetTimestamps(u64* gamedb_ts, u64* gamesettings_ts, u64* compat_ts)
-{
-  *gamedb_ts = Host::GetResourceFileTimestamp("database/gamedb.json").value_or(0);
-  *gamesettings_ts = Host::GetResourceFileTimestamp("database/gamesettings.ini").value_or(0);
-  *compat_ts = Host::GetResourceFileTimestamp("database/compatibility.xml").value_or(0);
 }
 
 template<typename T>
@@ -544,21 +528,19 @@ bool GameDatabase::LoadFromCache()
     return false;
   }
 
-  u64 gamedb_ts, gamesettings_ts, compat_ts;
-  GetTimestamps(&gamedb_ts, &gamesettings_ts, &compat_ts);
+  const u64 gamedb_ts = Host::GetResourceFileTimestamp("gamedb.json").value_or(0);
 
   u32 signature, version, num_entries, num_codes;
-  u64 file_gamedb_ts, file_gamesettings_ts, file_compat_ts;
+  u64 file_gamedb_ts;
   if (!stream->ReadU32(&signature) || !stream->ReadU32(&version) || !stream->ReadU64(&file_gamedb_ts) ||
-      !stream->ReadU64(&file_gamesettings_ts) || !stream->ReadU64(&file_compat_ts) || !stream->ReadU32(&num_entries) ||
-      !stream->ReadU32(&num_codes) || signature != GAME_DATABASE_CACHE_SIGNATURE ||
+      !stream->ReadU32(&num_entries) || !stream->ReadU32(&num_codes) || signature != GAME_DATABASE_CACHE_SIGNATURE ||
       version != GAME_DATABASE_CACHE_VERSION)
   {
     Log_DevPrintf("Cache header is corrupted or version mismatch.");
     return false;
   }
 
-  if (gamedb_ts != file_gamedb_ts || gamesettings_ts != file_gamesettings_ts || compat_ts != file_compat_ts)
+  if (gamedb_ts != file_gamedb_ts)
   {
     Log_DevPrintf("Cache is out of date, recreating.");
     return false;
@@ -573,13 +555,14 @@ bool GameDatabase::LoadFromCache()
     constexpr u32 num_bytes = (static_cast<u32>(Trait::Count) + 7) / 8;
     std::array<u8, num_bytes> bits;
     u8 compatibility;
+    u32 num_disc_set_serials;
 
     if (!stream->ReadSizePrefixedString(&entry.serial) || !stream->ReadSizePrefixedString(&entry.title) ||
         !stream->ReadSizePrefixedString(&entry.genre) || !stream->ReadSizePrefixedString(&entry.developer) ||
         !stream->ReadSizePrefixedString(&entry.publisher) || !stream->ReadU64(&entry.release_date) ||
         !stream->ReadU8(&entry.min_players) || !stream->ReadU8(&entry.max_players) ||
         !stream->ReadU8(&entry.min_blocks) || !stream->ReadU8(&entry.max_blocks) ||
-        !stream->ReadU32(&entry.supported_controllers) || !stream->ReadU8(&compatibility) ||
+        !stream->ReadU16(&entry.supported_controllers) || !stream->ReadU8(&compatibility) ||
         compatibility >= static_cast<u8>(GameDatabase::CompatibilityRating::Count) ||
         !stream->Read2(bits.data(), num_bytes) ||
         !ReadOptionalFromStream(stream.get(), &entry.display_active_start_offset) ||
@@ -591,10 +574,24 @@ bool GameDatabase::LoadFromCache()
         !ReadOptionalFromStream(stream.get(), &entry.gpu_fifo_size) ||
         !ReadOptionalFromStream(stream.get(), &entry.gpu_max_run_ahead) ||
         !ReadOptionalFromStream(stream.get(), &entry.gpu_pgxp_tolerance) ||
-        !ReadOptionalFromStream(stream.get(), &entry.gpu_pgxp_depth_threshold))
+        !ReadOptionalFromStream(stream.get(), &entry.gpu_pgxp_depth_threshold) ||
+        !stream->ReadSizePrefixedString(&entry.disc_set_name) || !stream->ReadU32(&num_disc_set_serials))
     {
       Log_DevPrintf("Cache entry is corrupted.");
       return false;
+    }
+
+    if (num_disc_set_serials > 0)
+    {
+      entry.disc_set_serials.reserve(num_disc_set_serials);
+      for (u32 j = 0; j < num_disc_set_serials; j++)
+      {
+        if (!stream->ReadSizePrefixedString(&entry.disc_set_serials.emplace_back()))
+        {
+          Log_DevPrintf("Cache entry is corrupted.");
+          return false;
+        }
+      }
     }
 
     entry.compatibility = static_cast<GameDatabase::CompatibilityRating>(compatibility);
@@ -625,8 +622,7 @@ bool GameDatabase::LoadFromCache()
 
 bool GameDatabase::SaveToCache()
 {
-  u64 gamedb_ts, gamesettings_ts, compat_ts;
-  GetTimestamps(&gamedb_ts, &gamesettings_ts, &compat_ts);
+  const u64 gamedb_ts = Host::GetResourceFileTimestamp("gamedb.json").value_or(0);
 
   std::unique_ptr<ByteStream> stream(
     ByteStream::OpenFile(GetCacheFile().c_str(), BYTESTREAM_OPEN_CREATE | BYTESTREAM_OPEN_WRITE |
@@ -637,8 +633,6 @@ bool GameDatabase::SaveToCache()
   bool result = stream->WriteU32(GAME_DATABASE_CACHE_SIGNATURE);
   result = result && stream->WriteU32(GAME_DATABASE_CACHE_VERSION);
   result = result && stream->WriteU64(static_cast<u64>(gamedb_ts));
-  result = result && stream->WriteU64(static_cast<u64>(gamesettings_ts));
-  result = result && stream->WriteU64(static_cast<u64>(compat_ts));
 
   result = result && stream->WriteU32(static_cast<u32>(s_entries.size()));
   result = result && stream->WriteU32(static_cast<u32>(s_code_lookup.size()));
@@ -655,7 +649,7 @@ bool GameDatabase::SaveToCache()
     result = result && stream->WriteU8(entry.max_players);
     result = result && stream->WriteU8(entry.min_blocks);
     result = result && stream->WriteU8(entry.max_blocks);
-    result = result && stream->WriteU32(entry.supported_controllers);
+    result = result && stream->WriteU16(entry.supported_controllers);
     result = result && stream->WriteU8(static_cast<u8>(entry.compatibility));
 
     constexpr u32 num_bytes = (static_cast<u32>(Trait::Count) + 7) / 8;
@@ -679,6 +673,11 @@ bool GameDatabase::SaveToCache()
     result = result && WriteOptionalToStream(stream.get(), entry.gpu_max_run_ahead);
     result = result && WriteOptionalToStream(stream.get(), entry.gpu_pgxp_tolerance);
     result = result && WriteOptionalToStream(stream.get(), entry.gpu_pgxp_depth_threshold);
+
+    result = result && stream->WriteSizePrefixedString(entry.disc_set_name);
+    result = result && stream->WriteU32(static_cast<u32>(entry.disc_set_serials.size()));
+    for (const std::string& serial : entry.disc_set_serials)
+      result = result && stream->WriteSizePrefixedString(serial);
   }
 
   for (const auto& it : s_code_lookup)
@@ -703,6 +702,18 @@ static bool GetStringFromObject(const rapidjson::Value& object, const char* key,
     return false;
 
   dest->assign(member->value.GetString(), member->value.GetStringLength());
+  return true;
+}
+
+static bool GetBoolFromObject(const rapidjson::Value& object, const char* key, bool* dest)
+{
+  *dest = false;
+
+  auto member = object.FindMember(key);
+  if (member == object.MemberEnd() || !member->value.IsBool())
+    return false;
+
+  *dest = member->value.GetBool();
   return true;
 }
 
@@ -736,9 +747,38 @@ static bool GetArrayOfStringsFromObject(const rapidjson::Value& object, const ch
   return true;
 }
 
+template<typename T>
+static std::optional<T> GetOptionalIntFromObject(const rapidjson::Value& object, const char* key)
+{
+  auto member = object.FindMember(key);
+  if (member == object.MemberEnd() || !member->value.IsInt())
+    return std::nullopt;
+
+  return static_cast<T>(member->value.GetInt());
+}
+
+template<typename T>
+static std::optional<T> GetOptionalUIntFromObject(const rapidjson::Value& object, const char* key)
+{
+  auto member = object.FindMember(key);
+  if (member == object.MemberEnd() || !member->value.IsUint())
+    return std::nullopt;
+
+  return static_cast<T>(member->value.GetUint());
+}
+
+static std::optional<float> GetOptionalFloatFromObject(const rapidjson::Value& object, const char* key)
+{
+  auto member = object.FindMember(key);
+  if (member == object.MemberEnd() || !member->value.IsFloat())
+    return std::nullopt;
+
+  return member->value.GetFloat();
+}
+
 bool GameDatabase::LoadGameDBJson()
 {
-  std::optional<std::string> gamedb_data(Host::ReadResourceFileToString("database/gamedb.json"));
+  std::optional<std::string> gamedb_data(Host::ReadResourceFileToString("gamedb.json"));
   if (!gamedb_data.has_value())
   {
     Log_ErrorPrintf("Failed to read game database");
@@ -826,8 +866,8 @@ bool GameDatabase::ParseJsonEntry(Entry* entry, const rapidjson::Value& value)
     }
   }
 
-  entry->supported_controllers = ~0u;
-  auto controllers = value.FindMember("controllers");
+  entry->supported_controllers = static_cast<u16>(~0u);
+  const auto controllers = value.FindMember("controllers");
   if (controllers != value.MemberEnd())
   {
     if (controllers->value.IsArray())
@@ -854,12 +894,86 @@ bool GameDatabase::ParseJsonEntry(Entry* entry, const rapidjson::Value& value)
           first = false;
         }
 
-        entry->supported_controllers |= (1u << static_cast<u32>(ctype.value()));
+        entry->supported_controllers |= (1u << static_cast<u16>(ctype.value()));
       }
     }
     else
     {
       Log_WarningPrintf("controllers is not an array");
+    }
+  }
+
+  const auto compatibility = value.FindMember("compatibility");
+  if (compatibility != value.MemberEnd())
+  {
+    if (compatibility->value.IsObject())
+    {
+      u32 rating;
+      if (GetUIntFromObject(compatibility->value, "rating", &rating) &&
+          rating < static_cast<u32>(CompatibilityRating::Count))
+      {
+        entry->compatibility = static_cast<CompatibilityRating>(rating);
+      }
+    }
+    else
+    {
+      Log_WarningPrintf("compatibility is not an object");
+    }
+  }
+
+  const auto traits = value.FindMember("traits");
+  if (traits != value.MemberEnd())
+  {
+    if (traits->value.IsObject())
+    {
+      const auto& traitsobj = traits->value;
+      for (u32 trait = 0; trait < static_cast<u32>(Trait::Count); trait++)
+      {
+        bool bvalue;
+        if (GetBoolFromObject(traitsobj, s_trait_names[trait], &bvalue) && bvalue)
+          entry->traits[trait] = bvalue;
+      }
+
+      entry->display_active_start_offset = GetOptionalIntFromObject<s16>(traitsobj, "DisplayActiveStartOffset");
+      entry->display_active_end_offset = GetOptionalIntFromObject<s16>(traitsobj, "DisplayActiveEndOffset");
+      entry->display_line_start_offset = GetOptionalIntFromObject<s8>(traitsobj, "DisplayLineStartOffset");
+      entry->display_line_end_offset = GetOptionalIntFromObject<s8>(traitsobj, "DisplayLineEndOffset");
+      entry->dma_max_slice_ticks = GetOptionalUIntFromObject<u32>(traitsobj, "DMAMaxSliceTicks");
+      entry->dma_halt_ticks = GetOptionalUIntFromObject<u32>(traitsobj, "DMAHaltTicks");
+      entry->gpu_fifo_size = GetOptionalUIntFromObject<u32>(traitsobj, "GPUFIFOSize");
+      entry->gpu_max_run_ahead = GetOptionalUIntFromObject<u32>(traitsobj, "GPUMaxRunAhead");
+      entry->gpu_pgxp_tolerance = GetOptionalFloatFromObject(traitsobj, "GPUPGXPTolerance");
+      entry->gpu_pgxp_depth_threshold = GetOptionalFloatFromObject(traitsobj, "GPUPGXPDepthThreshold");
+    }
+    else
+    {
+      Log_WarningPrintf("traits is not an object");
+    }
+  }
+
+  GetStringFromObject(value, "discSetName", &entry->disc_set_name);
+  const auto disc_set_serials = value.FindMember("discSetSerials");
+  if (disc_set_serials != value.MemberEnd())
+  {
+    if (disc_set_serials->value.IsArray())
+    {
+      const auto disc_set_serials_array = disc_set_serials->value.GetArray();
+      entry->disc_set_serials.reserve(disc_set_serials_array.Size());
+      for (const rapidjson::Value& serial : disc_set_serials_array)
+      {
+        if (serial.IsString())
+        {
+          entry->disc_set_serials.emplace_back(serial.GetString(), serial.GetStringLength());
+        }
+        else
+        {
+          Log_WarningPrintf("discSetSerial is not a string");
+        }
+      }
+    }
+    else
+    {
+      Log_WarningPrintf("discSetSerials is not an array");
     }
   }
 
@@ -891,7 +1005,7 @@ bool GameDatabase::ParseJsonCodes(u32 index, const rapidjson::Value& value)
     }
 
     const std::string_view code(current_code.GetString(), current_code.GetStringLength());
-    auto iter = UnorderedStringMapFind(s_code_lookup, code);
+    auto iter = s_code_lookup.find(code);
     if (iter != s_code_lookup.end())
     {
       Log_WarningPrintf("Duplicate code '%.*s'", static_cast<int>(code.size()), code.data());
@@ -905,151 +1019,6 @@ bool GameDatabase::ParseJsonCodes(u32 index, const rapidjson::Value& value)
   return (added > 0);
 }
 
-bool GameDatabase::LoadGameSettingsIni()
-{
-  std::optional<std::string> gamedb_data(Host::ReadResourceFileToString("database/gamesettings.ini"));
-  if (!gamedb_data.has_value())
-  {
-    Log_ErrorPrintf("Failed to read gamesettings database");
-    return false;
-  }
-
-  CSimpleIniA ini;
-  SI_Error err = ini.LoadData(gamedb_data->data(), gamedb_data->size());
-  if (err != SI_OK)
-  {
-    Log_ErrorPrintf("Failed to parse game settings ini: %d", static_cast<int>(err));
-    return false;
-  }
-
-  std::list<CSimpleIniA::Entry> sections;
-  ini.GetAllSections(sections);
-  for (const CSimpleIniA::Entry& section_entry : sections)
-    ParseGameSettingsIniEntry(ini, section_entry.pItem);
-
-  Log_InfoPrintf("Loaded %zu gamesettings entries", sections.size());
-  return true;
-}
-
-bool GameDatabase::ParseGameSettingsIniEntry(const CSimpleIniA& ini, const char* section)
-{
-  Entry* entry = GetMutableEntry(section);
-  if (!entry)
-  {
-    Log_ErrorPrintf("Unknown game serial '%s' in gamesettings", section);
-    return false;
-  }
-
-  for (u32 trait = 0; trait < static_cast<u32>(Trait::Count); trait++)
-  {
-    if (ini.GetBoolValue(section, s_trait_names[trait].first, false))
-      entry->traits[trait] = true;
-  }
-
-  long lvalue = ini.GetLongValue(section, "DisplayActiveStartOffset", 0);
-  if (lvalue != 0)
-    entry->display_active_start_offset = static_cast<s16>(lvalue);
-  lvalue = ini.GetLongValue(section, "DisplayActiveEndOffset", 0);
-  if (lvalue != 0)
-    entry->display_active_end_offset = static_cast<s16>(lvalue);
-  lvalue = ini.GetLongValue(section, "DisplayLineStartOffset", 0);
-  if (lvalue != 0)
-    entry->display_line_start_offset = static_cast<s8>(lvalue);
-  lvalue = ini.GetLongValue(section, "DisplayLineEndOffset", 0);
-  if (lvalue != 0)
-    entry->display_line_end_offset = static_cast<s8>(lvalue);
-  lvalue = ini.GetLongValue(section, "DMAMaxSliceTicks", 0);
-  if (lvalue > 0)
-    entry->dma_max_slice_ticks = static_cast<u32>(lvalue);
-  lvalue = ini.GetLongValue(section, "DMAHaltTicks", 0);
-  if (lvalue > 0)
-    entry->dma_halt_ticks = static_cast<u32>(lvalue);
-  lvalue = ini.GetLongValue(section, "GPUFIFOSize", 0);
-  if (lvalue > 0)
-    entry->gpu_fifo_size = static_cast<u32>(lvalue);
-  lvalue = ini.GetLongValue(section, "GPUMaxRunAhead", 0);
-  if (lvalue > 0)
-    entry->gpu_max_run_ahead = static_cast<u32>(lvalue);
-  float fvalue = static_cast<float>(ini.GetDoubleValue(section, "GPUPGXPTolerance", -1.0f));
-  if (fvalue >= 0.0f)
-    entry->gpu_pgxp_tolerance = fvalue;
-  fvalue = static_cast<float>(ini.GetDoubleValue(section, "GPUPGXPDepthThreshold", -1.0f));
-  if (fvalue > 0.0f)
-    entry->gpu_pgxp_depth_threshold = fvalue;
-
-  return true;
-}
-
-class CompatibilityListVisitor final : public tinyxml2::XMLVisitor
-{
-public:
-  ALWAYS_INLINE u32 GetCount() const { return m_count; }
-
-  bool VisitEnter(const tinyxml2::XMLElement& element, const tinyxml2::XMLAttribute* firstAttribute) override
-  {
-    // recurse into gamelist
-    if (StringUtil::Strcasecmp(element.Name(), "compatibility-list") == 0)
-      return true;
-
-    if (StringUtil::Strcasecmp(element.Name(), "entry") != 0)
-      return false;
-
-    const char* attr = element.Attribute("code");
-    std::string code(attr ? attr : "");
-    const u32 compatibility = static_cast<u32>(element.IntAttribute("compatibility"));
-
-    if (code.empty() || compatibility >= static_cast<u32>(GameDatabase::CompatibilityRating::Count))
-    {
-      Log_ErrorPrintf("Missing child node at line %d", element.GetLineNum());
-      return false;
-    }
-
-    GameDatabase::Entry* entry = GameDatabase::GetMutableEntry(code);
-    if (!entry)
-    {
-      Log_ErrorPrintf("Unknown serial in compatibility list: '%s'", code.c_str());
-      return false;
-    }
-
-    entry->compatibility = static_cast<GameDatabase::CompatibilityRating>(compatibility);
-    m_count++;
-    return false;
-  }
-
-private:
-  u32 m_count = 0;
-};
-
-bool GameDatabase::LoadGameCompatibilityXml()
-{
-  std::optional<std::string> xml(Host::ReadResourceFileToString("database/compatibility.xml"));
-  if (!xml.has_value())
-  {
-    Log_ErrorPrintf("Failed to load compatibility.xml from package");
-    return false;
-  }
-
-  tinyxml2::XMLDocument doc;
-  tinyxml2::XMLError error = doc.Parse(xml->c_str(), xml->size());
-  if (error != tinyxml2::XML_SUCCESS)
-  {
-    Log_ErrorPrintf("Failed to parse compatibility list: %s", tinyxml2::XMLDocument::ErrorIDToName(error));
-    return false;
-  }
-
-  const tinyxml2::XMLElement* datafile_elem = doc.FirstChildElement("compatibility-list");
-  if (!datafile_elem)
-  {
-    Log_ErrorPrintf("Failed to get compatibility-list element");
-    return false;
-  }
-
-  CompatibilityListVisitor visitor;
-  datafile_elem->Accept(&visitor);
-  Log_InfoPrintf("Loaded %u entries from compatibility list", visitor.GetCount());
-  return true;
-}
-
 void GameDatabase::EnsureTrackHashesMapLoaded()
 {
   if (s_track_hashes_loaded)
@@ -1061,7 +1030,7 @@ void GameDatabase::EnsureTrackHashesMapLoaded()
 
 bool GameDatabase::LoadTrackHashes()
 {
-  std::optional<std::string> gamedb_data(Host::ReadResourceFileToString("database/gamedb.json"));
+  std::optional<std::string> gamedb_data(Host::ReadResourceFileToString("gamedb.json"));
   if (!gamedb_data.has_value())
   {
     Log_ErrorPrintf("Failed to read game database");

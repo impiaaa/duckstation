@@ -27,6 +27,8 @@ set(SRCS
   cheatmanagerdialog.ui
   collapsiblewidget.cpp
   collapsiblewidget.h
+  colorpickerbutton.cpp
+  colorpickerbutton.h
   consolesettingswidget.cpp
   consolesettingswidget.h
   consolesettingswidget.ui
@@ -42,6 +44,7 @@ set(SRCS
   controllerglobalsettingswidget.cpp
   controllerglobalsettingswidget.h
   controllerglobalsettingswidget.ui
+  controllerledsettingsdialog.ui
   controllermacroeditwidget.ui
   controllermacrowidget.ui
   controllersettingsdialog.cpp
@@ -110,14 +113,9 @@ set(SRCS
   memorycardsettingswidget.h
   memoryviewwidget.cpp
   memoryviewwidget.h
-  postprocessingchainconfigwidget.cpp
-  postprocessingchainconfigwidget.h
-  postprocessingchainconfigwidget.ui
   postprocessingsettingswidget.cpp
   postprocessingsettingswidget.h
   postprocessingsettingswidget.ui
-  postprocessingshaderconfigwidget.cpp
-  postprocessingshaderconfigwidget.h
   qthost.cpp
   qthost.h
   qtkeycodes.cpp
@@ -131,6 +129,9 @@ set(SRCS
   settingsdialog.h
   settingsdialog.ui
   settingwidgetbinder.h
+  setupwizarddialog.cpp
+  setupwizarddialog.h
+  setupwizarddialog.ui
 )
 
 if(ENABLE_CHEEVOS)
@@ -153,6 +154,7 @@ set(TS_FILES
   translations/duckstation-qt_he.ts
   translations/duckstation-qt_it.ts
   translations/duckstation-qt_ja.ts
+  translations/duckstation-qt_ko.ts
   translations/duckstation-qt_nl.ts
   translations/duckstation-qt_pl.ts
   translations/duckstation-qt_pt-br.ts
@@ -166,10 +168,13 @@ set_source_files_properties(${TS_FILES} PROPERTIES OUTPUT_LOCATION "${CMAKE_RUNT
 qt6_add_translation(QM_FILES ${TS_FILES})
 
 add_executable(duckstation-qt ${SRCS} ${QM_FILES})
+target_precompile_headers(duckstation-qt PRIVATE "pch.h")
 target_include_directories(duckstation-qt PRIVATE "${Qt6Gui_PRIVATE_INCLUDE_DIRS}" "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(duckstation-qt PRIVATE frontend-common core common imgui glad minizip scmversion Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network)
+target_link_libraries(duckstation-qt PRIVATE core common imgui minizip scmversion Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network)
 
 if(WIN32)
+  target_sources(duckstation-qt PRIVATE duckstation-qt.rc)
+
   # We want a Windows subsystem application not console.
   set_target_properties(duckstation-qt PROPERTIES
     WIN32_EXECUTABLE TRUE
@@ -186,7 +191,6 @@ if(WIN32)
                                  $<IF:$<CONFIG:Debug>,--debug,--release>
                                  --no-translations
                                  --no-compiler-runtime
-                                 --no-angle
                                  "$<TARGET_FILE:duckstation-qt>"
   )
   add_custom_command(TARGET duckstation-qt POST_BUILD
@@ -194,7 +198,7 @@ if(WIN32)
   )
 endif()
 
-if(APPLE)
+if(APPLE AND NOT CMAKE_GENERATOR MATCHES "Xcode")
   set(BUNDLE_PATH ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/DuckStation.app)
 
   # Ask for an application bundle.
@@ -209,7 +213,7 @@ if(APPLE)
   get_filename_component(QT_BINARY_DIRECTORY "${MOC_EXECUTABLE_LOCATION}" DIRECTORY)
   find_program(MACDEPLOYQT_EXE macdeployqt HINTS "${QT_BINARY_DIRECTORY}")
   add_custom_target(duckstation-postprocess-bundle ALL
-    COMMAND "${MACDEPLOYQT_EXE}" "${BUNDLE_PATH}"
+    COMMAND "${MACDEPLOYQT_EXE}" "${BUNDLE_PATH}" -no-strip
   )
   add_dependencies(duckstation-postprocess-bundle duckstation-qt)
 

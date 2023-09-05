@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "bus.h"
 #include "common/bitfield.h"
@@ -27,6 +30,10 @@ union CodeBlockKey
   ALWAYS_INLINE void SetPC(u32 pc) { aligned_pc = pc >> 2; }
 
   ALWAYS_INLINE u32 GetPCPhysicalAddress() const { return (aligned_pc << 2) & PHYSICAL_MEMORY_ADDRESS_MASK; }
+
+  ALWAYS_INLINE CodeBlockKey() = default;
+
+  ALWAYS_INLINE CodeBlockKey(const CodeBlockKey& rhs) : bits(rhs.bits) {}
 
   ALWAYS_INLINE CodeBlockKey& operator=(const CodeBlockKey& rhs)
   {
@@ -118,14 +125,17 @@ using FastMapTable = CodeBlock::HostCodePointer*;
 
 void Initialize();
 void Shutdown();
-void Execute();
+[[noreturn]] void Execute();
 
 #ifdef WITH_RECOMPILER
 using DispatcherFunction = void (*)();
 using SingleBlockDispatcherFunction = void (*)(const CodeBlock::HostCodePointer);
 
 FastMapTable* GetFastMapPointer();
-void ExecuteRecompiler();
+#endif
+
+#if defined(WITH_RECOMPILER)
+JitCodeBuffer& GetCodeBuffer();
 #endif
 
 /// Flushes the code cache, forcing all blocks to be recompiled.

@@ -1,12 +1,18 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "achievementsettingswidget.h"
 #include "achievementlogindialog.h"
-#include "common/string_util.h"
-#include "core/system.h"
-#include "frontend-common/achievements.h"
 #include "mainwindow.h"
 #include "qtutils.h"
 #include "settingsdialog.h"
 #include "settingwidgetbinder.h"
+
+#include "core/achievements.h"
+#include "core/system.h"
+
+#include "common/string_util.h"
+
 #include <QtCore/QDateTime>
 #include <QtWidgets/QMessageBox>
 
@@ -97,7 +103,6 @@ void AchievementSettingsWidget::updateEnableState()
 {
   const bool enabled = m_dialog->getEffectiveBoolValue("Cheevos", "Enabled", false);
   const bool challenge = m_dialog->getEffectiveBoolValue("Cheevos", "ChallengeMode", false);
-  const bool notifications = m_dialog->getEffectiveBoolValue("Cheevos", "Notifications", true);
   m_ui.testMode->setEnabled(enabled);
   m_ui.useFirstDiscFromPlaylist->setEnabled(enabled);
   m_ui.richPresence->setEnabled(enabled);
@@ -105,7 +110,7 @@ void AchievementSettingsWidget::updateEnableState()
   m_ui.leaderboards->setEnabled(enabled && challenge);
   m_ui.unofficialTestMode->setEnabled(enabled);
   m_ui.notifications->setEnabled(enabled);
-  m_ui.soundEffects->setEnabled(enabled && notifications);
+  m_ui.soundEffects->setEnabled(enabled);
   m_ui.primedIndicators->setEnabled(enabled);
 }
 

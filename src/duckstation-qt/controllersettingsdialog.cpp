@@ -1,14 +1,20 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "controllersettingsdialog.h"
-#include "common/assert.h"
-#include "common/file_system.h"
 #include "controllerbindingwidgets.h"
 #include "controllerglobalsettingswidget.h"
-#include "core/controller.h"
-#include "core/host_settings.h"
-#include "frontend-common/input_manager.h"
 #include "hotkeysettingswidget.h"
 #include "qthost.h"
+
+#include "core/controller.h"
+#include "core/host.h"
+
 #include "util/ini_settings_interface.h"
+#include "util/input_manager.h"
+
+#include "common/assert.h"
+#include "common/file_system.h"
 
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QMessageBox>
@@ -234,7 +240,7 @@ void ControllerSettingsDialog::onVibrationMotorsEnumerated(const QList<InputBind
 
   for (const InputBindingKey key : motors)
   {
-    const std::string key_str(InputManager::ConvertInputBindingKeyToString(key));
+    const std::string key_str(InputManager::ConvertInputBindingKeyToString(InputBindingInfo::Type::Motor, key));
     if (!key_str.empty())
       m_vibration_motors.push_back(QString::fromStdString(key_str));
   }
@@ -278,6 +284,7 @@ void ControllerSettingsDialog::setBoolValue(const char* section, const char* key
   else
   {
     Host::SetBaseBoolSettingValue(section, key, value);
+    Host::CommitBaseSettingChanges();
     g_emu_thread->applySettings();
   }
 }
@@ -293,6 +300,7 @@ void ControllerSettingsDialog::setIntValue(const char* section, const char* key,
   else
   {
     Host::SetBaseIntSettingValue(section, key, value);
+    Host::CommitBaseSettingChanges();
     g_emu_thread->applySettings();
   }
 }
@@ -324,6 +332,7 @@ void ControllerSettingsDialog::clearSettingValue(const char* section, const char
   else
   {
     Host::DeleteBaseSettingValue(section, key);
+    Host::CommitBaseSettingChanges();
     g_emu_thread->applySettings();
   }
 }
@@ -386,7 +395,7 @@ void ControllerSettingsDialog::createWidgets()
 
     const Controller::ControllerInfo* ci =
       Controller::GetControllerInfo(m_port_bindings[global_slot]->getControllerType());
-    const QString display_name(ci ? QString::fromUtf8(ci->display_name) : QStringLiteral("Unknown"));
+    const QString display_name(ci ? qApp->translate("ControllerType", ci->display_name) : QStringLiteral("Unknown"));
 
     QListWidgetItem* item = new QListWidgetItem();
     item->setText(mtap_enabled[port] ?
@@ -427,7 +436,7 @@ void ControllerSettingsDialog::updateListDescription(u32 global_slot, Controller
       const bool mtap_enabled = getBoolValue("Pad", (port == 0) ? "MultitapPort1" : "MultitapPort2", false);
 
       const Controller::ControllerInfo* ci = Controller::GetControllerInfo(widget->getControllerType());
-      const QString display_name(ci ? QString::fromUtf8(ci->display_name) : QStringLiteral("Unknown"));
+      const QString display_name(ci ? qApp->translate("ControllerType", ci->display_name) : QStringLiteral("Unknown"));
 
       item->setText(mtap_enabled ?
                       (tr("Controller Port %1%2\n%3").arg(port + 1).arg(s_mtap_slot_names[slot]).arg(display_name)) :

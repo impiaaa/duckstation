@@ -1,17 +1,22 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "gdb_protocol.h"
 #include "bus.h"
 #include "cpu_core_private.h"
+#include "cpu_core.h"
+#include "system.h"
+
 #include "common/log.h"
 #include "common/string_util.h"
-#include "cpu_core.h"
-#include "frontend-common/common_host.h"
-#include "system.h"
+
 #include <functional>
 #include <iomanip>
 #include <map>
 #include <optional>
 #include <sstream>
 #include <string>
+
 Log_SetChannel(GDBProtocol);
 
 namespace GDBProtocol
@@ -104,7 +109,7 @@ static const std::array<u32*, 38> REGISTERS {
   &CPU::g_state.regs.hi,
   &CPU::g_state.cop0_regs.BadVaddr,
   &CPU::g_state.cop0_regs.cause.bits,
-  &CPU::g_state.regs.pc,
+  &CPU::g_state.pc,
 };
 
 /// Number of registers in GDB remote protocol for MIPS III.

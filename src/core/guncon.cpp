@@ -1,18 +1,29 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "guncon.h"
-#include "common/assert.h"
-#include "common/log.h"
 #include "gpu.h"
 #include "host.h"
-#include "host_display.h"
-#include "resources.h"
 #include "system.h"
+
+#include "util/input_manager.h"
 #include "util/state_wrapper.h"
+
+#include "common/assert.h"
+#include "common/path.h"
+
 #include <array>
+
+#ifdef _DEBUG
+#include "common/log.h"
 Log_SetChannel(GunCon);
+#endif
 
 static constexpr std::array<u8, static_cast<size_t>(GunCon::Button::Count)> s_button_indices = {{13, 3, 14}};
 
-GunCon::GunCon(u32 index) : Controller(index) {}
+GunCon::GunCon(u32 index) : Controller(index)
+{
+}
 
 GunCon::~GunCon() = default;
 
@@ -164,18 +175,16 @@ bool GunCon::Transfer(const u8 data_in, u8* data_out)
     }
 
     default:
-    {
       UnreachableCode();
-      return false;
-    }
   }
 }
 
 void GunCon::UpdatePosition()
 {
   // get screen coordinates
-  const s32 mouse_x = g_host_display->GetMousePositionX();
-  const s32 mouse_y = g_host_display->GetMousePositionY();
+  const auto& [fmouse_x, fmouse_y] = InputManager::GetPointerAbsolutePosition(0);
+  const s32 mouse_x = static_cast<s32>(fmouse_x);
+  const s32 mouse_y = static_cast<s32>(fmouse_y);
 
   // are we within the active display area?
   u32 tick, line;
@@ -205,30 +214,33 @@ std::unique_ptr<GunCon> GunCon::Create(u32 index)
 static const Controller::ControllerBindingInfo s_binding_info[] = {
 #define BUTTON(name, display_name, button, genb)                                                                       \
   {                                                                                                                    \
-    name, display_name, static_cast<u32>(button), Controller::ControllerBindingType::Button, genb                      \
+    name, display_name, static_cast<u32>(button), InputBindingInfo::Type::Button, genb                                 \
   }
 
-  BUTTON("Trigger", "Trigger", GunCon::Button::Trigger, GenericInputBinding::R2),
-  BUTTON("ShootOffscreen", "ShootOffscreen", GunCon::Button::ShootOffscreen, GenericInputBinding::L2),
-  BUTTON("A", "A", GunCon::Button::A, GenericInputBinding::Cross),
-  BUTTON("B", "B", GunCon::Button::B, GenericInputBinding::Circle),
+  // clang-format off
+  BUTTON("Trigger", TRANSLATE_NOOP("GunCon", "Trigger"), GunCon::Button::Trigger, GenericInputBinding::R2),
+  BUTTON("ShootOffscreen", TRANSLATE_NOOP("GunCon", "Shoot Offscreen"), GunCon::Button::ShootOffscreen, GenericInputBinding::L2),
+  BUTTON("A", TRANSLATE_NOOP("GunCon", "A"), GunCon::Button::A, GenericInputBinding::Cross),
+  BUTTON("B", TRANSLATE_NOOP("GunCon", "B"), GunCon::Button::B, GenericInputBinding::Circle),
+// clang-format on
 
 #undef BUTTON
 };
 
 static const SettingInfo s_settings[] = {
-  {SettingInfo::Type::Path, "CrosshairImagePath", TRANSLATABLE("GunCon", "Crosshair Image Path"),
-   TRANSLATABLE("GunCon", "Path to an image to use as a crosshair/cursor.")},
-  {SettingInfo::Type::Float, "CrosshairScale", TRANSLATABLE("GunCon", "Crosshair Image Scale"),
-   TRANSLATABLE("GunCon", "Scale of crosshair image on screen."), "1.0", "0.0001", "100.0", "0.10", "%.0f%%", nullptr,
+  {SettingInfo::Type::Path, "CrosshairImagePath", TRANSLATE_NOOP("GunCon", "Crosshair Image Path"),
+   TRANSLATE_NOOP("GunCon", "Path to an image to use as a crosshair/cursor."), nullptr, nullptr, nullptr, nullptr,
+   nullptr, nullptr, 0.0f},
+  {SettingInfo::Type::Float, "CrosshairScale", TRANSLATE_NOOP("GunCon", "Crosshair Image Scale"),
+   TRANSLATE_NOOP("GunCon", "Scale of crosshair image on screen."), "1.0", "0.0001", "100.0", "0.10", "%.0f%%", nullptr,
    100.0f},
-  {SettingInfo::Type::Float, "XScale", TRANSLATABLE("GunCon", "X Scale"),
-   TRANSLATABLE("GunCon", "Scales X coordinates relative to the center of the screen."), "1.0", "0.01", "2.0", "0.01",
+  {SettingInfo::Type::Float, "XScale", TRANSLATE_NOOP("GunCon", "X Scale"),
+   TRANSLATE_NOOP("GunCon", "Scales X coordinates relative to the center of the screen."), "1.0", "0.01", "2.0", "0.01",
    "%.0f%%", nullptr, 100.0f}};
 
 const Controller::ControllerInfo GunCon::INFO = {ControllerType::GunCon,
                                                  "GunCon",
-                                                 TRANSLATABLE("ControllerType", "GunCon"),
+                                                 TRANSLATE_NOOP("ControllerType", "GunCon"),
                                                  s_binding_info,
                                                  countof(s_binding_info),
                                                  s_settings,
@@ -239,22 +251,10 @@ void GunCon::LoadSettings(SettingsInterface& si, const char* section)
 {
   Controller::LoadSettings(si, section);
 
-  std::string path = si.GetStringValue(section, "CrosshairImagePath");
-  if (path != m_crosshair_image_path)
-  {
-    m_crosshair_image_path = std::move(path);
-    if (m_crosshair_image_path.empty() || !m_crosshair_image.LoadFromFile(m_crosshair_image_path.c_str()))
-    {
-      m_crosshair_image.Invalidate();
-    }
-  }
-
+  m_crosshair_image_path = si.GetStringValue(section, "CrosshairImagePath");
 #ifndef __ANDROID__
-  if (!m_crosshair_image.IsValid())
-  {
-    m_crosshair_image.SetPixels(Resources::CROSSHAIR_IMAGE_WIDTH, Resources::CROSSHAIR_IMAGE_HEIGHT,
-                                Resources::CROSSHAIR_IMAGE_DATA.data());
-  }
+  if (m_crosshair_image_path.empty())
+    m_crosshair_image_path = Path::Combine(EmuFolders::Resources, "images/crosshair.png");
 #endif
 
   m_crosshair_image_scale = si.GetFloatValue(section, "CrosshairScale", 1.0f);
@@ -262,12 +262,12 @@ void GunCon::LoadSettings(SettingsInterface& si, const char* section)
   m_x_scale = si.GetFloatValue(section, "XScale", 1.0f);
 }
 
-bool GunCon::GetSoftwareCursor(const Common::RGBA8Image** image, float* image_scale, bool* relative_mode)
+bool GunCon::GetSoftwareCursor(std::string* image_path, float* image_scale, bool* relative_mode)
 {
-  if (!m_crosshair_image.IsValid())
+  if (m_crosshair_image_path.empty())
     return false;
 
-  *image = &m_crosshair_image;
+  *image_path = m_crosshair_image_path;
   *image_scale = m_crosshair_image_scale;
   *relative_mode = false;
   return true;

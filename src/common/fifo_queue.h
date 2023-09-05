@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "assert.h"
 #include "types.h"
@@ -51,7 +54,7 @@ public:
     return ref;
   }
 
-  template<class Y = T, std::enable_if_t<std::is_pod_v<Y>, int> = 0>
+  template<class Y = T, std::enable_if_t<std::is_standard_layout_v<Y> && std::is_trivial_v<Y>, int> = 0>
   T& Push(const T& value)
   {
     T& ref = PushAndGetReference();
@@ -59,7 +62,7 @@ public:
     return ref;
   }
 
-  template<class Y = T, std::enable_if_t<!std::is_pod_v<Y>, int> = 0>
+  template<class Y = T, std::enable_if_t<!std::is_standard_layout_v<Y> || !std::is_trivial_v<Y>, int> = 0>
   T& Push(const T& value)
   {
     T& ref = PushAndGetReference();
@@ -68,7 +71,7 @@ public:
   }
 
   // faster version of push_back_range for POD types which can be memcpy()ed
-  template<class Y = T, std::enable_if_t<std::is_pod_v<Y>, int> = 0>
+  template<class Y = T, std::enable_if_t<std::is_standard_layout_v<Y>&& std::is_trivial_v<Y>, int> = 0>
   void PushRange(const T* data, u32 size)
   {
     DebugAssert((m_size + size) <= CAPACITY);
@@ -88,7 +91,7 @@ public:
     m_size += size;
   }
 
-  template<class Y = T, std::enable_if_t<!std::is_pod_v<Y>, int> = 0>
+  template<class Y = T, std::enable_if_t<!std::is_standard_layout_v<Y> || !std::is_trivial_v<Y>, int> = 0>
   void PushRange(const T* data, u32 size)
   {
     DebugAssert((m_size + size) <= CAPACITY);

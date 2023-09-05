@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "page_fault_handler.h"
 #include "common/log.h"
 #include "common/platform.h"
@@ -78,6 +81,14 @@ static bool IsStoreInstruction(const void* ptr)
       return false;
   }
 }
+#elif defined(CPU_RISCV64)
+static bool IsStoreInstruction(const void* ptr)
+{
+  u32 bits;
+  std::memcpy(&bits, ptr, sizeof(bits));
+
+  return ((bits & 0x7Fu) == 0b0100011u);
+}
 #endif
 
 #if defined(_WIN32) && (defined(CPU_X64) || defined(CPU_AARCH64))
@@ -139,6 +150,9 @@ static void SIGSEGVHandler(int sig, siginfo_t* info, void* ctx)
   const bool is_write = IsStoreInstruction(exception_pc);
 #elif defined(CPU_AARCH64)
   void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.pc);
+  const bool is_write = IsStoreInstruction(exception_pc);
+#elif defined(CPU_RISCV64)
+  void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.__gregs[REG_PC]);
   const bool is_write = IsStoreInstruction(exception_pc);
 #else
   void* const exception_pc = nullptr;

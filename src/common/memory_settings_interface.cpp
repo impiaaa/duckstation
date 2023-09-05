@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "memory_settings_interface.h"
 #include "common/assert.h"
 #include "common/string_util.h"
@@ -148,6 +151,27 @@ void MemorySettingsInterface::SetBoolValue(const char* section, const char* key,
 void MemorySettingsInterface::SetStringValue(const char* section, const char* key, const char* value)
 {
   SetValue(section, key, value);
+}
+
+std::vector<std::pair<std::string, std::string>> MemorySettingsInterface::GetKeyValueList(const char* section) const
+{
+  std::vector<std::pair<std::string, std::string>> output;
+  auto sit = m_sections.find(section);
+  if (sit != m_sections.end())
+  {
+    for (const auto& it : sit->second)
+      output.emplace_back(it.first, it.second);
+  }
+  return output;
+}
+
+void MemorySettingsInterface::SetKeyValueList(const char* section,
+                                              const std::vector<std::pair<std::string, std::string>>& items)
+{
+  auto sit = m_sections.find(section);
+  sit->second.clear();
+  for (const auto& [key, value] : items)
+    sit->second.emplace(key, value);
 }
 
 void MemorySettingsInterface::SetValue(const char* section, const char* key, std::string value)

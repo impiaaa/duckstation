@@ -15,8 +15,8 @@ SOURCEDIR="$1"
 echo "Build x64..."
 mkdir build-x64
 cd build-x64
-export MACOSX_DEPLOYMENT_TARGET=10.14
-cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_NOGUI_FRONTEND=OFF -DBUILD_QT_FRONTEND=ON -DUSE_SDL2=ON -DCMAKE_PREFIX_PATH="$DEPS" -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -G Ninja "../$SOURCEDIR"
+export MACOSX_DEPLOYMENT_TARGET=11.0
+cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_NOGUI_FRONTEND=OFF -DBUILD_QT_FRONTEND=ON -DUSE_SDL2=ON -DENABLE_OPENGL=OFF -DCMAKE_PREFIX_PATH="$DEPS" -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -G Ninja "../$SOURCEDIR"
 cmake --build . --parallel
 cd ..
 
@@ -24,7 +24,7 @@ echo "Build arm64..."
 mkdir build-arm64
 cd build-arm64
 export MACOSX_DEPLOYMENT_TARGET=11.00
-cmake -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_BUILD_TYPE=Release -DBUILD_NOGUI_FRONTEND=OFF -DBUILD_QT_FRONTEND=ON -DUSE_SDL2=ON -DENABLE_OPENGL=ON -DCMAKE_PREFIX_PATH="$DEPS" -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -G Ninja "../$SOURCEDIR"
+cmake -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_BUILD_TYPE=Release -DBUILD_NOGUI_FRONTEND=OFF -DBUILD_QT_FRONTEND=ON -DUSE_SDL2=ON -DENABLE_OPENGL=OFF -DCMAKE_PREFIX_PATH="$DEPS" -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -G Ninja "../$SOURCEDIR"
 cmake --build . --parallel
 cd ..
 
@@ -32,6 +32,11 @@ echo "Combine binary..."
 unset MACOSX_DEPLOYMENT_TARGET
 BINPATH=bin/DuckStation.app/Contents/MacOS/DuckStation
 lipo -create "build-x64/$BINPATH" "build-arm64/$BINPATH" -o "build-x64/$BINPATH"
+
+# For some reason, the svg image format plugin doesn't get included in combined builds...
+if [ -f $HOME/deps/plugins/imageformats/libqsvg.dylib ]; then
+  cp -v -n $HOME/deps/plugins/imageformats/libqsvg.dylib build-x64/bin/DuckStation.app/Contents/PlugIns/imageformats
+fi
 
 echo "Grab app..."
 mv build-x64/bin/DuckStation.app .

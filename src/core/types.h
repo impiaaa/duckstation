@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "common/types.h"
 
@@ -34,6 +37,7 @@ enum class DiscRegion : u8
   NTSC_U, // SCEA
   PAL,    // SCEE
   Other,
+  NonPS1,
   Count
 };
 
@@ -57,6 +61,9 @@ enum class GPURenderer : u8
 #ifdef _WIN32
   HardwareD3D11,
   HardwareD3D12,
+#endif
+#ifdef __APPLE__
+  HardwareMetal,
 #endif
 #ifdef WITH_VULKAN
   HardwareVulkan,
@@ -88,6 +95,14 @@ enum class GPUDownsampleMode : u8
   Count
 };
 
+enum class GPUWireframeMode : u8
+{
+  Disabled,
+  OverlayWireframe,
+  OnlyWireframe,
+  Count,
+};
+
 enum class DisplayCropMode : u8
 {
   None,
@@ -109,11 +124,20 @@ enum class DisplayAspectRatio : u8
   Count
 };
 
-enum class DisplayAlignment
+enum class DisplayAlignment : u8
 {
   LeftOrTop,
   Center,
   RightOrBottom,
+  Count
+};
+
+enum class DisplayScalingMode : u8
+{
+  Nearest,
+  BilinearSmooth,
+  NearestInteger,
+  BilinearSharp,
   Count
 };
 

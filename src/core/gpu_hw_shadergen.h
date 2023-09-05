@@ -1,6 +1,9 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "gpu_hw.h"
-#include "shadergen.h"
+#include "util/shadergen.h"
 
 class GPU_HW_ShaderGen : public ShaderGen
 {
@@ -15,16 +18,19 @@ public:
                                           bool dithering, bool interlacing);
   std::string GenerateDisplayFragmentShader(bool depth_24bit, GPU_HW::InterlacedRenderMode interlace_mode,
                                             bool smooth_chroma);
+  std::string GenerateWireframeGeometryShader();
+  std::string GenerateWireframeFragmentShader();
   std::string GenerateVRAMReadFragmentShader();
   std::string GenerateVRAMWriteFragmentShader(bool use_ssbo);
   std::string GenerateVRAMCopyFragmentShader();
   std::string GenerateVRAMFillFragmentShader(bool wrapped, bool interlaced);
   std::string GenerateVRAMUpdateDepthFragmentShader();
 
+  std::string GenerateAdaptiveDownsampleVertexShader();
   std::string GenerateAdaptiveDownsampleMipFragmentShader(bool first_pass);
   std::string GenerateAdaptiveDownsampleBlurFragmentShader();
   std::string GenerateAdaptiveDownsampleCompositeFragmentShader();
-  std::string GenerateBoxSampleDownsampleFragmentShader();
+  std::string GenerateBoxSampleDownsampleFragmentShader(u32 factor);
 
 private:
   ALWAYS_INLINE bool UsingMSAA() const { return m_multisamples > 1; }
@@ -33,6 +39,7 @@ private:
   void WriteCommonFunctions(std::stringstream& ss);
   void WriteBatchUniformBuffer(std::stringstream& ss);
   void WriteBatchTextureFilter(std::stringstream& ss, GPUTextureFilter texture_filter);
+  void WriteAdaptiveDownsampleUniformBuffer(std::stringstream& ss);
 
   u32 m_resolution_scale;
   u32 m_multisamples;

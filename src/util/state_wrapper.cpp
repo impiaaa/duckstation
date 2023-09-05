@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "state_wrapper.h"
 #include "common/log.h"
 #include "common/string.h"
@@ -24,6 +27,17 @@ void StateWrapper::DoBytes(void* data, size_t length)
     if (!m_error)
       m_error |= !m_stream->Write2(data, static_cast<u32>(length));
   }
+}
+
+void StateWrapper::DoBytesEx(void* data, size_t length, u32 version_introduced, const void* default_value)
+{
+  if (m_mode == Mode::Read && m_version < version_introduced)
+  {
+    std::memcpy(data, default_value, length);
+    return;
+  }
+
+  DoBytes(data, length);
 }
 
 void StateWrapper::Do(bool* value_ptr)

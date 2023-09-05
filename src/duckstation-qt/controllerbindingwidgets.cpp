@@ -1,15 +1,22 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "controllerbindingwidgets.h"
-#include "common/log.h"
-#include "common/string_util.h"
 #include "controllersettingsdialog.h"
 #include "controllersettingwidgetbinder.h"
-#include "core/controller.h"
-#include "core/host_settings.h"
-#include "frontend-common/input_manager.h"
 #include "qthost.h"
 #include "qtutils.h"
 #include "settingsdialog.h"
 #include "settingwidgetbinder.h"
+
+#include "core/controller.h"
+#include "core/host.h"
+
+#include "util/input_manager.h"
+
+#include "common/log.h"
+#include "common/string_util.h"
+
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QInputDialog>
@@ -367,11 +374,11 @@ ControllerMacroEditWidget::ControllerMacroEditWidget(ControllerMacroWidget* pare
   for (u32 i = 0; i < cinfo->num_bindings; i++)
   {
     const Controller::ControllerBindingInfo& bi = cinfo->bindings[i];
-    if (bi.type == Controller::ControllerBindingType::Motor)
+    if (bi.type == InputBindingInfo::Type::Motor)
       continue;
 
     QListWidgetItem* item = new QListWidgetItem();
-    item->setText(QString::fromUtf8(bi.display_name));
+    item->setText(tr(cinfo->name, bi.display_name));
     item->setCheckState((std::find(m_binds.begin(), m_binds.end(), &bi) != m_binds.end()) ? Qt::Checked :
                                                                                             Qt::Unchecked);
     m_ui.bindList->addItem(item);
@@ -380,7 +387,8 @@ ControllerMacroEditWidget::ControllerMacroEditWidget(ControllerMacroWidget* pare
   m_frequency = dialog->getIntValue(section.c_str(), fmt::format("Macro{}Frequency", index + 1u).c_str(), 0);
   updateFrequencyText();
 
-  m_ui.trigger->initialize(dialog->getProfileSettingsInterface(), section, fmt::format("Macro{}", index + 1u));
+  m_ui.trigger->initialize(dialog->getProfileSettingsInterface(), InputBindingInfo::Type::Macro, section,
+                           fmt::format("Macro{}", index + 1u));
 
   connect(m_ui.increaseFrequency, &QAbstractButton::clicked, this, [this]() { modFrequency(1); });
   connect(m_ui.decreateFrequency, &QAbstractButton::clicked, this, [this]() { modFrequency(-1); });
@@ -450,7 +458,7 @@ void ControllerMacroEditWidget::updateBinds()
   for (u32 i = 0, bind_index = 0; i < cinfo->num_bindings; i++)
   {
     const Controller::ControllerBindingInfo& bi = cinfo->bindings[i];
-    if (bi.type == Controller::ControllerBindingType::Motor)
+    if (bi.type == InputBindingInfo::Type::Motor)
       continue;
 
     const QListWidgetItem* item = m_ui.bindList->item(static_cast<int>(bind_index));
@@ -515,7 +523,9 @@ ControllerCustomSettingsWidget::ControllerCustomSettingsWidget(ControllerBinding
   layout->addStretch(1);
 }
 
-ControllerCustomSettingsWidget::~ControllerCustomSettingsWidget() {}
+ControllerCustomSettingsWidget::~ControllerCustomSettingsWidget()
+{
+}
 
 void ControllerCustomSettingsWidget::createSettingWidgets(ControllerBindingWidget* parent, QWidget* parent_widget,
                                                           QGridLayout* layout, const Controller::ControllerInfo* cinfo)
@@ -716,9 +726,13 @@ void ControllerCustomSettingsWidget::restoreDefaults()
 
 //////////////////////////////////////////////////////////////////////////
 
-ControllerBindingWidget_Base::ControllerBindingWidget_Base(ControllerBindingWidget* parent) : QWidget(parent) {}
+ControllerBindingWidget_Base::ControllerBindingWidget_Base(ControllerBindingWidget* parent) : QWidget(parent)
+{
+}
 
-ControllerBindingWidget_Base::~ControllerBindingWidget_Base() {}
+ControllerBindingWidget_Base::~ControllerBindingWidget_Base()
+{
+}
 
 QIcon ControllerBindingWidget_Base::getIcon() const
 {
@@ -737,17 +751,18 @@ void ControllerBindingWidget_Base::initBindingWidgets()
   for (u32 i = 0; i < cinfo->num_bindings; i++)
   {
     const Controller::ControllerBindingInfo& bi = cinfo->bindings[i];
-    if (bi.type == Controller::ControllerBindingType::Unknown || bi.type == Controller::ControllerBindingType::Motor)
-      continue;
-
-    InputBindingWidget* widget = findChild<InputBindingWidget*>(QString::fromUtf8(bi.name));
-    if (!widget)
+    if (bi.type == InputBindingInfo::Type::Axis || bi.type == InputBindingInfo::Type::HalfAxis ||
+        bi.type == InputBindingInfo::Type::Button || bi.type == InputBindingInfo::Type::Pointer)
     {
-      Log_ErrorPrintf("No widget found for '%s' (%s)", bi.name, cinfo->name);
-      continue;
-    }
+      InputBindingWidget* widget = findChild<InputBindingWidget*>(QString::fromUtf8(bi.name));
+      if (!widget)
+      {
+        Log_ErrorPrintf("No widget found for '%s' (%s)", bi.name, cinfo->name);
+        continue;
+      }
 
-    widget->initialize(sif, config_section, bi.name);
+      widget->initialize(sif, bi.type, config_section, bi.name);
+    }
   }
 
   switch (cinfo->vibration_caps)
@@ -776,37 +791,6 @@ void ControllerBindingWidget_Base::initBindingWidgets()
     default:
       break;
   }
-
-  if (QSlider* widget = findChild<QSlider*>(QStringLiteral("AnalogDeadzone")); widget)
-  {
-    const float range = static_cast<float>(widget->maximum());
-    QLabel* label = findChild<QLabel*>(QStringLiteral("AnalogDeadzoneLabel"));
-    if (label)
-    {
-      connect(widget, &QSlider::valueChanged, this, [range, label](int value) {
-        label->setText(tr("%1%").arg((static_cast<float>(value) / range) * 100.0f, 0, 'f', 0));
-      });
-    }
-
-    ControllerSettingWidgetBinder::BindWidgetToInputProfileNormalized(sif, widget, config_section, "AnalogDeadzone",
-                                                                      range, Controller::DEFAULT_STICK_DEADZONE);
-  }
-
-  if (QSlider* widget = findChild<QSlider*>(QStringLiteral("AnalogSensitivity")); widget)
-  {
-    // position 1.0f at the halfway point
-    const float range = static_cast<float>(widget->maximum()) * 0.5f;
-    QLabel* label = findChild<QLabel*>(QStringLiteral("AnalogSensitivityLabel"));
-    if (label)
-    {
-      connect(widget, &QSlider::valueChanged, this, [range, label](int value) {
-        label->setText(tr("%1%").arg((static_cast<float>(value) / range) * 100.0f, 0, 'f', 0));
-      });
-    }
-
-    ControllerSettingWidgetBinder::BindWidgetToInputProfileNormalized(sif, widget, config_section, "AnalogSensitivity",
-                                                                      range, Controller::DEFAULT_STICK_SENSITIVITY);
-  }
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -818,7 +802,9 @@ ControllerBindingWidget_DigitalController::ControllerBindingWidget_DigitalContro
   initBindingWidgets();
 }
 
-ControllerBindingWidget_DigitalController::~ControllerBindingWidget_DigitalController() {}
+ControllerBindingWidget_DigitalController::~ControllerBindingWidget_DigitalController()
+{
+}
 
 QIcon ControllerBindingWidget_DigitalController::getIcon() const
 {
@@ -839,7 +825,9 @@ ControllerBindingWidget_AnalogController::ControllerBindingWidget_AnalogControll
   initBindingWidgets();
 }
 
-ControllerBindingWidget_AnalogController::~ControllerBindingWidget_AnalogController() {}
+ControllerBindingWidget_AnalogController::~ControllerBindingWidget_AnalogController()
+{
+}
 
 QIcon ControllerBindingWidget_AnalogController::getIcon() const
 {
@@ -860,7 +848,9 @@ ControllerBindingWidget_AnalogJoystick::ControllerBindingWidget_AnalogJoystick(C
   initBindingWidgets();
 }
 
-ControllerBindingWidget_AnalogJoystick::~ControllerBindingWidget_AnalogJoystick() {}
+ControllerBindingWidget_AnalogJoystick::~ControllerBindingWidget_AnalogJoystick()
+{
+}
 
 QIcon ControllerBindingWidget_AnalogJoystick::getIcon() const
 {
@@ -898,7 +888,9 @@ ControllerBindingWidget_NeGcon::ControllerBindingWidget_NeGcon(ControllerBinding
   }
 }
 
-ControllerBindingWidget_NeGcon::~ControllerBindingWidget_NeGcon() {}
+ControllerBindingWidget_NeGcon::~ControllerBindingWidget_NeGcon()
+{
+}
 
 QIcon ControllerBindingWidget_NeGcon::getIcon() const
 {
@@ -919,7 +911,9 @@ ControllerBindingWidget_GunCon::ControllerBindingWidget_GunCon(ControllerBinding
   initBindingWidgets();
 }
 
-ControllerBindingWidget_GunCon::~ControllerBindingWidget_GunCon() {}
+ControllerBindingWidget_GunCon::~ControllerBindingWidget_GunCon()
+{
+}
 
 QIcon ControllerBindingWidget_GunCon::getIcon() const
 {
@@ -940,7 +934,9 @@ ControllerBindingWidget_Mouse::ControllerBindingWidget_Mouse(ControllerBindingWi
   initBindingWidgets();
 }
 
-ControllerBindingWidget_Mouse::~ControllerBindingWidget_Mouse() {}
+ControllerBindingWidget_Mouse::~ControllerBindingWidget_Mouse()
+{
+}
 
 QIcon ControllerBindingWidget_Mouse::getIcon() const
 {

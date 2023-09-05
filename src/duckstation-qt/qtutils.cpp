@@ -1,11 +1,18 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "qtutils.h"
+
+#include "core/game_list.h"
+#include "core/system.h"
+
 #include "common/byte_stream.h"
 #include "common/make_array.h"
-#include "core/system.h"
-#include "frontend-common/game_list.h"
+
 #include <QtCore/QCoreApplication>
 #include <QtCore/QMetaObject>
 #include <QtGui/QDesktopServices>
+#include <QtGui/QGuiApplication>
 #include <QtGui/QKeyEvent>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
@@ -21,6 +28,14 @@
 #include <algorithm>
 #include <array>
 #include <map>
+
+#if !defined(_WIN32) && !defined(APPLE)
+#include <qpa/qplatformnativeinterface.h>
+#endif
+
+#ifdef _WIN32
+#include "common/windows_headers.h"
+#endif
 
 namespace QtUtils {
 
@@ -836,6 +851,7 @@ QIcon GetIconForRegion(DiscRegion region)
     case DiscRegion::NTSC_U:
       return QIcon(QStringLiteral(":/icons/flag-uc.svg"));
     case DiscRegion::Other:
+    case DiscRegion::NonPS1:
     default:
       return QIcon::fromTheme(QStringLiteral("file-unknow-line"));
   }
@@ -860,6 +876,55 @@ QIcon GetIconForEntryType(GameList::EntryType type)
 QIcon GetIconForCompatibility(GameDatabase::CompatibilityRating rating)
 {
   return QIcon(QStringLiteral(":/icons/star-%1.png").arg(static_cast<u32>(rating)));
+}
+
+qreal GetDevicePixelRatioForWidget(const QWidget* widget)
+{
+  const QScreen* screen_for_ratio = widget->screen();
+  if (!screen_for_ratio)
+    screen_for_ratio = QGuiApplication::primaryScreen();
+
+  return screen_for_ratio ? screen_for_ratio->devicePixelRatio() : static_cast<qreal>(1);
+}
+
+std::optional<WindowInfo> GetWindowInfoForWidget(QWidget* widget)
+{
+  WindowInfo wi;
+
+  // Windows and Apple are easy here since there's no display connection.
+#if defined(_WIN32)
+  wi.type = WindowInfo::Type::Win32;
+  wi.window_handle = reinterpret_cast<void*>(widget->winId());
+#elif defined(__APPLE__)
+  wi.type = WindowInfo::Type::MacOS;
+  wi.window_handle = reinterpret_cast<void*>(widget->winId());
+#else
+  QPlatformNativeInterface* pni = QGuiApplication::platformNativeInterface();
+  const QString platform_name = QGuiApplication::platformName();
+  if (platform_name == QStringLiteral("xcb"))
+  {
+    wi.type = WindowInfo::Type::X11;
+    wi.display_connection = pni->nativeResourceForWindow("display", widget->windowHandle());
+    wi.window_handle = reinterpret_cast<void*>(widget->winId());
+  }
+  else if (platform_name == QStringLiteral("wayland"))
+  {
+    wi.type = WindowInfo::Type::Wayland;
+    wi.display_connection = pni->nativeResourceForWindow("display", widget->windowHandle());
+    wi.window_handle = pni->nativeResourceForWindow("surface", widget->windowHandle());
+  }
+  else
+  {
+    qCritical() << "Unknown PNI platform " << platform_name;
+    return std::nullopt;
+  }
+#endif
+
+  const qreal dpr = GetDevicePixelRatioForWidget(widget);
+  wi.surface_width = static_cast<u32>(static_cast<qreal>(widget->width()) * dpr);
+  wi.surface_height = static_cast<u32>(static_cast<qreal>(widget->height()) * dpr);
+  wi.surface_scale = static_cast<float>(dpr);
+  return wi;
 }
 
 } // namespace QtUtils

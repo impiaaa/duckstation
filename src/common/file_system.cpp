@@ -1,8 +1,13 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "file_system.h"
 #include "assert.h"
+#include "error.h"
 #include "log.h"
 #include "path.h"
 #include "string_util.h"
+
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -584,7 +589,7 @@ std::string Path::Combine(const std::string_view& base, const std::string_view& 
   return ret;
 }
 
-std::FILE* FileSystem::OpenCFile(const char* filename, const char* mode)
+std::FILE* FileSystem::OpenCFile(const char* filename, const char* mode, Error* error)
 {
 #ifdef _WIN32
   const std::wstring wfilename(StringUtil::UTF8StringToWideString(filename));
@@ -592,23 +597,34 @@ std::FILE* FileSystem::OpenCFile(const char* filename, const char* mode)
   if (!wfilename.empty() && !wmode.empty())
   {
     std::FILE* fp;
-    if (_wfopen_s(&fp, wfilename.c_str(), wmode.c_str()) != 0)
+    const errno_t err = _wfopen_s(&fp, wfilename.c_str(), wmode.c_str());
+    if (err != 0)
+    {
+      Error::SetErrno(error, err);
       return nullptr;
+    }
 
     return fp;
   }
 
   std::FILE* fp;
-  if (fopen_s(&fp, filename, mode) != 0)
+  const errno_t err = fopen_s(&fp, filename, mode);
+  if (err != 0)
+  {
+    Error::SetErrno(error, err);
     return nullptr;
+  }
 
   return fp;
 #else
-  return std::fopen(filename, mode);
+  std::FILE* fp = std::fopen(filename, mode);
+  if (!fp)
+    Error::SetErrno(error, errno);
+  return fp;
 #endif
 }
 
-int FileSystem::OpenFDFile(const char* filename, int flags, int mode)
+int FileSystem::OpenFDFile(const char* filename, int flags, int mode, Error* error)
 {
 #ifdef _WIN32
   const std::wstring wfilename(StringUtil::UTF8StringToWideString(filename));
@@ -617,18 +633,21 @@ int FileSystem::OpenFDFile(const char* filename, int flags, int mode)
 
   return -1;
 #else
-  return open(filename, flags, mode);
+  const int fd = open(filename, flags, mode);
+  if (fd < 0)
+    Error::SetErrno(error, errno);
+  return fd;
 #endif
 }
 
 #endif
 
-FileSystem::ManagedCFilePtr FileSystem::OpenManagedCFile(const char* filename, const char* mode)
+FileSystem::ManagedCFilePtr FileSystem::OpenManagedCFile(const char* filename, const char* mode, Error* error)
 {
-  return ManagedCFilePtr(OpenCFile(filename, mode), [](std::FILE* fp) { std::fclose(fp); });
+  return ManagedCFilePtr(OpenCFile(filename, mode, error));
 }
 
-std::FILE* FileSystem::OpenSharedCFile(const char* filename, const char* mode, FileShareMode share_mode)
+std::FILE* FileSystem::OpenSharedCFile(const char* filename, const char* mode, FileShareMode share_mode, Error* error)
 {
 #ifdef _WIN32
   const std::wstring wfilename(StringUtil::UTF8StringToWideString(filename));
@@ -658,16 +677,20 @@ std::FILE* FileSystem::OpenSharedCFile(const char* filename, const char* mode, F
   if (fp)
     return fp;
 
+  Error::SetErrno(error, errno);
   return nullptr;
 #else
-  return std::fopen(filename, mode);
+  std::FILE* fp = std::fopen(filename, mode);
+  if (!fp)
+    Error::SetErrno(error, errno);
+  return fp;
 #endif
 }
 
 FileSystem::ManagedCFilePtr FileSystem::OpenManagedSharedCFile(const char* filename, const char* mode,
-                                                               FileShareMode share_mode)
+                                                               FileShareMode share_mode, Error* error)
 {
-  return ManagedCFilePtr(OpenSharedCFile(filename, mode, share_mode), [](std::FILE* fp) { std::fclose(fp); });
+  return ManagedCFilePtr(OpenSharedCFile(filename, mode, share_mode, error));
 }
 
 int FileSystem::FSeek64(std::FILE* fp, s64 offset, int whence)
@@ -720,9 +743,9 @@ s64 FileSystem::GetPathFileSize(const char* Path)
   return sd.Size;
 }
 
-std::optional<std::vector<u8>> FileSystem::ReadBinaryFile(const char* filename)
+std::optional<std::vector<u8>> FileSystem::ReadBinaryFile(const char* filename, Error* error)
 {
-  ManagedCFilePtr fp = OpenManagedCFile(filename, "rb");
+  ManagedCFilePtr fp = OpenManagedCFile(filename, "rb", error);
   if (!fp)
     return std::nullopt;
 
@@ -744,9 +767,9 @@ std::optional<std::vector<u8>> FileSystem::ReadBinaryFile(std::FILE* fp)
   return res;
 }
 
-std::optional<std::string> FileSystem::ReadFileToString(const char* filename)
+std::optional<std::string> FileSystem::ReadFileToString(const char* filename, Error* error)
 {
-  ManagedCFilePtr fp = OpenManagedCFile(filename, "rb");
+  ManagedCFilePtr fp = OpenManagedCFile(filename, "rb", error);
   if (!fp)
     return std::nullopt;
 
@@ -1914,36 +1937,48 @@ bool FileSystem::SetPathCompression(const char* path, bool enable)
   return false;
 }
 
-FileSystem::POSIXLock::POSIXLock(int fd)
+static bool SetLock(int fd, bool lock)
 {
-  if (lockf(fd, F_LOCK, 0) == 0)
+  // We want to lock the whole file.
+  const off_t offs = lseek(fd, 0, SEEK_CUR);
+  if (offs < 0)
   {
-    m_fd = fd;
+    Log_ErrorPrintf("lseek(%d) failed: %d", fd, errno);
+    return false;
   }
-  else
+
+  if (offs != 0 && lseek(fd, 0, SEEK_SET) < 0)
   {
-    Log_ErrorPrintf("lockf() failed: %d", errno);
-    m_fd = -1;
+    Log_ErrorPrintf("lseek(%d, 0) failed: %d", fd, errno);
+    return false;
   }
+
+  const bool res = (lockf(fd, lock ? F_LOCK : F_ULOCK, 0) == 0);
+  if (lseek(fd, offs, SEEK_SET) < 0)
+    Panic("Repositioning file descriptor after lock failed.");
+
+  if (!res)
+    Log_ErrorPrintf("lockf() for %s failed: %d", lock ? "lock" : "unlock", errno);
+
+  return res;
 }
 
-FileSystem::POSIXLock::POSIXLock(std::FILE* fp)
+FileSystem::POSIXLock::POSIXLock(int fd) : m_fd(fd)
 {
-  m_fd = fileno(fp);
-  if (m_fd >= 0)
-  {
-    if (lockf(m_fd, F_LOCK, 0) != 0)
-    {
-      Log_ErrorPrintf("lockf() failed: %d", errno);
-      m_fd = -1;
-    }
-  }
+  if (!SetLock(m_fd, true))
+    m_fd = -1;
+}
+
+FileSystem::POSIXLock::POSIXLock(std::FILE* fp) : m_fd(fileno(fp))
+{
+  if (!SetLock(m_fd, true))
+    m_fd = -1;
 }
 
 FileSystem::POSIXLock::~POSIXLock()
 {
   if (m_fd >= 0)
-    lockf(m_fd, F_ULOCK, m_fd);
+    SetLock(m_fd, false);
 }
 
 #endif

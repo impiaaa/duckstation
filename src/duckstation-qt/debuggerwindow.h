@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "core/types.h"
 #include "ui_debuggerwindow.h"
@@ -52,6 +55,7 @@ private Q_SLOTS:
   void onStepOverActionTriggered();
   void onStepOutActionTriggered();
   void onCodeViewItemActivated(QModelIndex index);
+  void onCodeViewContextMenuRequested(const QPoint& pt);
   void onMemorySearchTriggered();
   void onMemorySearchStringChanged(const QString&);
 

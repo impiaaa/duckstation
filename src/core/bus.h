@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "common/bitfield.h"
 #include "util/memory_arena.h"
@@ -6,6 +9,7 @@
 #include <bitset>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class StateWrapper;
@@ -111,7 +115,6 @@ void UpdateFastmemViews(CPUFastmemMode mode);
 bool CanUseFastmemForAddress(VirtualMemoryAddress address);
 
 void SetExpansionROM(std::vector<u8> data);
-void SetBIOS(const std::vector<u8>& image);
 
 extern std::bitset<RAM_8MB_CODE_PAGE_COUNT> m_ram_code_bits;
 extern u8* g_ram;            // 2MB-8MB RAM
@@ -177,5 +180,9 @@ PhysicalMemoryAddress GetMemoryRegionEnd(MemoryRegion region);
 u8* GetMemoryRegionPointer(MemoryRegion region);
 std::optional<PhysicalMemoryAddress> SearchMemory(PhysicalMemoryAddress start_address, const u8* pattern,
                                                   const u8* mask, u32 pattern_length);
+
+// TTY Logging.
+void AddTTYCharacter(char ch);
+void AddTTYString(const std::string_view& str);
 
 } // namespace Bus

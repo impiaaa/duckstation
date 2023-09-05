@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "controller.h"
 #include <memory>
@@ -33,7 +36,7 @@ public:
   bool Transfer(const u8 data_in, u8* data_out) override;
 
   void LoadSettings(SettingsInterface& si, const char* section) override;
-  bool GetSoftwareCursor(const Common::RGBA8Image** image, float* image_scale, bool* relative_mode) override;
+  bool GetSoftwareCursor(std::string* image_path, float* image_scale, bool* relative_mode) override;
 
 private:
   void UpdatePosition();

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 
 #include "types.h"
@@ -31,6 +34,9 @@ public:
   virtual void SetStringList(const char* section, const char* key, const std::vector<std::string>& items) = 0;
   virtual bool RemoveFromStringList(const char* section, const char* key, const char* item) = 0;
   virtual bool AddToStringList(const char* section, const char* key, const char* item) = 0;
+
+  virtual std::vector<std::pair<std::string, std::string>> GetKeyValueList(const char* section) const = 0;
+  virtual void SetKeyValueList(const char* section, const std::vector<std::pair<std::string, std::string>>& items) = 0;
 
   virtual bool ContainsValue(const char* section, const char* key) const = 0;
   virtual void DeleteValue(const char* section, const char* key) = 0;

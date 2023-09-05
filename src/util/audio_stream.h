@@ -1,9 +1,14 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "common/types.h"
 #include <array>
 #include <atomic>
 #include <memory>
 #include <optional>
+#include <string>
+#include <vector>
 
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -73,6 +78,17 @@ public:
   void SetStretchMode(AudioStretchMode mode);
 
   static std::unique_ptr<AudioStream> CreateNullStream(u32 sample_rate, u32 channels, u32 buffer_ms);
+
+#ifdef WITH_CUBEB
+  static std::unique_ptr<AudioStream> CreateCubebAudioStream(u32 sample_rate, u32 channels, u32 buffer_ms,
+                                                             u32 latency_ms, AudioStretchMode stretch);
+  static std::vector<std::string> GetCubebDriverNames();
+  static std::vector<std::pair<std::string, std::string>> GetCubebOutputDevices(const char* driver);
+#endif
+#ifdef _WIN32
+  static std::unique_ptr<AudioStream> CreateXAudio2Stream(u32 sample_rate, u32 channels, u32 buffer_ms, u32 latency_ms,
+                                                          AudioStretchMode stretch);
+#endif
 
 protected:
   AudioStream(u32 sample_rate, u32 channels, u32 buffer_ms, AudioStretchMode stretch);

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 
 #if defined(_MSC_VER)
@@ -24,6 +27,8 @@
 #define CPU_AARCH64 1
 #elif defined(__arm__)
 #define CPU_AARCH32 1
+#elif defined(__riscv) && __riscv_xlen == 64
+#define CPU_RISCV64 1
 #else
 #error Unknown architecture.
 #endif

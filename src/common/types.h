@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -53,15 +56,20 @@ char (&__countof_ArraySizeHelper(T (&array)[N]))[N];
 #define printflike(n,m)
 #endif
 
+// [[noreturn]] which can be used on function pointers.
 #ifdef _MSC_VER
-// TODO: Use C++20 [[likely]] when available.
-#define LIKELY(x)  (!!(x))
-#define UNLIKELY(x)  (!!(x))
+// __declspec(noreturn) produces error C3829.
+#define NORETURN_FUNCTION_POINTER
 #else
-#define LIKELY(x) __builtin_expect(!!(x), 1)
-#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define NORETURN_FUNCTION_POINTER __attribute__((noreturn))
 #endif
 
+// __assume, potentially enables optimization.
+#ifdef _MSC_VER
+#define ASSUME(x) __assume(x)
+#else
+#define ASSUME(x) do { if (!(x)) __builtin_unreachable(); } while(0)
+#endif
 
 // disable warnings that show up at warning level 4
 // TODO: Move to build system instead

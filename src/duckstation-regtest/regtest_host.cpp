@@ -1,3 +1,19 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
+#include "core/achievements.h"
+#include "core/game_list.h"
+#include "core/gpu.h"
+#include "core/host.h"
+#include "core/system.h"
+
+#include "scmversion/scmversion.h"
+
+#include "util/gpu_device.h"
+#include "util/imgui_manager.h"
+#include "util/input_manager.h"
+#include "util/platform_misc.h"
+
 #include "common/assert.h"
 #include "common/crash_handler.h"
 #include "common/file_system.h"
@@ -5,22 +21,11 @@
 #include "common/memory_settings_interface.h"
 #include "common/path.h"
 #include "common/string_util.h"
-#include "core/host.h"
-#include "core/host_display.h"
-#include "core/host_settings.h"
-#include "core/system.h"
-#include "frontend-common/common_host.h"
-#include "frontend-common/game_list.h"
-#include "frontend-common/input_manager.h"
-#include "regtest_host_display.h"
-#include "scmversion/scmversion.h"
+
 #include <csignal>
 #include <cstdio>
-Log_SetChannel(RegTestHost);
 
-#ifdef WITH_CHEEVOS
-#include "frontend-common/achievements.h"
-#endif
+Log_SetChannel(RegTestHost);
 
 namespace RegTestHost {
 static bool ParseCommandLineParameters(int argc, char* argv[], std::optional<SystemBootParameters>& autoboot);
@@ -29,7 +34,6 @@ static void PrintCommandLineHelp(const char* progname);
 static bool InitializeConfig();
 static void InitializeEarlyConsole();
 static void HookSignals();
-static void SetAppRoot();
 static bool SetFolders();
 static std::string GetFrameDumpFilename(u32 frame);
 } // namespace RegTestHost
@@ -40,7 +44,6 @@ static u32 s_frames_to_run = 60 * 60;
 static u32 s_frame_dump_interval = 0;
 static std::string s_dump_base_directory;
 static std::string s_dump_game_directory;
-static GPURenderer s_renderer_to_use = GPURenderer::Software;
 
 bool RegTestHost::SetFolders()
 {
@@ -86,16 +89,17 @@ bool RegTestHost::InitializeConfig()
   SettingsInterface& si = *s_base_settings_interface.get();
   g_settings.Save(si);
   si.SetStringValue("GPU", "Renderer", Settings::GetRendererName(GPURenderer::Software));
-  si.SetStringValue("Pad1", "Type", Settings::GetControllerTypeName(ControllerType::DigitalController));
+  si.SetBoolValue("GPU", "DisableShaderCache", true);
+  si.SetStringValue("Pad1", "Type", Settings::GetControllerTypeName(ControllerType::AnalogController));
   si.SetStringValue("Pad2", "Type", Settings::GetControllerTypeName(ControllerType::None));
   si.SetStringValue("MemoryCards", "Card1Type", Settings::GetMemoryCardTypeName(MemoryCardType::NonPersistent));
   si.SetStringValue("MemoryCards", "Card2Type", Settings::GetMemoryCardTypeName(MemoryCardType::None));
   si.SetStringValue("ControllerPorts", "MultitapMode", Settings::GetMultitapModeName(MultitapMode::Disabled));
   si.SetStringValue("Audio", "Backend", Settings::GetAudioBackendName(AudioBackend::Null));
-  si.SetStringValue("Logging", "LogLevel", Settings::GetLogLevelName(LOGLEVEL_VERBOSE));
   si.SetBoolValue("Logging", "LogToConsole", true);
   si.SetBoolValue("Main", "ApplyGameSettings", false); // don't want game settings interfering
   si.SetBoolValue("BIOS", "PatchFastBoot", true);      // no point validating the bios intro..
+  si.SetFloatValue("Main", "EmulationSpeed", 0.0f);
 
   // disable all sources
   for (u32 i = 0; i < static_cast<u32>(InputSourceType::Count); i++)
@@ -140,24 +144,24 @@ void Host::ReportDebuggerMessage(const std::string_view& message)
   Log_ErrorPrintf("ReportDebuggerMessage: %.*s", static_cast<int>(message.size()), message.data());
 }
 
-TinyString Host::TranslateString(const char* context, const char* str, const char* disambiguation, int n)
+s32 Host::Internal::GetTranslatedStringImpl(const std::string_view& context, const std::string_view& msg, char* tbuf,
+                                            size_t tbuf_space)
 {
-  return str;
-}
+  if (msg.size() > tbuf_space)
+    return -1;
+  else if (msg.empty())
+    return 0;
 
-std::string Host::TranslateStdString(const char* context, const char* str, const char* disambiguation, int n)
-{
-  return str;
+  std::memcpy(tbuf, msg.data(), msg.size());
+  return static_cast<s32>(msg.size());
 }
 
 void Host::LoadSettings(SettingsInterface& si, std::unique_lock<std::mutex>& lock)
 {
-  CommonHost::LoadSettings(si, lock);
 }
 
 void Host::CheckForSettingsChanges(const Settings& old_settings)
 {
-  CommonHost::CheckForSettingsChanges(old_settings);
 }
 
 void Host::CommitBaseSettingChanges()
@@ -248,7 +252,9 @@ void Host::OnGameChanged(const std::string& disc_path, const std::string& game_s
 
 void Host::PumpMessagesOnCPUThread()
 {
-  //
+  s_frames_to_run--;
+  if (s_frames_to_run == 0)
+    System::ShutdownSystem(false);
 }
 
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
@@ -282,30 +288,26 @@ void Host::SetFullscreen(bool enabled)
   //
 }
 
-bool Host::AcquireHostDisplay(RenderAPI api)
+std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
 {
-  g_host_display = std::make_unique<RegTestHostDisplay>();
-  return true;
+  WindowInfo wi;
+  wi.SetSurfaceless();
+  return wi;
 }
 
-void Host::ReleaseHostDisplay()
+void Host::ReleaseRenderWindow()
 {
-  g_host_display.reset();
+  //
 }
 
-void Host::RenderDisplay(bool skip_present)
+void Host::BeginPresentFrame()
 {
   const u32 frame = System::GetFrameNumber();
   if (s_frame_dump_interval > 0 && (s_frame_dump_interval == 1 || (frame % s_frame_dump_interval) == 0))
   {
     std::string dump_filename(RegTestHost::GetFrameDumpFilename(frame));
-    g_host_display->WriteDisplayTextureToFile(std::move(dump_filename));
+    g_gpu->WriteDisplayTextureToFile(std::move(dump_filename));
   }
-}
-
-void Host::InvalidateDisplay()
-{
-  //
 }
 
 void Host::OpenURL(const std::string_view& url)
@@ -352,9 +354,9 @@ void Host::OnInputDeviceDisconnected(const std::string_view& identifier)
   // noop
 }
 
-void* Host::GetTopLevelWindowHandle()
+std::optional<WindowInfo> Host::GetTopLevelWindowInfo()
 {
-  return nullptr;
+  return std::nullopt;
 }
 
 void Host::RefreshGameListAsync(bool invalidate_cache)
@@ -369,86 +371,6 @@ void Host::CancelGameListRefresh()
 
 BEGIN_HOTKEY_LIST(g_host_hotkeys)
 END_HOTKEY_LIST()
-
-#if 0
-
-void RegTestHostInterface::InitializeSettings()
-{
-  SettingsInterface& si = m_settings_interface;
-  HostInterface::SetDefaultSettings(si);
-
-  // Set the settings we need for testing.
-  si.SetStringValue("GPU", "Renderer", Settings::GetRendererName(s_renderer_to_use));
-  si.SetStringValue("Controller1", "Type", Settings::GetControllerTypeName(ControllerType::DigitalController));
-  si.SetStringValue("Controller2", "Type", Settings::GetControllerTypeName(ControllerType::None));
-  si.SetStringValue("MemoryCards", "Card1Type", Settings::GetMemoryCardTypeName(MemoryCardType::NonPersistent));
-  si.SetStringValue("MemoryCards", "Card2Type", Settings::GetMemoryCardTypeName(MemoryCardType::None));
-  si.SetStringValue("ControllerPorts", "MultitapMode", Settings::GetMultitapModeName(MultitapMode::Disabled));
-  si.SetStringValue("Logging", "LogLevel", Settings::GetLogLevelName(LOGLEVEL_DEV));
-  si.SetBoolValue("Logging", "LogToConsole", true);
-
-  HostInterface::LoadSettings(si);
-}
-
-bool RegTestHostInterface::AcquireHostDisplay()
-{
-  switch (g_settings.gpu_renderer)
-  {
-#ifdef _WIN32
-    case GPURenderer::HardwareD3D11:
-      m_display = std::make_unique<FrontendCommon::D3D11HostDisplay>();
-      break;
-
-    case GPURenderer::HardwareD3D12:
-      m_display = std::make_unique<FrontendCommon::D3D12HostDisplay>();
-      break;
-#endif
-
-    case GPURenderer::HardwareOpenGL:
-      m_display = std::make_unique<FrontendCommon::OpenGLHostDisplay>();
-      break;
-
-    case GPURenderer::HardwareVulkan:
-      m_display = std::make_unique<FrontendCommon::VulkanHostDisplay>();
-      break;
-
-    case GPURenderer::Software:
-    default:
-      m_display = std::make_unique<RegTestHostDisplay>();
-      break;
-  }
-
-  WindowInfo wi;
-  wi.type = WindowInfo::Type::Surfaceless;
-  wi.surface_width = 640;
-  wi.surface_height = 480;
-  if (!m_display->CreateRenderDevice(wi, std::string_view(), false, false))
-  {
-    Log_ErrorPrintf("Failed to create render device");
-    m_display.reset();
-    return false;
-  }
-
-  if (!m_display->InitializeRenderDevice(std::string_view(), false, false))
-  {
-    Log_ErrorPrintf("Failed to initialize render device");
-    m_display->DestroyRenderDevice();
-    m_display.reset();
-    return false;
-  }
-
-  return true;
-}
-
-void RegTestHostInterface::ReleaseHostDisplay()
-{
-  if (!m_display)
-    return;
-
-  m_display->DestroyRenderDevice();
-  m_display.reset();
-}
-#endif
 
 static void SignalHandler(int signal)
 {
@@ -573,6 +495,7 @@ bool RegTestHost::ParseCommandLineParameters(int argc, char* argv[], std::option
         }
 
         Log::SetConsoleOutputParams(true, nullptr, level.value());
+        s_base_settings_interface->SetStringValue("Logging", "LogLevel", Settings::GetLogLevelName(level.value()));
         continue;
       }
       else if (CHECK_ARG_PARAM("-renderer"))
@@ -654,16 +577,7 @@ int main(int argc, char* argv[])
   }
 
   Log_InfoPrintf("Running for %d frames...", s_frames_to_run);
-
-  for (u32 frame = 0; frame < s_frames_to_run; frame++)
-  {
-    System::RunFrame();
-    Host::RenderDisplay(false);
-    System::UpdatePerformanceCounters();
-  }
-
-  Log_InfoPrintf("All done, shutting down system.");
-  System::ShutdownSystem(false);
+  System::Execute();
 
   Log_InfoPrintf("Exiting with success.");
   result = 0;

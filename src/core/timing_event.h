@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include <functional>
 #include <memory>
@@ -90,6 +93,8 @@ std::unique_ptr<TimingEvent> CreateTimingEvent(std::string name, TickCount perio
 /// Serialization.
 bool DoState(StateWrapper& sw);
 
+bool IsRunningEvents();
+void SetFrameDone();
 void RunEvents();
 
 void UpdateCPUDowncount();

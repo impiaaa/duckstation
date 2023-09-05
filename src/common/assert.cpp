@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "assert.h"
 #include <cstdio>
 #include <cstdlib>
@@ -7,6 +10,10 @@
 #include "windows_headers.h"
 #include <intrin.h>
 #include <tlhelp32.h>
+#endif
+
+#ifdef __clang__
+#pragma clang diagnostic ignored "-Winvalid-noreturn"
 #endif
 
 static std::mutex s_AssertFailedMutex;
@@ -104,7 +111,7 @@ void Y_OnAssertFailed(const char* szMessage, const char* szFunction, const char*
   ResumeThreads(pHandle);
 }
 
-void Y_OnPanicReached(const char* szMessage, const char* szFunction, const char* szFile, unsigned uLine)
+[[noreturn]] void Y_OnPanicReached(const char* szMessage, const char* szFunction, const char* szFile, unsigned uLine)
 {
   std::lock_guard<std::mutex> guard(s_AssertFailedMutex);
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "iso_reader.h"
 #include "cd_image.h"
 #include "common/log.h"
@@ -289,4 +292,10 @@ bool ISOReader::ReadFile(const char* path, std::vector<u8>* data)
 
   data->resize(de->length_le);
   return true;
+}
+
+bool ISOReader::FileExists(const char* path)
+{
+  auto de = LocateFile(path);
+  return de.has_value();
 }

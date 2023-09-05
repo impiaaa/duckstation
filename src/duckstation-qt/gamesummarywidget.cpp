@@ -1,11 +1,18 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "gamesummarywidget.h"
-#include "common/string_util.h"
-#include "core/game_database.h"
-#include "fmt/format.h"
-#include "frontend-common/game_list.h"
 #include "qthost.h"
 #include "qtprogresscallback.h"
 #include "settingsdialog.h"
+
+#include "core/game_database.h"
+#include "core/game_list.h"
+
+#include "common/string_util.h"
+
+#include "fmt/format.h"
+
 #include <QtConcurrent/QtConcurrent>
 #include <QtCore/QFuture>
 #include <QtWidgets/QMessageBox>
@@ -27,14 +34,14 @@ GameSummaryWidget::GameSummaryWidget(const std::string& path, const std::string&
   for (u32 i = 0; i < static_cast<u32>(DiscRegion::Count); i++)
   {
     m_ui.region->addItem(QtUtils::GetIconForRegion(static_cast<DiscRegion>(i)),
-                         qApp->translate("DiscRegion", Settings::GetDiscRegionDisplayName(static_cast<DiscRegion>(i))));
+                         QString::fromUtf8(Settings::GetDiscRegionDisplayName(static_cast<DiscRegion>(i))));
   }
 
   for (u32 i = 0; i < static_cast<u32>(GameDatabase::CompatibilityRating::Count); i++)
   {
     m_ui.compatibility->addItem(QtUtils::GetIconForCompatibility(static_cast<GameDatabase::CompatibilityRating>(i)),
-                                qApp->translate("GameDatabase", GameDatabase::GetCompatibilityRatingDisplayName(
-                                                                  static_cast<GameDatabase::CompatibilityRating>(i))));
+                                QString::fromUtf8(GameDatabase::GetCompatibilityRatingDisplayName(
+                                  static_cast<GameDatabase::CompatibilityRating>(i))));
   }
 
   populateUi(path, serial, region, entry);
@@ -98,16 +105,15 @@ void GameSummaryWidget::populateUi(const std::string& path, const std::string& s
       m_ui.releaseInfo->setText(tr("Unknown"));
 
     QString controllers;
-    if (entry->supported_controllers != 0 && entry->supported_controllers != static_cast<u32>(-1))
+    if (entry->supported_controllers != 0 && entry->supported_controllers != static_cast<u16>(-1))
     {
       for (u32 i = 0; i < static_cast<u32>(ControllerType::Count); i++)
       {
-        if ((entry->supported_controllers & (1u << i)) != 0)
+        if ((entry->supported_controllers & static_cast<u16>(1u << i)) != 0)
         {
           if (!controllers.isEmpty())
             controllers.append(", ");
-          controllers.append(
-            qApp->translate("ControllerType", Settings::GetControllerTypeDisplayName(static_cast<ControllerType>(i))));
+          controllers.append(Settings::GetControllerTypeDisplayName(static_cast<ControllerType>(i)));
         }
       }
     }

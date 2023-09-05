@@ -1,12 +1,12 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "settingsdialog.h"
 #include "advancedsettingswidget.h"
 #include "audiosettingswidget.h"
 #include "biossettingswidget.h"
-#include "common/assert.h"
-#include "common/file_system.h"
 #include "consolesettingswidget.h"
-#include "core/host.h"
-#include "core/host_settings.h"
+
 #include "displaysettingswidget.h"
 #include "emulationsettingswidget.h"
 #include "enhancementsettingswidget.h"
@@ -18,13 +18,20 @@
 #include "memorycardsettingswidget.h"
 #include "postprocessingsettingswidget.h"
 #include "qthost.h"
+
+#include "core/host.h"
+
 #include "util/ini_settings_interface.h"
+
+#include "common/assert.h"
+#include "common/file_system.h"
+
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QTextEdit>
 
 #ifdef WITH_CHEEVOS
 #include "achievementsettingswidget.h"
-#include "frontend-common/achievements.h"
+#include "core/achievements.h"
 #endif
 
 static QList<SettingsDialog*> s_open_game_properties_dialogs;
@@ -206,7 +213,7 @@ void SettingsDialog::setCategory(const char* category)
 
 void SettingsDialog::onCategoryCurrentRowChanged(int row)
 {
-  DebugAssert(row < MAX_SETTINGS_WIDGETS);
+  DebugAssert(row < static_cast<int>(MAX_SETTINGS_WIDGETS));
   m_ui.settingsContainer->setCurrentIndex(row);
   m_ui.helpText->setText(m_category_help_text[row]);
 }

@@ -29,8 +29,12 @@ add_library(core
     digital_controller.h
     dma.cpp
     dma.h
+    fullscreen_ui.cpp
+    fullscreen_ui.h
     game_database.cpp
     game_database.h
+    game_list.cpp
+    game_list.h
     gdb_protocol.cpp
     gdb_protocol.h
     gpu.cpp
@@ -42,6 +46,8 @@ add_library(core
     gpu_hw.h
     gpu_hw_shadergen.cpp
     gpu_hw_shadergen.h
+    gpu_shadergen.cpp
+    gpu_shadergen.h
     gpu_sw.cpp
     gpu_sw.h
     gpu_sw_backend.cpp
@@ -54,15 +60,14 @@ add_library(core
     gte_types.h
     host.cpp
     host.h
-    host_display.cpp
-    host_display.h
     host_interface_progress_callback.cpp
     host_interface_progress_callback.h
-    host_settings.h
+    hotkeys.cpp
+    input_types.h
+    imgui_overlays.cpp
+    imgui_overlays.h
     interrupt_controller.cpp
     interrupt_controller.h
-    libcrypt_serials.cpp
-    libcrypt_serials.h
     mdec.cpp
     mdec.h
     memory_card.cpp
@@ -75,6 +80,8 @@ add_library(core
     negcon.h
     pad.cpp
     pad.h
+    pcdrv.cpp
+    pcdrv.h
     pgxp.cpp
     pgxp.h
     playstation_mouse.cpp
@@ -87,8 +94,6 @@ add_library(core
     settings.cpp
     settings.h
     shader_cache_version.h
-    shadergen.cpp
-    shadergen.h
     sio.cpp
     sio.h
     spu.cpp
@@ -114,43 +119,15 @@ set(RECOMPILER_SRCS
     cpu_recompiler_types.h
 )
 
+target_precompile_headers(core PRIVATE "pch.h")
 target_include_directories(core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(core PUBLIC Threads::Threads common util zlib)
-target_link_libraries(core PRIVATE stb xxhash imgui rapidjson tinyxml2)
-
-if(WIN32)
-  target_sources(core PRIVATE
-    gpu_hw_d3d12.cpp
-    gpu_hw_d3d12.h
-    gpu_hw_d3d11.cpp
-    gpu_hw_d3d11.h
-  )
-  target_link_libraries(core PRIVATE winmm.lib)
-endif()
-
-if(ENABLE_CUBEB)
-  target_compile_definitions(core PUBLIC "WITH_CUBEB=1")
-endif()
-
-if(ENABLE_OPENGL)
-  target_sources(core PRIVATE
-    gpu_hw_opengl.cpp
-    gpu_hw_opengl.h
-  )
-  target_link_libraries(core PRIVATE glad)
-endif()
-
-if(ENABLE_VULKAN)
-  target_sources(core PRIVATE
-    gpu_hw_vulkan.cpp
-    gpu_hw_vulkan.h
-  )
-endif()
+target_link_libraries(core PRIVATE stb xxhash imgui rapidjson)
 
 if(${CPU_ARCH} STREQUAL "x64")
   target_include_directories(core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../../dep/xbyak/xbyak")
-  target_compile_definitions(core PUBLIC "WITH_RECOMPILER=1" "WITH_MMAP_FASTMEM=1")
+  target_compile_definitions(core PUBLIC "XBYAK_NO_EXCEPTION=1" "WITH_RECOMPILER=1" "WITH_MMAP_FASTMEM=1")
   target_sources(core PRIVATE ${RECOMPILER_SRCS}
     cpu_recompiler_code_generator_x64.cpp
   )
@@ -178,5 +155,19 @@ else()
 endif()
 
 if(ENABLE_CHEEVOS)
-  target_compile_definitions(core PRIVATE -DWITH_CHEEVOS=1)
+  target_sources(core PRIVATE
+    achievements.cpp
+  )
+  target_compile_definitions(core PUBLIC -DWITH_CHEEVOS=1)
+  target_link_libraries(core PRIVATE rcheevos rapidjson)
 endif()
+
+if(ENABLE_DISCORD_PRESENCE)
+  target_compile_definitions(core PUBLIC -DWITH_DISCORD_PRESENCE=1)
+  target_link_libraries(core PRIVATE discord-rpc)
+endif()
+
+# Copy the provided data directory to the output directory.
+add_custom_command(TARGET core POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/data" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+)

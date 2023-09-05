@@ -1,30 +1,16 @@
-/***************************************************************************
- *   Original copyright notice from PGXP code from Beetle PSX.             *
- *   Copyright (C) 2016 by iCatButler                                      *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.           *
- ***************************************************************************/
+// SPDX-FileCopyrightText: 2016 iCatButler, 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: GPL-2.0+
 
 #include "pgxp.h"
 #include "bus.h"
-#include "common/log.h"
 #include "cpu_core.h"
 #include "settings.h"
+
+#include "common/log.h"
+
 #include <climits>
 #include <cmath>
+
 Log_SetChannel(PGXP);
 
 namespace PGXP {
@@ -34,7 +20,7 @@ enum : u32
   VERTEX_CACHE_WIDTH = 0x800 * 2,
   VERTEX_CACHE_HEIGHT = 0x800 * 2,
   VERTEX_CACHE_SIZE = VERTEX_CACHE_WIDTH * VERTEX_CACHE_HEIGHT,
-  PGXP_MEM_SIZE = (Bus::RAM_8MB_SIZE + CPU::DCACHE_SIZE) / 4,
+  PGXP_MEM_SIZE = (static_cast<u32>(Bus::RAM_8MB_SIZE) + static_cast<u32>(CPU::DCACHE_SIZE)) / 4,
   PGXP_MEM_SCRATCH_OFFSET = Bus::RAM_8MB_SIZE / 4
 };
 
@@ -50,19 +36,19 @@ enum : u32
 #define VALID_ALL (VALID_0 | VALID_1 | VALID_2 | VALID_3)
 #define INV_VALID_ALL (ALL ^ VALID_ALL)
 
-typedef struct PGXP_value_Tag
+struct PGXP_value
 {
   float x;
   float y;
   float z;
   union
   {
-    unsigned int flags;
-    unsigned char compFlags[4];
-    unsigned short halfFlags[2];
+    u32 flags;
+    u8 compFlags[4];
+    u16 halfFlags[2];
   };
-  unsigned int value;
-} PGXP_value;
+  u32 value;
+};
 
 typedef union
 {
@@ -108,8 +94,7 @@ static PGXP_value CP0_reg[32];
 #define CPU_Lo CPU_reg[33]
 
 // GTE registers
-static PGXP_value GTE_data_reg[32];
-static PGXP_value GTE_ctrl_reg[32];
+static PGXP_value GTE_regs[64];
 
 static PGXP_value* Mem = nullptr;
 static PGXP_value* vertexCache = nullptr;
@@ -185,7 +170,7 @@ ALWAYS_INLINE_RELEASE void ValidateAndCopyMem(PGXP_value* dest, u32 addr, u32 va
   *dest = PGXP_value_invalid;
 }
 
-ALWAYS_INLINE_RELEASE static void ValidateAndCopyMem16(PGXP_value* dest, u32 addr, u32 value, int sign)
+ALWAYS_INLINE_RELEASE static void ValidateAndCopyMem16(PGXP_value* dest, u32 addr, u32 value, bool sign)
 {
   u32 validMask = 0;
   psx_value val, mask;
@@ -274,8 +259,7 @@ void Initialize()
   std::memset(CPU_reg, 0, sizeof(CPU_reg));
   std::memset(CP0_reg, 0, sizeof(CP0_reg));
 
-  std::memset(GTE_data_reg, 0, sizeof(GTE_data_reg));
-  std::memset(GTE_ctrl_reg, 0, sizeof(GTE_ctrl_reg));
+  std::memset(GTE_regs, 0, sizeof(GTE_regs));
 
   if (!Mem)
   {
@@ -306,8 +290,7 @@ void Reset()
   std::memset(CPU_reg, 0, sizeof(CPU_reg));
   std::memset(CP0_reg, 0, sizeof(CP0_reg));
 
-  std::memset(GTE_data_reg, 0, sizeof(GTE_data_reg));
-  std::memset(GTE_ctrl_reg, 0, sizeof(GTE_ctrl_reg));
+  std::memset(GTE_regs, 0, sizeof(GTE_regs));
 
   if (Mem)
     std::memset(Mem, 0, sizeof(PGXP_value) * PGXP_MEM_SIZE);
@@ -329,33 +312,33 @@ void Shutdown()
     Mem = nullptr;
   }
 
-  std::memset(GTE_data_reg, 0, sizeof(GTE_data_reg));
-  std::memset(GTE_ctrl_reg, 0, sizeof(GTE_ctrl_reg));
+  std::memset(GTE_regs, 0, sizeof(GTE_regs));
 
   std::memset(CPU_reg, 0, sizeof(CPU_reg));
   std::memset(CP0_reg, 0, sizeof(CP0_reg));
 }
 
 // Instruction register decoding
-#define op(_instr) (_instr >> 26) // The op part of the instruction register
-#define func(_instr) ((_instr)&0x3F) // The funct part of the instruction register
-#define sa(_instr) ((_instr >> 6) & 0x1F) // The sa part of the instruction register
+#define op(_instr) (_instr >> 26)          // The op part of the instruction register
+#define func(_instr) ((_instr)&0x3F)       // The funct part of the instruction register
+#define sa(_instr) ((_instr >> 6) & 0x1F)  // The sa part of the instruction register
 #define rd(_instr) ((_instr >> 11) & 0x1F) // The rd part of the instruction register
 #define rt(_instr) ((_instr >> 16) & 0x1F) // The rt part of the instruction register
 #define rs(_instr) ((_instr >> 21) & 0x1F) // The rs part of the instruction register
-#define imm(_instr) (_instr & 0xFFFF) // The immediate part of the instruction register
+#define imm(_instr) (_instr & 0xFFFF)      // The immediate part of the instruction register
+#define cop2idx(_instr) (((_instr >> 11) & 0x1F) | ((_instr >> 17) & 0x20))
 
-#define SX0 (GTE_data_reg[12].x)
-#define SY0 (GTE_data_reg[12].y)
-#define SX1 (GTE_data_reg[13].x)
-#define SY1 (GTE_data_reg[13].y)
-#define SX2 (GTE_data_reg[14].x)
-#define SY2 (GTE_data_reg[14].y)
+#define SX0 (GTE_regs[12].x)
+#define SY0 (GTE_regs[12].y)
+#define SX1 (GTE_regs[13].x)
+#define SY1 (GTE_regs[13].y)
+#define SX2 (GTE_regs[14].x)
+#define SY2 (GTE_regs[14].y)
 
-#define SXY0 (GTE_data_reg[12])
-#define SXY1 (GTE_data_reg[13])
-#define SXY2 (GTE_data_reg[14])
-#define SXYP (GTE_data_reg[15])
+#define SXY0 (GTE_regs[12])
+#define SXY1 (GTE_regs[13])
+#define SXY2 (GTE_regs[14])
+#define SXYP (GTE_regs[15])
 
 void GTE_PushSXYZ2f(float x, float y, float z, u32 v)
 {
@@ -428,49 +411,35 @@ static void PGXP_MTC2_int(PGXP_value value, u32 reg)
       return;
   }
 
-  GTE_data_reg[reg] = value;
+  GTE_regs[reg] = value;
 }
 
 ////////////////////////////////////
 // Data transfer tracking
 ////////////////////////////////////
 
-void CPU_MFC2(u32 instr, u32 rtVal, u32 rdVal)
+void CPU_MFC2(u32 instr, u32 rdVal)
 {
   // CPU[Rt] = GTE_D[Rd]
-  Validate(&GTE_data_reg[rd(instr)], rdVal);
-  CPU_reg[rt(instr)] = GTE_data_reg[rd(instr)];
-  CPU_reg[rt(instr)].value = rtVal;
+  const u32 idx = cop2idx(instr);
+  Validate(&GTE_regs[idx], rdVal);
+  CPU_reg[rt(instr)] = GTE_regs[idx];
+  CPU_reg[rt(instr)].value = rdVal;
 }
 
-void CPU_MTC2(u32 instr, u32 rdVal, u32 rtVal)
+void CPU_MTC2(u32 instr, u32 rtVal)
 {
   // GTE_D[Rd] = CPU[Rt]
+  const u32 idx = cop2idx(instr);
   Validate(&CPU_reg[rt(instr)], rtVal);
-  PGXP_MTC2_int(CPU_reg[rt(instr)], rd(instr));
-  GTE_data_reg[rd(instr)].value = rdVal;
-}
-
-void CPU_CFC2(u32 instr, u32 rtVal, u32 rdVal)
-{
-  // CPU[Rt] = GTE_C[Rd]
-  Validate(&GTE_ctrl_reg[rd(instr)], rdVal);
-  CPU_reg[rt(instr)] = GTE_ctrl_reg[rd(instr)];
-  CPU_reg[rt(instr)].value = rtVal;
-}
-
-void CPU_CTC2(u32 instr, u32 rdVal, u32 rtVal)
-{
-  // GTE_C[Rd] = CPU[Rt]
-  Validate(&CPU_reg[rt(instr)], rtVal);
-  GTE_ctrl_reg[rd(instr)] = CPU_reg[rt(instr)];
-  GTE_ctrl_reg[rd(instr)].value = rdVal;
+  PGXP_MTC2_int(CPU_reg[rt(instr)], idx);
+  GTE_regs[idx].value = rtVal;
 }
 
 ////////////////////////////////////
 // Memory Access
 ////////////////////////////////////
-void CPU_LWC2(u32 instr, u32 rtVal, u32 addr)
+void CPU_LWC2(u32 instr, u32 addr, u32 rtVal)
 {
   // GTE_D[Rt] = Mem[addr]
   PGXP_value val;
@@ -478,11 +447,11 @@ void CPU_LWC2(u32 instr, u32 rtVal, u32 addr)
   PGXP_MTC2_int(val, rt(instr));
 }
 
-void CPU_SWC2(u32 instr, u32 rtVal, u32 addr)
+void CPU_SWC2(u32 instr, u32 addr, u32 rtVal)
 {
   //  Mem[addr] = GTE_D[Rt]
-  Validate(&GTE_data_reg[rt(instr)], rtVal);
-  WriteMem(&GTE_data_reg[rt(instr)], addr);
+  Validate(&GTE_regs[rt(instr)], rtVal);
+  WriteMem(&GTE_regs[rt(instr)], addr);
 }
 
 ALWAYS_INLINE_RELEASE void PGXP_CacheVertex(s16 sx, s16 sy, const PGXP_value& vertex)
@@ -565,39 +534,45 @@ bool GetPreciseVertex(u32 addr, u32 value, int x, int y, int xOffs, int yOffs, f
 }
 
 // Instruction register decoding
-#define op(_instr) (_instr >> 26) // The op part of the instruction register
-#define func(_instr) ((_instr)&0x3F) // The funct part of the instruction register
-#define sa(_instr) ((_instr >> 6) & 0x1F) // The sa part of the instruction register
+#define op(_instr) (_instr >> 26)          // The op part of the instruction register
+#define func(_instr) ((_instr)&0x3F)       // The funct part of the instruction register
+#define sa(_instr) ((_instr >> 6) & 0x1F)  // The sa part of the instruction register
 #define rd(_instr) ((_instr >> 11) & 0x1F) // The rd part of the instruction register
 #define rt(_instr) ((_instr >> 16) & 0x1F) // The rt part of the instruction register
 #define rs(_instr) ((_instr >> 21) & 0x1F) // The rs part of the instruction register
-#define imm(_instr) (_instr & 0xFFFF) // The immediate part of the instruction register
+#define imm(_instr) (_instr & 0xFFFF)      // The immediate part of the instruction register
 #define imm_sext(_instr)                                                                                               \
   static_cast<s32>(static_cast<s16>(_instr & 0xFFFF)) // The immediate part of the instruction register
 
-void CPU_LW(u32 instr, u32 rtVal, u32 addr)
+void CPU_LW(u32 instr, u32 addr, u32 rtVal)
 {
   // Rt = Mem[Rs + Im]
   ValidateAndCopyMem(&CPU_reg[rt(instr)], addr, rtVal);
 }
 
-void CPU_LBx(u32 instr, u32 rtVal, u32 addr)
+void CPU_LBx(u32 instr, u32 addr, u32 rtVal)
 {
   CPU_reg[rt(instr)] = PGXP_value_invalid;
 }
 
-void CPU_LHx(u32 instr, u32 rtVal, u32 addr)
+void CPU_LH(u32 instr, u32 addr, u32 rtVal)
 {
-  // Rt = Mem[Rs + Im] (sign/zero extended)
-  ValidateAndCopyMem16(&CPU_reg[rt(instr)], addr, rtVal, 1);
+  // Rt = Mem[Rs + Im] (sign extended)
+  ValidateAndCopyMem16(&CPU_reg[rt(instr)], addr, rtVal, true);
 }
 
-void CPU_SB(u32 instr, u8 rtVal, u32 addr)
+void CPU_LHU(u32 instr, u32 addr, u32 rtVal)
+{
+  // Rt = Mem[Rs + Im] (zero extended)
+  ValidateAndCopyMem16(&CPU_reg[rt(instr)], addr, rtVal, false);
+}
+
+void CPU_SB(u32 instr, u32 addr, u32 rtVal)
 {
   WriteMem(&PGXP_value_invalid, addr);
 }
 
-void CPU_SH(u32 instr, u16 rtVal, u32 addr)
+void CPU_SH(u32 instr, u32 addr, u32 rtVal)
 {
   PGXP_value* val = &CPU_reg[rt(instr)];
 
@@ -606,7 +581,7 @@ void CPU_SH(u32 instr, u16 rtVal, u32 addr)
   WriteMem16(val, addr);
 }
 
-void CPU_SW(u32 instr, u32 rtVal, u32 addr)
+void CPU_SW(u32 instr, u32 addr, u32 rtVal)
 {
   // Mem[Rs + Im] = Rt
   PGXP_value* val = &CPU_reg[rt(instr)];
@@ -799,7 +774,15 @@ void CPU_ADD(u32 instr, u32 rsVal, u32 rtVal)
   Validate(&CPU_reg[rs(instr)], rsVal);
   Validate(&CPU_reg[rt(instr)], rtVal);
 
-  if (rtVal != 0)
+  if (rtVal == 0)
+  {
+    ret = CPU_reg[rs(instr)];
+  }
+  else if (rsVal == 0)
+  {
+    ret = CPU_reg[rt(instr)];
+  }
+  else
   {
     // iCB: Only require one valid input
     if (((CPU_reg[rt(instr)].flags & VALID_01) != VALID_01) != ((CPU_reg[rs(instr)].flags & VALID_01) != VALID_01))
@@ -825,10 +808,6 @@ void CPU_ADD(u32 instr, u32 rsVal, u32 rtVal)
     // TODO: decide which "z/w" component to use
 
     ret.halfFlags[0] &= CPU_reg[rt(instr)].halfFlags[0];
-  }
-  else
-  {
-    ret = CPU_reg[rs(instr)];
   }
 
   ret.value = rsVal + rtVal;
@@ -1587,10 +1566,10 @@ void CPU_MFHI(u32 instr, u32 hiVal)
   CPU_reg[rd(instr)] = CPU_Hi;
 }
 
-void CPU_MTHI(u32 instr, u32 rdVal)
+void CPU_MTHI(u32 instr, u32 rsVal)
 {
   // Hi = Rd
-  Validate(&CPU_reg[rd(instr)], rdVal);
+  Validate(&CPU_reg[rs(instr)], rsVal);
 
   CPU_Hi = CPU_reg[rd(instr)];
 }
@@ -1603,10 +1582,10 @@ void CPU_MFLO(u32 instr, u32 loVal)
   CPU_reg[rd(instr)] = CPU_Lo;
 }
 
-void CPU_MTLO(u32 instr, u32 rdVal)
+void CPU_MTLO(u32 instr, u32 rsVal)
 {
   // Lo = Rd
-  Validate(&CPU_reg[rd(instr)], rdVal);
+  Validate(&CPU_reg[rs(instr)], rsVal);
 
   CPU_Lo = CPU_reg[rd(instr)];
 }

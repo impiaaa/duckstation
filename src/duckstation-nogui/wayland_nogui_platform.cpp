@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "wayland_nogui_platform.h"
 #include "common/assert.h"
 #include "common/log.h"
@@ -147,6 +150,11 @@ bool WaylandNoGUIPlatform::CreatePlatformWindow(std::string title)
   return true;
 }
 
+bool WaylandNoGUIPlatform::HasPlatformWindow() const
+{
+  return (m_surface != nullptr);
+}
+
 void WaylandNoGUIPlatform::DestroyPlatformWindow()
 {
   m_window_info = {};
@@ -191,11 +199,6 @@ void WaylandNoGUIPlatform::SetPlatformWindowTitle(std::string title)
 {
   if (m_xdg_toplevel)
     xdg_toplevel_set_title(m_xdg_toplevel, title.c_str());
-}
-
-void* WaylandNoGUIPlatform::GetPlatformWindowHandle()
-{
-  return m_surface;
 }
 
 std::optional<u32> WaylandNoGUIPlatform::ConvertHostKeyboardStringToCode(const std::string_view& str)
@@ -272,7 +275,7 @@ void WaylandNoGUIPlatform::TopLevelConfigure(void* data, struct xdg_toplevel* xd
 
 void WaylandNoGUIPlatform::TopLevelClose(void* data, struct xdg_toplevel* xdg_toplevel)
 {
-  Host::RunOnCPUThread([]() { Host::RequestExit(g_settings.save_state_on_exit); });
+  Host::RunOnCPUThread([]() { Host::RequestExit(false); });
 }
 
 void WaylandNoGUIPlatform::SeatCapabilities(void* data, wl_seat* seat, uint32_t capabilities)

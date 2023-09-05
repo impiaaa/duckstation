@@ -1,13 +1,19 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "gamelistwidget.h"
-#include "common/assert.h"
-#include "common/string_util.h"
-#include "core/host_settings.h"
-#include "core/settings.h"
-#include "frontend-common/game_list.h"
 #include "gamelistmodel.h"
 #include "gamelistrefreshthread.h"
 #include "qthost.h"
 #include "qtutils.h"
+
+#include "core/game_list.h"
+#include "core/host.h"
+#include "core/settings.h"
+
+#include "common/assert.h"
+#include "common/string_util.h"
+
 #include <QtCore/QSortFilterProxyModel>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QPixmap>
@@ -77,7 +83,9 @@ private:
   QString m_filter_name;
 };
 
-GameListWidget::GameListWidget(QWidget* parent /* = nullptr */) : QWidget(parent) {}
+GameListWidget::GameListWidget(QWidget* parent /* = nullptr */) : QWidget(parent)
+{
+}
 
 GameListWidget::~GameListWidget() = default;
 
@@ -482,7 +490,7 @@ void GameListWidget::loadTableViewColumnVisibilitySettings()
     true,  // code
     true,  // title
     false, // file title
-    true,  // developer
+    false, // developer
     false, // publisher
     false, // genre
     false, // year
@@ -579,7 +587,9 @@ const GameList::Entry* GameListWidget::getSelectedEntry() const
   }
 }
 
-GameListGridListView::GameListGridListView(QWidget* parent /*= nullptr*/) : QListView(parent) {}
+GameListGridListView::GameListGridListView(QWidget* parent /*= nullptr*/) : QListView(parent)
+{
+}
 
 void GameListGridListView::wheelEvent(QWheelEvent* e)
 {

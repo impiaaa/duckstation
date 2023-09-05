@@ -1,16 +1,20 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "controller.h"
 #include "analog_controller.h"
 #include "analog_joystick.h"
 #include "digital_controller.h"
 #include "fmt/format.h"
 #include "guncon.h"
+#include "host.h"
 #include "negcon.h"
 #include "playstation_mouse.h"
 #include "util/state_wrapper.h"
 
 static const Controller::ControllerInfo s_none_info = {ControllerType::None,
                                                        "None",
-                                                       "Not Connected",
+                                                       TRANSLATE_NOOP("ControllerType", "Not Connected"),
                                                        nullptr,
                                                        0,
                                                        nullptr,
@@ -65,7 +69,7 @@ std::optional<u32> Controller::GetAnalogInputBytes() const
 
 void Controller::LoadSettings(SettingsInterface& si, const char* section) {}
 
-bool Controller::GetSoftwareCursor(const Common::RGBA8Image** image, float* image_scale, bool* relative_mode)
+bool Controller::GetSoftwareCursor(std::string* image_path, float* image_scale, bool* relative_mode)
 {
   return false;
 }
@@ -145,7 +149,7 @@ std::vector<std::string> Controller::GetControllerBinds(const std::string_view& 
     for (u32 i = 0; i < info->num_bindings; i++)
     {
       const ControllerBindingInfo& bi = info->bindings[i];
-      if (bi.type == ControllerBindingType::Unknown || bi.type == ControllerBindingType::Motor)
+      if (bi.type == InputBindingInfo::Type::Unknown || bi.type == InputBindingInfo::Type::Motor)
         continue;
 
       ret.emplace_back(info->bindings[i].name);
@@ -165,7 +169,7 @@ std::vector<std::string> Controller::GetControllerBinds(ControllerType type)
     for (u32 i = 0; i < info->num_bindings; i++)
     {
       const ControllerBindingInfo& bi = info->bindings[i];
-      if (bi.type == ControllerBindingType::Unknown || bi.type == ControllerBindingType::Motor)
+      if (bi.type == InputBindingInfo::Type::Unknown || bi.type == InputBindingInfo::Type::Motor)
         continue;
 
       ret.emplace_back(info->bindings[i].name);

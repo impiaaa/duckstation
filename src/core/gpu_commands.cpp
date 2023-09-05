@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "common/assert.h"
 #include "common/log.h"
 #include "common/string_util.h"
@@ -207,7 +210,7 @@ bool GPU::HandleInterruptRequestCommand()
   if (!m_GPUSTAT.interrupt_request)
   {
     m_GPUSTAT.interrupt_request = true;
-    g_interrupt_controller.InterruptRequest(InterruptController::IRQ::GPU);
+    InterruptController::InterruptRequest(InterruptController::IRQ::GPU);
   }
 
   m_fifo.RemoveOne();

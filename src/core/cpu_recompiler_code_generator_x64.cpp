@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "common/align.h"
 #include "common/assert.h"
 #include "common/log.h"
@@ -300,6 +303,8 @@ void CodeGenerator::EmitSignExtend(HostReg to_reg, RegSize to_size, HostReg from
         case RegSize_8:
           m_emit->movsx(GetHostReg16(to_reg), GetHostReg8(from_reg));
           return;
+        default:
+          break;
       }
     }
     break;
@@ -314,14 +319,17 @@ void CodeGenerator::EmitSignExtend(HostReg to_reg, RegSize to_size, HostReg from
         case RegSize_16:
           m_emit->movsx(GetHostReg32(to_reg), GetHostReg16(from_reg));
           return;
+        default:
+          break;
       }
     }
     break;
 
     default:
-      Panic("Unknown sign-extend combination");
       break;
   }
+
+  Panic("Unknown sign-extend combination");
 }
 
 void CodeGenerator::EmitZeroExtend(HostReg to_reg, RegSize to_size, HostReg from_reg, RegSize from_size)
@@ -335,6 +343,8 @@ void CodeGenerator::EmitZeroExtend(HostReg to_reg, RegSize to_size, HostReg from
         case RegSize_8:
           m_emit->movzx(GetHostReg16(to_reg), GetHostReg8(from_reg));
           return;
+        default:
+          break;
       }
     }
     break;
@@ -349,9 +359,14 @@ void CodeGenerator::EmitZeroExtend(HostReg to_reg, RegSize to_size, HostReg from
         case RegSize_16:
           m_emit->movzx(GetHostReg32(to_reg), GetHostReg16(from_reg));
           return;
+        default:
+          break;
       }
     }
     break;
+
+    default:
+      break;
   }
 
   Panic("Unknown sign-extend combination");
@@ -407,6 +422,10 @@ void CodeGenerator::EmitCopyValue(HostReg to_reg, const Value& value)
         m_emit->mov(GetHostReg64(to_reg), GetHostReg64(value.host_reg));
     }
     break;
+
+    default:
+      UnreachableCode();
+      break;
   }
 }
 
@@ -476,6 +495,10 @@ void CodeGenerator::EmitAdd(HostReg to_reg, HostReg from_reg, const Value& value
       }
     }
     break;
+
+    default:
+      UnreachableCode();
+      break;
   }
 }
 
@@ -545,6 +568,10 @@ void CodeGenerator::EmitSub(HostReg to_reg, HostReg from_reg, const Value& value
       }
     }
     break;
+
+    default:
+      UnreachableCode();
+      break;
   }
 }
 
@@ -602,6 +629,10 @@ void CodeGenerator::EmitCmp(HostReg to_reg, const Value& value)
       }
     }
     break;
+
+    default:
+      UnreachableCode();
+      break;
   }
 }
 
@@ -1835,6 +1866,10 @@ void CodeGenerator::EmitLoadGuestRAMFastmem(const Value& address, RegSize size, 
         }
       }
       break;
+
+      default:
+        UnreachableCode();
+        break;
     }
   }
   else
@@ -1859,6 +1894,10 @@ void CodeGenerator::EmitLoadGuestRAMFastmem(const Value& address, RegSize size, 
       case RegSize_32:
         m_emit->mov(GetHostReg32(result.host_reg), m_emit->dword[GetHostReg64(RARG1) + GetHostReg64(RARG2)]);
         break;
+
+      default:
+        UnreachableCode();
+        break;
     }
   }
 }
@@ -1872,6 +1911,7 @@ void CodeGenerator::EmitLoadGuestMemoryFastmem(const CodeBlockInstruction& cbi, 
   bpi.address_host_reg = HostReg_Invalid;
   bpi.value_host_reg = result.host_reg;
   bpi.guest_pc = m_current_instruction->pc;
+  bpi.fault_count = 0;
 
   if (g_settings.cpu_fastmem_mode == CPUFastmemMode::MMap)
   {
@@ -1932,6 +1972,10 @@ void CodeGenerator::EmitLoadGuestMemoryFastmem(const CodeBlockInstruction& cbi, 
         }
       }
       break;
+
+      default:
+        UnreachableCode();
+        break;
     }
   }
   else
@@ -1958,6 +2002,10 @@ void CodeGenerator::EmitLoadGuestMemoryFastmem(const CodeBlockInstruction& cbi, 
 
       case RegSize_32:
         m_emit->mov(GetHostReg32(result.host_reg), m_emit->dword[GetHostReg64(RARG1) + GetHostReg64(RARG2)]);
+        break;
+
+      default:
+        UnreachableCode();
         break;
     }
   }
@@ -2077,6 +2125,7 @@ void CodeGenerator::EmitStoreGuestMemoryFastmem(const CodeBlockInstruction& cbi,
   bpi.address_host_reg = HostReg_Invalid;
   bpi.value_host_reg = value.host_reg;
   bpi.guest_pc = m_current_instruction->pc;
+  bpi.fault_count = 0;
 
   if (g_settings.cpu_fastmem_mode == CPUFastmemMode::MMap)
   {
@@ -2186,6 +2235,10 @@ void CodeGenerator::EmitStoreGuestMemoryFastmem(const CodeBlockInstruction& cbi,
         }
       }
       break;
+
+      default:
+        UnreachableCode();
+        break;
     }
   }
   else
@@ -2229,6 +2282,10 @@ void CodeGenerator::EmitStoreGuestMemoryFastmem(const CodeBlockInstruction& cbi,
           m_emit->mov(m_emit->dword[GetHostReg64(RARG1) + GetHostReg64(RARG2)], GetHostReg32(value.host_reg));
       }
       break;
+
+      default:
+        UnreachableCode();
+        break;
     }
   }
 
@@ -3019,59 +3076,17 @@ CodeCache::DispatcherFunction CodeGenerator::CompileDispatcher()
 
   EmitLoadGlobalAddress(Xbyak::Operand::RBP, &g_state);
 
-  Xbyak::Label frame_done_loop;
-  Xbyak::Label exit_dispatcher;
-  m_emit->L(frame_done_loop);
-
-  // if frame_done goto exit_dispatcher
-  m_emit->test(m_emit->byte[m_emit->rbp + offsetof(State, frame_done)], 1);
-  m_emit->jnz(exit_dispatcher, Xbyak::CodeGenerator::T_NEAR);
-
-  // eax <- sr
-  Xbyak::Label no_interrupt;
-  m_emit->mov(m_emit->eax, m_emit->dword[m_emit->rbp + offsetof(State, cop0_regs.sr.bits)]);
-
-  // if Iec == 0 then goto no_interrupt
-  m_emit->test(m_emit->eax, 1);
-  m_emit->jz(no_interrupt);
-
-  // sr & cause
-  m_emit->and_(m_emit->eax, m_emit->dword[m_emit->rbp + offsetof(State, cop0_regs.cause.bits)]);
-
-  // ((sr & cause) & 0xff00) == 0 goto no_interrupt
-  m_emit->test(m_emit->eax, 0xFF00);
-  m_emit->jz(no_interrupt);
-
-  // we have an interrupt
-  EmitCall(reinterpret_cast<const void*>(&DispatchInterrupt));
-
-  // no interrupt or we just serviced it
-  m_emit->L(no_interrupt);
-
-  // TimingEvents::UpdateCPUDowncount:
-  // eax <- head event->downcount
-  // downcount <- eax
-  EmitLoadGlobalAddress(Xbyak::Operand::RAX, TimingEvents::GetHeadEventPtr());
-  m_emit->mov(m_emit->rax, m_emit->qword[m_emit->rax]);
-  m_emit->mov(m_emit->eax, m_emit->dword[m_emit->rax + offsetof(TimingEvent, m_downcount)]);
-  m_emit->mov(m_emit->dword[m_emit->rbp + offsetof(State, downcount)], m_emit->eax);
+  Xbyak::Label event_test;
+  m_emit->jmp(event_test);
 
   // main dispatch loop
   Xbyak::Label main_loop;
   m_emit->align(16);
   m_emit->L(main_loop);
 
-  // eax <- pending_ticks
-  m_emit->mov(m_emit->eax, m_emit->dword[m_emit->rbp + offsetof(State, pending_ticks)]);
-
-  // while eax < downcount
-  Xbyak::Label downcount_hit;
-  m_emit->cmp(m_emit->eax, m_emit->dword[m_emit->rbp + offsetof(State, downcount)]);
-  m_emit->jge(downcount_hit);
-
   // time to lookup the block
   // eax <- pc
-  m_emit->mov(m_emit->eax, m_emit->dword[m_emit->rbp + offsetof(State, regs.pc)]);
+  m_emit->mov(m_emit->eax, m_emit->dword[m_emit->rbp + offsetof(State, pc)]);
 
   // rcx <- s_fast_map[pc >> 16]
   EmitLoadGlobalAddress(Xbyak::Operand::RBX, CodeCache::GetFastMapPointer());
@@ -3082,22 +3097,19 @@ CodeCache::DispatcherFunction CodeGenerator::CompileDispatcher()
   // call(rcx[pc * 2]) (fast_map[pc >> 2])
   m_emit->call(m_emit->qword[m_emit->rcx + m_emit->rax * 2]);
 
+  // eax <- pending_ticks
+  m_emit->mov(m_emit->eax, m_emit->dword[m_emit->rbp + offsetof(State, pending_ticks)]);
+
+  // while eax < downcount
+  Xbyak::Label downcount_hit;
+  m_emit->cmp(m_emit->eax, m_emit->dword[m_emit->rbp + offsetof(State, downcount)]);
+  m_emit->jl(main_loop);
+
+  m_emit->L(event_test);
+  EmitCall(reinterpret_cast<const void*>(&TimingEvents::RunEvents));
   m_emit->jmp(main_loop);
 
-  // end while
-  m_emit->L(downcount_hit);
-
-  // check events then for frame done
-  EmitLoadGlobalAddress(Xbyak::Operand::RAX, TimingEvents::GetHeadEventPtr());
-  m_emit->mov(m_emit->rax, m_emit->qword[m_emit->rax]);
-  m_emit->mov(m_emit->eax, m_emit->dword[m_emit->rax + offsetof(TimingEvent, m_downcount)]);
-  m_emit->cmp(m_emit->eax, m_emit->dword[m_emit->rbp + offsetof(State, pending_ticks)]);
-  m_emit->jg(frame_done_loop);
-  EmitCall(reinterpret_cast<const void*>(&TimingEvents::RunEvents));
-  m_emit->jmp(frame_done_loop);
-
   // all done
-  m_emit->L(exit_dispatcher);
   RestoreStackAfterCall(stack_adjust);
   m_register_cache.PopCalleeSavedRegisters(true);
   m_emit->ret();

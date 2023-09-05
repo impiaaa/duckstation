@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "cheats.h"
 #include "bus.h"
 #include "common/assert.h"
@@ -2764,7 +2767,7 @@ void CheatCode::ApplyOnDisable() const
 }
 
 static std::array<const char*, 1> s_cheat_code_type_names = {{"Gameshark"}};
-static std::array<const char*, 1> s_cheat_code_type_display_names{{TRANSLATABLE("Cheats", "Gameshark")}};
+static std::array<const char*, 1> s_cheat_code_type_display_names{{TRANSLATE_NOOP("Cheats", "Gameshark")}};
 
 const char* CheatCode::GetTypeName(Type type)
 {
@@ -2789,7 +2792,7 @@ std::optional<CheatCode::Type> CheatCode::ParseTypeName(const char* str)
 
 static std::array<const char*, 2> s_cheat_code_activation_names = {{"Manual", "EndFrame"}};
 static std::array<const char*, 2> s_cheat_code_activation_display_names{
-  {TRANSLATABLE("Cheats", "Manual"), TRANSLATABLE("Cheats", "Automatic (Frame End)")}};
+  {TRANSLATE_NOOP("Cheats", "Manual"), TRANSLATE_NOOP("Cheats", "Automatic (Frame End)")}};
 
 const char* CheatCode::GetActivationName(Activation activation)
 {

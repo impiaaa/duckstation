@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #pragma once
 #include "core/types.h"
 #include "util/cd_image_hasher.h"
@@ -12,7 +15,7 @@ class CDImage;
 struct Settings;
 
 namespace GameDatabase {
-enum class CompatibilityRating : u32
+enum class CompatibilityRating : u8
 {
   Unknown = 0,
   DoesntBoot = 1,
@@ -44,6 +47,7 @@ enum class Trait : u32
   ForceRecompilerMemoryExceptions,
   ForceRecompilerICache,
   ForceRecompilerLUTFastmem,
+  IsLibCryptProtected,
 
   Count
 };
@@ -61,7 +65,7 @@ struct Entry
   u8 max_players;
   u8 min_blocks;
   u8 max_blocks;
-  u32 supported_controllers;
+  u16 supported_controllers;
   CompatibilityRating compatibility;
 
   std::bitset<static_cast<int>(Trait::Count)> traits{};
@@ -76,6 +80,9 @@ struct Entry
   std::optional<float> gpu_pgxp_tolerance;
   std::optional<float> gpu_pgxp_depth_threshold;
 
+  std::string disc_set_name;
+  std::vector<std::string> disc_set_serials;
+
   ALWAYS_INLINE bool HasTrait(Trait trait) const { return traits[static_cast<int>(trait)]; }
 
   void ApplySettings(Settings& settings, bool display_osd_messages) const;
@@ -85,12 +92,12 @@ void EnsureLoaded();
 void Unload();
 
 const Entry* GetEntryForDisc(CDImage* image);
+const Entry* GetEntryForId(const std::string_view& code);
 const Entry* GetEntryForSerial(const std::string_view& serial);
 std::string GetSerialForDisc(CDImage* image);
 std::string GetSerialForPath(const char* path);
 
 const char* GetTraitName(Trait trait);
-const char* GetTraitDisplayName(Trait trait);
 
 const char* GetCompatibilityRatingName(CompatibilityRating rating);
 const char* GetCompatibilityRatingDisplayName(CompatibilityRating rating);

@@ -1,4 +1,31 @@
+// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+
 #include "nogui_host.h"
+#include "nogui_platform.h"
+
+#include "scmversion/scmversion.h"
+
+#include "core/achievements.h"
+#include "core/controller.h"
+#include "core/fullscreen_ui.h"
+#include "core/game_list.h"
+#include "core/gpu.h"
+#include "core/host.h"
+#include "core/imgui_overlays.h"
+#include "core/settings.h"
+#include "core/system.h"
+
+#include "util/gpu_device.h"
+#include "util/imgui_manager.h"
+#include "util/ini_settings_interface.h"
+#include "util/input_manager.h"
+#include "util/platform_misc.h"
+
+#include "imgui.h"
+#include "imgui_internal.h"
+#include "imgui_stdlib.h"
+
 #include "common/assert.h"
 #include "common/byte_stream.h"
 #include "common/crash_handler.h"
@@ -7,36 +34,14 @@
 #include "common/path.h"
 #include "common/string_util.h"
 #include "common/threading.h"
-#include "core/controller.h"
-#include "core/gpu.h"
-#include "core/host.h"
-#include "core/host_display.h"
-#include "core/host_settings.h"
-#include "core/settings.h"
-#include "core/system.h"
-#include "frontend-common/common_host.h"
-#include "frontend-common/fullscreen_ui.h"
-#include "frontend-common/game_list.h"
-#include "frontend-common/icon.h"
-#include "frontend-common/imgui_manager.h"
-#include "frontend-common/imgui_overlays.h"
-#include "frontend-common/input_manager.h"
-#include "imgui.h"
-#include "imgui_internal.h"
-#include "imgui_stdlib.h"
-#include "nogui_platform.h"
-#include "scmversion/scmversion.h"
-#include "util/ini_settings_interface.h"
+
 #include <cinttypes>
 #include <cmath>
 #include <condition_variable>
 #include <csignal>
 #include <thread>
-Log_SetChannel(NoGUIHost);
 
-#ifdef WITH_CHEEVOS
-#include "frontend-common/achievements.h"
-#endif
+Log_SetChannel(NoGUIHost);
 
 #ifdef _WIN32
 #include "common/windows_headers.h"
@@ -54,6 +59,9 @@ std::unique_ptr<NoGUIPlatform> g_nogui_window;
 // Local function declarations
 //////////////////////////////////////////////////////////////////////////
 namespace NoGUIHost {
+/// Starts the virtual machine.
+static void StartSystem(SystemBootParameters params);
+
 static bool ParseCommandLineParametersAndInitializeConfig(int argc, char* argv[],
                                                           std::optional<SystemBootParameters>& autoboot);
 static void PrintCommandLineVersion();
@@ -79,8 +87,6 @@ static void UpdateWindowTitle(const std::string& game_title);
 static void CancelAsyncOp();
 static void StartAsyncOp(std::function<void(ProgressCallback*)> callback);
 static void AsyncOpThreadEntryPoint(std::function<void(ProgressCallback*)> callback);
-static bool AcquireHostDisplay(RenderAPI api);
-static void ReleaseHostDisplay();
 } // namespace NoGUIHost
 
 //////////////////////////////////////////////////////////////////////////
@@ -93,7 +99,7 @@ static bool s_save_state_on_shutdown = false;
 static bool s_was_paused_by_focus_loss = false;
 
 static Threading::Thread s_cpu_thread;
-static Threading::KernelSemaphore s_host_display_created_or_destroyed;
+static Threading::KernelSemaphore s_platform_window_updated;
 static std::atomic_bool s_running{false};
 static std::mutex s_cpu_thread_events_mutex;
 static std::condition_variable s_cpu_thread_event_done;
@@ -150,7 +156,7 @@ void NoGUIHost::SetAppRoot()
 
 void NoGUIHost::SetResourcesDirectory()
 {
-#ifndef __APPLE__
+#ifndef __APPLE__NOT_USED // Not using bundles yet.
   // On Windows/Linux, these are in the binary directory.
   EmuFolders::Resources = Path::Combine(EmuFolders::AppRoot, "resources");
 #else
@@ -161,6 +167,10 @@ void NoGUIHost::SetResourcesDirectory()
 
 void NoGUIHost::SetDataDirectory()
 {
+  // Already set, e.g. by -portable.
+  if (!EmuFolders::DataRoot.empty())
+    return;
+
   if (ShouldUsePortableMode())
   {
     EmuFolders::DataRoot = EmuFolders::AppRoot;
@@ -264,15 +274,15 @@ void NoGUIHost::SetDefaultSettings(SettingsInterface& si, bool system, bool cont
   if (system)
   {
     System::SetDefaultSettings(si);
-    CommonHost::SetDefaultSettings(si);
     EmuFolders::SetDefaults();
     EmuFolders::Save(si);
   }
 
   if (controller)
   {
-    CommonHost::SetDefaultControllerSettings(si);
-    CommonHost::SetDefaultHotkeyBindings(si);
+    InputManager::SetDefaultSourceConfig(si);
+    Settings::SetDefaultControllerConfig(si);
+    Settings::SetDefaultHotkeyConfig(si);
   }
 
   g_nogui_window->SetDefaultConfig(si);
@@ -325,14 +335,16 @@ void Host::OnInputDeviceDisconnected(const std::string_view& identifier)
                            fmt::format("Input device {} disconnected.", identifier), 10.0f);
 }
 
-TinyString Host::TranslateString(const char* context, const char* str, const char* disambiguation, int n)
+s32 Host::Internal::GetTranslatedStringImpl(const std::string_view& context, const std::string_view& msg, char* tbuf,
+                                            size_t tbuf_space)
 {
-  return str;
-}
+  if (msg.size() > tbuf_space)
+    return -1;
+  else if (msg.empty())
+    return 0;
 
-std::string Host::TranslateStdString(const char* context, const char* str, const char* disambiguation, int n)
-{
-  return str;
+  std::memcpy(tbuf, msg.data(), msg.size());
+  return static_cast<s32>(msg.size());
 }
 
 std::optional<std::vector<u8>> Host::ReadResourceFile(const char* filename)
@@ -368,12 +380,10 @@ std::optional<std::time_t> Host::GetResourceFileTimestamp(const char* filename)
 
 void Host::LoadSettings(SettingsInterface& si, std::unique_lock<std::mutex>& lock)
 {
-  CommonHost::LoadSettings(si, lock);
 }
 
 void Host::CheckForSettingsChanges(const Settings& old_settings)
 {
-  CommonHost::CheckForSettingsChanges(old_settings);
 }
 
 void Host::CommitBaseSettingChanges()
@@ -408,8 +418,7 @@ void NoGUIHost::StartSystem(SystemBootParameters params)
 void NoGUIHost::ProcessPlatformWindowResize(s32 width, s32 height, float scale)
 {
   Host::RunOnCPUThread([width, height, scale]() {
-    // TODO: Scale
-    g_host_display->ResizeRenderWindow(width, height);
+    g_gpu_device->ResizeWindow(width, height, scale);
     ImGuiManager::WindowResized();
     System::HostDisplayResized();
   });
@@ -417,9 +426,6 @@ void NoGUIHost::ProcessPlatformWindowResize(s32 width, s32 height, float scale)
 
 void NoGUIHost::ProcessPlatformMouseMoveEvent(float x, float y)
 {
-  if (g_host_display)
-    g_host_display->SetMousePosition(static_cast<s32>(x), static_cast<s32>(y));
-
   InputManager::UpdatePointerAbsolutePosition(0, x, y);
   ImGuiManager::UpdateMousePosition(x, y);
 }
@@ -599,10 +605,10 @@ void NoGUIHost::CPUThreadEntryPoint()
   Threading::SetNameOfCurrentThread("CPU Thread");
 
   // input source setup must happen on emu thread
-  CommonHost::Initialize();
+  System::Internal::ProcessStartup();
 
-  // start the GS thread up and get it going
-  if (AcquireHostDisplay(Settings::GetRenderAPIForRenderer(g_settings.gpu_renderer)))
+  // start the fullscreen UI and get it going
+  if (Host::CreateGPUDevice(Settings::GetRenderAPIForRenderer(g_settings.gpu_renderer)) && FullscreenUI::Initialize())
   {
     // kick a game list refresh if we're not in batch mode
     if (!InBatchMode())
@@ -622,9 +628,10 @@ void NoGUIHost::CPUThreadEntryPoint()
 
   if (System::IsValid())
     System::ShutdownSystem(false);
-  ReleaseHostDisplay();
+  Host::ReleaseGPUDevice();
+  Host::ReleaseRenderWindow();
 
-  CommonHost::Shutdown();
+  System::Internal::ProcessShutdown();
   g_nogui_window->QuitMessageLoop();
 }
 
@@ -639,57 +646,37 @@ void NoGUIHost::CPUThreadMainLoop()
     }
 
     Host::PumpMessagesOnCPUThread();
-    Host::RenderDisplay(false);
+    System::Internal::IdlePollUpdate();
+    System::PresentDisplay(false);
+    if (!g_gpu_device->IsVsyncEnabled())
+      g_gpu_device->ThrottlePresentation();
   }
 }
 
-bool NoGUIHost::AcquireHostDisplay(RenderAPI api)
+std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
 {
-  Assert(!g_host_display);
+  std::optional<WindowInfo> wi;
 
-  g_nogui_window->ExecuteInMessageLoop([api]() {
-    if (g_nogui_window->CreatePlatformWindow(GetWindowTitle(System::GetRunningTitle())))
+  g_nogui_window->ExecuteInMessageLoop([&wi, recreate_window]() {
+    bool res = g_nogui_window->HasPlatformWindow();
+    if (!res || recreate_window)
     {
-      const std::optional<WindowInfo> wi(g_nogui_window->GetPlatformWindowInfo());
-      if (wi.has_value())
-      {
-        g_host_display = Host::CreateDisplayForAPI(api);
-        if (g_host_display && !g_host_display->CreateRenderDevice(wi.value()))
-          g_host_display.reset();
-      }
-
-      if (g_host_display)
-        g_host_display->DoneRenderContextCurrent();
-      else
+      if (res)
         g_nogui_window->DestroyPlatformWindow();
-    }
 
-    s_host_display_created_or_destroyed.Post();
+      res = g_nogui_window->CreatePlatformWindow(NoGUIHost::GetWindowTitle(System::GetGameTitle()));
+    }
+    if (res)
+      wi = g_nogui_window->GetPlatformWindowInfo();
+    s_platform_window_updated.Post();
   });
 
-  s_host_display_created_or_destroyed.Wait();
+  s_platform_window_updated.Wait();
 
-  if (!g_host_display)
+  if (!wi.has_value())
   {
-    g_nogui_window->ReportError("Error", "Failed to create host display.");
-    return false;
-  }
-
-  if (!g_host_display->MakeRenderContextCurrent() || !g_host_display->InitializeRenderDevice() ||
-      !ImGuiManager::Initialize() || !CommonHost::CreateHostDisplayResources())
-  {
-    ImGuiManager::Shutdown();
-    CommonHost::ReleaseHostDisplayResources();
-    g_host_display.reset();
-    g_nogui_window->DestroyPlatformWindow();
-    return false;
-  }
-
-  if (!FullscreenUI::Initialize())
-  {
-    g_nogui_window->ReportError("Error", "Failed to initialize fullscreen UI");
-    ReleaseHostDisplay();
-    return false;
+    g_nogui_window->ReportError("Error", "Failed to create render window.");
+    return std::nullopt;
   }
 
   // reload input sources, since it might use the window handle
@@ -697,105 +684,45 @@ bool NoGUIHost::AcquireHostDisplay(RenderAPI api)
     auto lock = Host::GetSettingsLock();
     InputManager::ReloadSources(*Host::GetSettingsInterface(), lock);
   }
-  return true;
+
+  return wi;
 }
 
-bool Host::AcquireHostDisplay(RenderAPI api)
+void Host::ReleaseRenderWindow()
 {
-  if (g_host_display && g_host_display->GetRenderAPI() == api)
-  {
-    // current is fine
-    return true;
-  }
-
-  // otherwise we need to switch
-  NoGUIHost::ReleaseHostDisplay();
-  return NoGUIHost::AcquireHostDisplay(api);
-}
-
-void NoGUIHost::ReleaseHostDisplay()
-{
-  if (!g_host_display)
-    return;
-
-  // close input sources, since it might use the window handle
-  InputManager::CloseSources();
-
-  CommonHost::ReleaseHostDisplayResources();
-  ImGuiManager::Shutdown();
-  g_host_display.reset();
+  // Need to block here, otherwise the recreation message associates with the old window.
   g_nogui_window->ExecuteInMessageLoop([]() {
     g_nogui_window->DestroyPlatformWindow();
-    s_host_display_created_or_destroyed.Post();
+    s_platform_window_updated.Post();
   });
-  s_host_display_created_or_destroyed.Wait();
-}
-
-void Host::ReleaseHostDisplay()
-{
-  // we keep the fsui going, so no need to do anything here
+  s_platform_window_updated.Wait();
 }
 
 void Host::OnSystemStarting()
 {
-  CommonHost::OnSystemStarting();
-  Log_VerbosePrintf("Host::OnSystemStarting()");
   s_save_state_on_shutdown = false;
   s_was_paused_by_focus_loss = false;
 }
 
 void Host::OnSystemStarted()
 {
-  CommonHost::OnSystemStarted();
-  Log_VerbosePrintf("Host::OnSystemStarted()");
 }
 
 void Host::OnSystemPaused()
 {
-  CommonHost::OnSystemPaused();
-  Log_VerbosePrintf("Host::OnSystemPaused()");
 }
 
 void Host::OnSystemResumed()
 {
-  CommonHost::OnSystemResumed();
-  Log_VerbosePrintf("Host::OnSystemResumed()");
 }
 
 void Host::OnSystemDestroyed()
 {
-  CommonHost::OnSystemDestroyed();
-  Log_VerbosePrintf("Host::OnSystemDestroyed()");
 }
 
-void Host::InvalidateDisplay()
+void Host::BeginPresentFrame()
 {
-  RenderDisplay(false);
 }
-
-void Host::RenderDisplay(bool skip_present)
-{
-  // acquire for IO.MousePos.
-  std::atomic_thread_fence(std::memory_order_acquire);
-
-  if (!skip_present)
-  {
-    FullscreenUI::Render();
-    ImGuiManager::RenderOverlays();
-    ImGuiManager::RenderOSD();
-    ImGuiManager::RenderDebugWindows();
-  }
-
-  g_host_display->Render(skip_present);
-
-  ImGuiManager::NewFrame();
-}
-
-// void Host::ResizeHostDisplay(u32 new_window_width, u32 new_window_height, float new_window_scale)
-// {
-//   s_host_display->ResizeRenderWindow(new_window_width, new_window_height, new_window_scale);
-//   ImGuiManager::WindowResized();
-// }
 
 void Host::RequestResizeHostDisplay(s32 width, s32 height)
 {
@@ -819,21 +746,19 @@ void Host::OnPerformanceCountersUpdated()
 
 void Host::OnGameChanged(const std::string& disc_path, const std::string& game_serial, const std::string& game_name)
 {
-  CommonHost::OnGameChanged(disc_path, game_serial, game_name);
   Log_VerbosePrintf("Host::OnGameChanged(\"%s\", \"%s\", \"%s\")", disc_path.c_str(), game_serial.c_str(),
                     game_name.c_str());
   NoGUIHost::UpdateWindowTitle(game_name);
 }
 
-#ifdef WITH_CHEEVOS
 void Host::OnAchievementsRefreshed()
 {
   // noop
 }
-#endif
 
 void Host::SetMouseMode(bool relative, bool hide_cursor)
 {
+#if 0
   // TODO: Find a better home for this.
   if (InputManager::HasPointerAxisBinds())
   {
@@ -842,13 +767,13 @@ void Host::SetMouseMode(bool relative, bool hide_cursor)
   }
 
   // emit g_emu_thread->mouseModeRequested(relative, hide_cursor);
+#endif
 }
 
 void Host::PumpMessagesOnCPUThread()
 {
   NoGUIHost::ProcessCPUThreadPlatformMessages();
   NoGUIHost::ProcessCPUThreadEvents(false);
-  CommonHost::PumpMessagesOnCPUThread(); // calls InputManager::PollSources()
 }
 
 std::unique_ptr<NoGUIPlatform> NoGUIHost::CreatePlatform()
@@ -858,7 +783,7 @@ std::unique_ptr<NoGUIPlatform> NoGUIHost::CreatePlatform()
 #if defined(_WIN32)
   ret = NoGUIPlatform::CreateWin32Platform();
 #elif defined(__APPLE__)
-  // nothing yet
+  ret = NoGUIPlatform::CreateCocoaPlatform();
 #else
   // linux
   const char* platform = std::getenv("DUCKSTATION_NOGUI_PLATFORM");
@@ -869,10 +794,6 @@ std::unique_ptr<NoGUIPlatform> NoGUIHost::CreatePlatform()
 #ifdef NOGUI_PLATFORM_X11
   if (!ret && (!platform || StringUtil::Strcasecmp(platform, "x11") == 0) && std::getenv("DISPLAY"))
     ret = NoGUIPlatform::CreateX11Platform();
-#endif
-#ifdef NOGUI_PLATFORM_VTY
-  if (!ret && (!platform || StringUtil::Strcasecmp(platform, "vty") == 0))
-    ret = NoGUIPlatform::CreateVTYPlatform();
 #endif
 #endif
 
@@ -964,16 +885,16 @@ void Host::SetFullscreen(bool enabled)
   g_nogui_window->SetFullscreen(enabled);
 }
 
-void* Host::GetTopLevelWindowHandle()
+std::optional<WindowInfo> Host::GetTopLevelWindowInfo()
 {
-  return g_nogui_window->GetPlatformWindowHandle();
+  return g_nogui_window->GetPlatformWindowInfo();
 }
 
-void Host::RequestExit(bool save_state_if_running)
+void Host::RequestExit(bool allow_confirm)
 {
   if (System::IsValid())
   {
-    Host::RunOnCPUThread([save_state_if_running]() { System::ShutdownSystem(save_state_if_running); });
+    Host::RunOnCPUThread([]() { System::ShutdownSystem(g_settings.save_state_on_exit); });
   }
 
   // clear the running flag, this'll break out of the main CPU loop once the VM is shutdown.
@@ -1010,7 +931,7 @@ static void SignalHandler(int signal)
   {
     std::fprintf(stderr, "Received CTRL+C, attempting graceful shutdown. Press CTRL+C again to force.\n");
     graceful_shutdown_attempted = true;
-    Host::RequestExit(true);
+    Host::RequestExit(false);
     return;
   }
 
@@ -1067,12 +988,10 @@ void NoGUIHost::PrintCommandLineHelp(const char* progname)
                        "    a global state will be loaded.\n");
   std::fprintf(stderr, "  -statefile <filename>: Loads state from the specified filename.\n"
                        "    No boot filename is required with this option.\n");
+  std::fprintf(stderr, "  -exe <filename>: Boot the specified exe instead of loading from disc.\n");
   std::fprintf(stderr, "  -fullscreen: Enters fullscreen mode immediately after starting.\n");
   std::fprintf(stderr, "  -nofullscreen: Prevents fullscreen mode from triggering if enabled.\n");
   std::fprintf(stderr, "  -portable: Forces \"portable mode\", data in same directory.\n");
-  std::fprintf(stderr, "  -nocontroller: Prevents the emulator from polling for controllers.\n"
-                       "                 Try this option if you're having difficulties starting\n"
-                       "                 the emulator.\n");
   std::fprintf(stderr, "  -settings <filename>: Loads a custom settings configuration from the\n"
                        "    specified filename. Default settings applied if file not found.\n");
   std::fprintf(stderr, "  -earlyconsole: Creates console as early as possible, for logging.\n");
@@ -1141,13 +1060,6 @@ bool NoGUIHost::ParseCommandLineParametersAndInitializeConfig(int argc, char* ar
         AutoBoot(autoboot)->override_fast_boot = false;
         continue;
       }
-      else if (CHECK_ARG("-nocontroller"))
-      {
-        Log_InfoPrintf("Command Line: Disabling controller support.");
-        // m_flags.disable_controller_interface = true;
-        Panic("Fixme");
-        continue;
-      }
       else if (CHECK_ARG("-resume"))
       {
         state_index = -1;
@@ -1172,6 +1084,12 @@ bool NoGUIHost::ParseCommandLineParametersAndInitializeConfig(int argc, char* ar
         Log_InfoPrintf("Command Line: Loading state file: '%s'", autoboot->save_state.c_str());
         continue;
       }
+      else if (CHECK_ARG_PARAM("-exe"))
+      {
+        AutoBoot(autoboot)->override_exe = argv[++i];
+        Log_InfoPrintf("Command Line: Overriding EXE file: '%s'", autoboot->override_exe.c_str());
+        continue;
+      }
       else if (CHECK_ARG("-fullscreen"))
       {
         Log_InfoPrintf("Command Line: Using fullscreen.");
@@ -1188,8 +1106,7 @@ bool NoGUIHost::ParseCommandLineParametersAndInitializeConfig(int argc, char* ar
       else if (CHECK_ARG("-portable"))
       {
         Log_InfoPrintf("Command Line: Using portable mode.");
-        // SetUserDirectoryToProgramDirectory();
-        Panic("Fixme");
+        EmuFolders::DataRoot = EmuFolders::AppRoot;
         continue;
       }
       else if (CHECK_ARG_PARAM("-settings"))
