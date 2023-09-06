@@ -29,10 +29,6 @@
 #include <utility>
 Log_SetChannel(Bus);
 
-namespace CPU {
-extern int TickCounts[];
-}
-
 namespace Bus {
 
 union MEMDELAY
@@ -163,8 +159,8 @@ bool Initialize()
   return true;
 }
 
-int InstructionFetches[0x7F80000] = {0};
-int InstructionCacheMisses[0x7F80000] = {0};
+u32 InstructionFetches[0x7F80000] = {0};
+u32 InstructionCacheMisses[0x7F80000] = {0};
 
 void Shutdown()
 {
@@ -183,13 +179,17 @@ void Shutdown()
   
   FILE* f = fopen("/tmp/duckstation-profiler.out", "wb");
   fprintf(f, "%d\n", getpid());
-  for (int i = 0; i < 0x7F80000; i++) {
-    int addr = i<<2;
-    int tickCount = CPU::TickCounts[i];
-    int iFetch = InstructionFetches[i];
-    int iMiss = InstructionCacheMisses[i];
+  for (u32 i = 0; i < 0x7F80000; i++) {
+    u32 addr = i<<2;
+    u32 tickCount = CPU::TickCounts[i];
+    u32 accumTickCount = 0;
+    if (CPU::AccumTickCounts.contains(addr)) {
+      accumTickCount = CPU::AccumTickCounts[addr];
+    }
+    u32 iFetch = InstructionFetches[i];
+    u32 iMiss = InstructionCacheMisses[i];
     if (tickCount > 0 || iFetch > 0 || iMiss > 0) {
-      fprintf(f, "%x %d %d %d\n", addr, tickCount, iFetch, iMiss);
+      fprintf(f, "%x %d %d %d %d\n", addr, tickCount, iFetch, iMiss, accumTickCount);
     }
   }
   fclose(f);

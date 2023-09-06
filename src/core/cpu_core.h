@@ -10,6 +10,8 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <stack>
+#include <unordered_map>
 
 class StateWrapper;
 
@@ -205,5 +207,13 @@ struct DebuggerRegisterListEntry
 
 static constexpr u32 NUM_DEBUGGER_REGISTER_LIST_ENTRIES = 104;
 extern const std::array<DebuggerRegisterListEntry, NUM_DEBUGGER_REGISTER_LIST_ENTRIES> g_debugger_register_list;
+
+extern u32 TickCounts[];
+extern std::unordered_map<u32, u32> AccumTickCounts;
+struct StackEntry {
+  u32 return_address;
+  u32 start_tick;
+};
+extern std::stack<StackEntry> stack_times;
 
 } // namespace CPU
