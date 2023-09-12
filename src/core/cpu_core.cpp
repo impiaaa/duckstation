@@ -825,7 +825,7 @@ void DisassembleAndPrint(u32 addr, u32 instructions_before /* = 0 */, u32 instru
 }
 
 u32 TickCounts[0x7F80000] = {0};
-std::unordered_map<u32, u32> AccumTickCounts;
+std::unordered_map<u32, std::unordered_map<u32, FunctionCallCount>> FunctionCallCounts;
 std::stack<StackEntry> stack_times;
 
 template<PGXPMode pgxp_mode, bool debug>
@@ -1176,10 +1176,26 @@ restart_instruction:
           g_state.next_instruction_is_branch_delay_slot = true;
           const u32 target = ReadReg(inst.r.rs);
           if (inst.r.rs == Reg::ra) {
-            if ((stack_times.top().return_address&0x1FDFFFFF) == (target&0x1FDFFFFF)) {
-              AccumTickCounts[(target-8)&0x1FDFFFFF] += TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks-stack_times.top().start_tick;
+            std::stack<StackEntry> temp;
+            while (!stack_times.empty()) {
+              if (stack_times.top().return_address == (target&0x1FDFFFFF)) {
+                while (!temp.empty()) temp.pop();
+                break;
+              }
+              temp.push(stack_times.top());
               stack_times.pop();
             }
+            while (!temp.empty()) {
+              stack_times.push(temp.top());
+              temp.pop();
+            }
+          }
+          if (!stack_times.empty() && stack_times.top().return_address == (target&0x1FDFFFFF)) {
+            FunctionCallCounts[(target-8)&0x1FDFFFFF][stack_times.top().jump_address].ticks += TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks-stack_times.top().start_tick;
+            stack_times.pop();
+          }
+          else {
+            FunctionCallCounts[(g_state.pc&0x1FDFFFFF)-4][target&0x1FDFFFFF].calls++;
           }
           Branch(target);
         }
@@ -1190,7 +1206,8 @@ restart_instruction:
           g_state.next_instruction_is_branch_delay_slot = true;
           const u32 target = ReadReg(inst.r.rs);
           WriteReg(inst.r.rd, g_state.npc);
-          stack_times.push({ .return_address = g_state.npc&0x1FDFFFFF, .start_tick = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks });
+          stack_times.push({ .return_address = g_state.npc&0x1FDFFFFF, .jump_address=target&0x1FDFFFFF, .start_tick = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks });
+          FunctionCallCounts[(g_state.pc&0x1FDFFFFF)-4][target&0x1FDFFFFF].calls++;
           Branch(target);
         }
         break;
@@ -1533,7 +1550,15 @@ restart_instruction:
     case InstructionOp::j:
     {
       g_state.next_instruction_is_branch_delay_slot = true;
-      Branch((g_state.pc & UINT32_C(0xF0000000)) | (inst.j.target << 2));
+      u32 target = (g_state.pc & UINT32_C(0xF0000000)) | (inst.j.target << 2);
+      if (!stack_times.empty() && stack_times.top().return_address == (target&0x1FDFFFFF)) {
+        FunctionCallCounts[(target-8)&0x1FDFFFFF][stack_times.top().jump_address].ticks += TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks-stack_times.top().start_tick;
+        stack_times.pop();
+      }
+      else {
+        FunctionCallCounts[(g_state.pc&0x1FDFFFFF)-4][target&0x1FDFFFFF].calls++;
+      }
+      Branch(target);
     }
     break;
 
@@ -1541,8 +1566,10 @@ restart_instruction:
     {
       WriteReg(Reg::ra, g_state.npc);
       g_state.next_instruction_is_branch_delay_slot = true;
-      stack_times.push({ .return_address = g_state.npc&0x1FDFFFFF, .start_tick = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks });
-      Branch((g_state.pc & UINT32_C(0xF0000000)) | (inst.j.target << 2));
+      u32 target = (g_state.pc & UINT32_C(0xF0000000)) | (inst.j.target << 2);
+      stack_times.push({ .return_address = g_state.npc&0x1FDFFFFF, .jump_address=target&0x1FDFFFFF, .start_tick = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks });
+      FunctionCallCounts[(g_state.pc&0x1FDFFFFF)-4][target&0x1FDFFFFF].calls++;
+      Branch(target);
     }
     break;
 
@@ -2127,11 +2154,11 @@ template<PGXPMode pgxp_mode, bool debug>
       g_state.branch_was_taken = false;
       g_state.exception_raised = false;
 
-      //const int fetchTickStart = g_state.pending_ticks;
+      const int fetchTickStart = g_state.pending_ticks;
       // fetch the next instruction - even if this fails, it'll still refetch on the flush so we can continue
       if (!FetchInstruction())
         continue;
-      //TickCounts[(g_state.npc&0x1FDFFFFF)>>2] += (g_state.pending_ticks-fetchTickStart);
+      TickCounts[(g_state.npc&0x1FDFFFFF)>>2] += (g_state.pending_ticks-fetchTickStart);
 
       const int tickStart = g_state.pending_ticks;
 
@@ -2158,7 +2185,7 @@ template<PGXPMode pgxp_mode, bool debug>
       // execute the instruction we previously fetched
       ExecuteInstruction<pgxp_mode, debug>();
 
-      TickCounts[(g_state.current_instruction_pc&0x1FDFFFFF)>>2] += g_state.pending_ticks-tickStart;
+      TickCounts[(g_state.current_instruction_pc&0x1FDFFFFF)>>2] += g_state.pending_ticks-tickStart+1;
 
       // next load delay
       UpdateLoadDelay();

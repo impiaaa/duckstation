@@ -209,9 +209,15 @@ static constexpr u32 NUM_DEBUGGER_REGISTER_LIST_ENTRIES = 104;
 extern const std::array<DebuggerRegisterListEntry, NUM_DEBUGGER_REGISTER_LIST_ENTRIES> g_debugger_register_list;
 
 extern u32 TickCounts[];
-extern std::unordered_map<u32, u32> AccumTickCounts;
+struct FunctionCallCount {
+  FunctionCallCount() : calls(0), ticks(0) { }
+  u32 calls;
+  u64 ticks;
+};
+extern std::unordered_map<u32, std::unordered_map<u32, FunctionCallCount>> FunctionCallCounts;
 struct StackEntry {
   u32 return_address;
+  u32 jump_address;
   u32 start_tick;
 };
 extern std::stack<StackEntry> stack_times;
