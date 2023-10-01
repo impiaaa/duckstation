@@ -3,15 +3,13 @@
 
 #pragma once
 #include "common/bitfield.h"
+#include "bus.h"
 #include "cpu_types.h"
 #include "gte_types.h"
 #include "types.h"
 #include <array>
-#include <optional>
 #include <string>
 #include <vector>
-#include <stack>
-#include <unordered_map>
 
 class StateWrapper;
 
@@ -208,18 +206,66 @@ struct DebuggerRegisterListEntry
 static constexpr u32 NUM_DEBUGGER_REGISTER_LIST_ENTRIES = 104;
 extern const std::array<DebuggerRegisterListEntry, NUM_DEBUGGER_REGISTER_LIST_ENTRIES> g_debugger_register_list;
 
-extern u32 TickCounts[];
-struct FunctionCallCount {
-  FunctionCallCount() : calls(0), ticks(0) { }
-  u32 calls;
-  u64 ticks;
+#ifdef CPU_PROFILER
+struct ProfilerCountSet
+{
+  u32 InstructionFetch;
+  u32 InstrFetchMiss;
+  u32 DataReadAccess;
+  u32 DataReadMiss;
+  u32 DataWriteAccess;
+  u32 DataWriteMiss;
+  u64 Cycles;
+  
+  inline ProfilerCountSet operator+(const ProfilerCountSet& other) {
+    return ProfilerCountSet {
+      .InstructionFetch = InstructionFetch+other.InstructionFetch,
+      .InstrFetchMiss = InstrFetchMiss+other.InstrFetchMiss,
+      .DataReadAccess = DataReadAccess+other.DataReadAccess,
+      .DataReadMiss = DataReadMiss+other.DataReadMiss,
+      .DataWriteAccess = DataWriteAccess+other.DataWriteAccess,
+      .DataWriteMiss = DataWriteMiss+other.DataWriteMiss,
+      .Cycles = Cycles+other.Cycles,
+    };
+  }
+  inline ProfilerCountSet& operator+=(const ProfilerCountSet& other) {
+    InstructionFetch += other.InstructionFetch;
+    InstrFetchMiss += other.InstrFetchMiss;
+    DataReadAccess += other.DataReadAccess;
+    DataReadMiss += other.DataReadMiss;
+    DataWriteAccess += other.DataWriteAccess;
+    DataWriteMiss += other.DataWriteMiss;
+    Cycles += other.Cycles;
+    return *this;
+  }
+  inline ProfilerCountSet operator-(const ProfilerCountSet& other) {
+    return ProfilerCountSet {
+      .InstructionFetch = InstructionFetch-other.InstructionFetch,
+      .InstrFetchMiss = InstrFetchMiss-other.InstrFetchMiss,
+      .DataReadAccess = DataReadAccess-other.DataReadAccess,
+      .DataReadMiss = DataReadMiss-other.DataReadMiss,
+      .DataWriteAccess = DataWriteAccess-other.DataWriteAccess,
+      .DataWriteMiss = DataWriteMiss-other.DataWriteMiss,
+      .Cycles = Cycles-other.Cycles,
+    };
+  }
+  inline operator bool() const {
+    return InstructionFetch > 0 ||
+        InstrFetchMiss > 0 ||
+        DataReadAccess > 0 ||
+        DataReadMiss > 0 ||
+        DataWriteAccess > 0 ||
+        DataWriteMiss > 0 ||
+        Cycles > 0;
+  }
 };
-extern std::unordered_map<u32, std::unordered_map<u32, FunctionCallCount>> FunctionCallCounts;
-struct StackEntry {
-  u32 return_address;
-  u32 jump_address;
-  u32 start_tick;
-};
-extern std::stack<StackEntry> stack_times;
+extern std::vector<ProfilerCountSet> g_profiler_counts[];
+extern ProfilerCountSet g_profiler_summary;
+ALWAYS_INLINE static ProfilerCountSet& GetProfilerCounts(u32 pc) {
+  pc &= PHYSICAL_MEMORY_ADDRESS_MASK;
+  bool is_ram = pc < Bus::RAM_MIRROR_END;
+  return g_profiler_counts[is_ram].at((is_ram ? (pc & Bus::g_ram_mask) : ((pc - Bus::BIOS_BASE) & Bus::BIOS_MASK))>>2);
+}
+#endif
 
 } // namespace CPU

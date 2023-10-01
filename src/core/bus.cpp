@@ -159,9 +159,6 @@ bool Initialize()
   return true;
 }
 
-u32 InstructionFetches[0x7F80000] = {0};
-u32 InstructionCacheMisses[0x7F80000] = {0};
-
 void Shutdown()
 {
   std::free(m_fastmem_lut);
@@ -176,31 +173,6 @@ void Shutdown()
   m_fastmem_mode = CPUFastmemMode::Disabled;
 
   ReleaseMemory();
-  
-  u32 end_tick = TimingEvents::GetGlobalTickCounter();
-  while (!CPU::stack_times.empty()) {
-    CPU::StackEntry& se = CPU::stack_times.top();
-    CPU::FunctionCallCounts[(se.return_address-8)&0x1FDFFFFF][se.jump_address&0x1FDFFFFF].ticks += end_tick - se.start_tick;
-    CPU::stack_times.pop();
-  }
-  
-  FILE* f = fopen("/tmp/duckstation-profiler.out", "wb");
-  fprintf(f, "%d\n", getpid());
-  for (u32 i = 0; i < 0x7F80000; i++) {
-    u32 addr = i<<2;
-    u32 tickCount = CPU::TickCounts[i];
-    u32 iFetch = InstructionFetches[i];
-    u32 iMiss = InstructionCacheMisses[i];
-    if (tickCount > 0 || iFetch > 0 || iMiss > 0 || CPU::FunctionCallCounts.contains(addr)) {
-      fprintf(f, "%x %d %d %d\n", addr, tickCount, iFetch, iMiss);
-    }
-    if (CPU::FunctionCallCounts.contains(addr)) {
-      for (const std::pair<const u32, CPU::FunctionCallCount>& destaddr_counts : CPU::FunctionCallCounts[addr]) {
-        fprintf(f, "> %x %u %lu\n", destaddr_counts.first, destaddr_counts.second.calls, destaddr_counts.second.ticks);
-      }
-    }
-  }
-  fclose(f);
 }
 
 void Reset()
@@ -371,6 +343,12 @@ bool AllocateMemory(bool enable_8mb_ram)
   Exports::RAM_MASK = g_ram_mask;
 
   Log_InfoPrintf("RAM is %u bytes at %p", g_ram_size, g_ram);
+
+#ifdef CPU_PROFILER
+  CPU::g_profiler_counts[0].resize(BIOS_SIZE/4);
+  CPU::g_profiler_counts[1].resize(g_ram_size/4);
+#endif
+
   return true;
 }
 
@@ -1612,6 +1590,16 @@ static ALWAYS_INLINE_RELEASE TickCount DoMemoryAccess(VirtualMemoryAddress addre
     Log_WarningPrintf("VAL %08X @ %u", value, (TimingEvents::GetGlobalTickCounter() + CPU::g_state.pending_ticks));
   }
 #endif
+#ifdef CPU_PROFILER
+  if constexpr (type == MemoryAccessType::Read) {
+    CPU::g_profiler_summary.DataReadAccess++;
+    CPU::GetProfilerCounts(g_state.current_instruction_pc).DataReadAccess++;
+  }
+  else {
+    CPU::g_profiler_summary.DataWriteAccess++;
+    CPU::GetProfilerCounts(g_state.current_instruction_pc).DataWriteAccess++;
+  }
+#endif
 
   switch (address >> 29)
   {
@@ -1671,6 +1659,13 @@ static ALWAYS_INLINE_RELEASE TickCount DoMemoryAccess(VirtualMemoryAddress addre
       }
     }
   }
+
+#ifdef CPU_PROFILER
+  if constexpr (type == MemoryAccessType::Read) {
+    CPU::g_profiler_summary.DataReadMiss++;
+    CPU::GetProfilerCounts(g_state.current_instruction_pc).DataReadMiss++;
+  }
+#endif
 
   if (address < RAM_MIRROR_END)
   {
@@ -1795,8 +1790,10 @@ bool FetchInstruction()
 
   const PhysicalMemoryAddress address = g_state.npc;
 
-  const u32 arrAddress = (address&0x1FDFFFFF)>>2;
-  Bus::InstructionFetches[arrAddress]++;
+#ifdef CPU_PROFILER
+  g_profiler_summary.InstructionFetch++;
+  CPU::GetProfilerCounts(g_state.npc).InstructionFetch++;
+#endif
 
   switch (address >> 29)
   {
@@ -1811,7 +1808,10 @@ bool FetchInstruction()
       }
       else {
         g_state.next_instruction.bits = FillICache(address);
-        Bus::InstructionCacheMisses[arrAddress]++;
+  #ifdef CPU_PROFILER
+        g_profiler_summary.InstrFetchMiss++;
+        CPU::GetProfilerCounts(g_state.npc).InstrFetchMiss++;
+  #endif
       }
 #endif
     }
@@ -1820,7 +1820,10 @@ bool FetchInstruction()
     case 0x05: // KSEG1 - physical memory uncached
     {
       if (!DoInstructionRead<true, false, 1, true>(address, &g_state.next_instruction.bits)) {
-        Bus::InstructionCacheMisses[arrAddress]++;
+#ifdef CPU_PROFILER
+        g_profiler_summary.InstrFetchMiss++;
+        CPU::GetProfilerCounts(g_state.npc).InstrFetchMiss++;
+#endif
         return false;
       }
     }
@@ -1837,7 +1840,6 @@ bool FetchInstruction()
                                                                       g_state.current_instruction_in_branch_delay_slot,
                                                                       g_state.current_instruction_was_branch_taken, 0),
                           address);
-      Bus::InstructionCacheMisses[arrAddress]++;
       return false;
     }
   }

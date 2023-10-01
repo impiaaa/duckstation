@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "cpu_core.h"
-#include "bus.h"
 #include "common/align.h"
 #include "common/fastjmp.h"
 #include "common/file_system.h"
@@ -19,6 +18,7 @@
 #include "timing_event.h"
 #include "util/state_wrapper.h"
 #include <cstdio>
+#include <deque>
 
 Log_SetChannel(CPU::Core);
 
@@ -31,6 +31,24 @@ static void FlushPipeline();
 
 State g_state;
 bool TRACE_EXECUTION = false;
+
+#ifdef CPU_PROFILER
+// one for ram and bios
+std::vector<ProfilerCountSet> g_profiler_counts[2];
+ProfilerCountSet g_profiler_summary;
+struct FunctionCallCount {
+  FunctionCallCount() : calls(), counts() { }
+  u32 calls;
+  ProfilerCountSet counts;
+};
+static std::unordered_map<u32, std::unordered_map<u32, FunctionCallCount>> s_function_call_counts;
+struct StackEntry {
+  u32 return_address;
+  u32 jump_address;
+  ProfilerCountSet start_counts;
+};
+static std::deque<StackEntry> s_stack_times;
+#endif
 
 static fastjmp_buf s_jmp_buf;
 
@@ -113,6 +131,81 @@ void Shutdown()
 {
   ClearBreakpoints();
   StopTrace();
+
+#ifdef CPU_PROFILER
+  g_profiler_summary.Cycles = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks;
+  while (!s_stack_times.empty()) {
+    StackEntry& se = s_stack_times.back();
+    s_function_call_counts[(se.return_address-8)&PHYSICAL_MEMORY_ADDRESS_MASK][se.jump_address&PHYSICAL_MEMORY_ADDRESS_MASK].counts += g_profiler_summary - se.start_counts;
+    s_stack_times.pop_back();
+  }
+  
+  char fname[16+10+1];
+  snprintf(fname, sizeof(fname), "duckstation.out.%d", getpid());
+  FILE* f = fopen(fname, "wb");
+  
+  fprintf(f, "# callgrind format\n");
+  fprintf(f, "version: 1\n");
+  fprintf(f, "creator: DuckStation\n");
+  fprintf(f, "cmd: %s\n", System::GetDiscPath().c_str());
+  fprintf(f, "positions: instr\n");
+  fprintf(f, "events: Ir I1mr Dr D1mr Dw D1mw Cycles\n");
+  fprintf(f, "summary: %u %u %u %u %u %u %lu\n",
+      g_profiler_summary.InstructionFetch,
+      g_profiler_summary.InstrFetchMiss,
+      g_profiler_summary.DataReadAccess,
+      g_profiler_summary.DataReadMiss,
+      g_profiler_summary.DataWriteAccess,
+      g_profiler_summary.DataWriteMiss,
+      g_profiler_summary.Cycles
+  );
+  fputc('\n', f);
+  
+  for (int is_ram = 0; is_ram < 2; is_ram++) {
+    u32 last_addr = 0;
+    for (u32 i = 0; i < g_profiler_counts[is_ram].size(); i++) {
+      u32 addr = (i<<2) + (is_ram ? 0 : Bus::BIOS_BASE);
+      const ProfilerCountSet& counts = g_profiler_counts[is_ram].at(i);
+      if (counts || s_function_call_counts.contains(addr)) {
+        if (last_addr == 0 || (addr-last_addr) >= 100000000) {
+          fprintf(f, "0x%X ", addr);
+        }
+        else {
+          fprintf(f, "%+d ", addr-last_addr);
+        }
+        last_addr = addr;
+        fprintf(f, "%u %u %u %u %u %u %lu\n",
+            counts.InstructionFetch,
+            counts.InstrFetchMiss,
+            counts.DataReadAccess,
+            counts.DataReadMiss,
+            counts.DataWriteAccess,
+            counts.DataWriteMiss,
+            counts.Cycles
+        );
+      }
+      if (s_function_call_counts.contains(addr)) {
+        for (const std::pair<const u32, FunctionCallCount>& destaddr_counts : s_function_call_counts[addr]) {
+          fprintf(f, "calls=%d 0x%X\n", destaddr_counts.second.calls, destaddr_counts.first);
+          fprintf(f, "0x%X %u %u %u %u %u %u %lu\n",
+              addr,
+              destaddr_counts.second.counts.InstructionFetch,
+              destaddr_counts.second.counts.InstrFetchMiss,
+              destaddr_counts.second.counts.DataReadAccess,
+              destaddr_counts.second.counts.DataReadMiss,
+              destaddr_counts.second.counts.DataWriteAccess,
+              destaddr_counts.second.counts.DataWriteMiss,
+              destaddr_counts.second.counts.Cycles
+          );
+        }
+      }
+    }
+  }
+  fclose(f);
+  
+  g_profiler_counts[0].clear();
+  g_profiler_counts[1].clear();
+#endif
 }
 
 void Reset()
@@ -277,6 +370,19 @@ ALWAYS_INLINE_RELEASE static void RaiseException(u32 CAUSE_bits, u32 EPC, u32 ve
     g_state.cop0_regs.EPC -= UINT32_C(4);
     g_state.cop0_regs.TAR = g_state.pc;
   }
+  
+#ifdef CPU_PROFILER
+  // possible this would catch interrupts that happen during normal execution,
+  // but the more common case is when waiting for one, so we'll tolerate the
+  // extra noise
+  g_profiler_summary.Cycles = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks;
+  s_stack_times.push_back({
+    .return_address = EPC+4,
+    .jump_address = vector&PHYSICAL_MEMORY_ADDRESS_MASK,
+    .start_counts = g_profiler_summary
+  });
+  s_function_call_counts[(EPC&PHYSICAL_MEMORY_ADDRESS_MASK)+4][vector&PHYSICAL_MEMORY_ADDRESS_MASK].calls++;
+#endif
 
   // current -> previous, switch to kernel mode and disable interrupts
   g_state.cop0_regs.sr.mode_bits <<= 2;
@@ -824,10 +930,6 @@ void DisassembleAndPrint(u32 addr, u32 instructions_before /* = 0 */, u32 instru
   }
 }
 
-u32 TickCounts[0x7F80000] = {0};
-std::unordered_map<u32, std::unordered_map<u32, FunctionCallCount>> FunctionCallCounts;
-std::stack<StackEntry> stack_times;
-
 template<PGXPMode pgxp_mode, bool debug>
 ALWAYS_INLINE_RELEASE static void ExecuteInstruction()
 {
@@ -1175,28 +1277,38 @@ restart_instruction:
         {
           g_state.next_instruction_is_branch_delay_slot = true;
           const u32 target = ReadReg(inst.r.rs);
-          if (inst.r.rs == Reg::ra) {
-            std::stack<StackEntry> temp;
-            while (!stack_times.empty()) {
-              if (stack_times.top().return_address == (target&0x1FDFFFFF)) {
-                while (!temp.empty()) temp.pop();
+#ifdef CPU_PROFILER
+          g_profiler_summary.Cycles = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks;
+          if (inst.r.rs == Reg::ra || inst.r.rs == Reg::k0) {
+            // jumping to ra means it's more likely to be a return, so be more
+            // lenient and skip over any extra stack fluff
+            // k0 too for exceptions
+            auto end = s_stack_times.crbegin();
+            for (; end != s_stack_times.crend(); end++) {
+              if (end->return_address == target) {
                 break;
               }
-              temp.push(stack_times.top());
-              stack_times.pop();
             }
-            while (!temp.empty()) {
-              stack_times.push(temp.top());
-              temp.pop();
+            if (end != s_stack_times.crend()) {
+              // still need to count up any potential tail calls inbetween
+              for (auto it = s_stack_times.crbegin(); it != end; it++, s_stack_times.pop_back()) {
+                s_function_call_counts[(target-8)&PHYSICAL_MEMORY_ADDRESS_MASK][it->jump_address&PHYSICAL_MEMORY_ADDRESS_MASK].counts += g_profiler_summary - it->start_counts;
+              }
             }
           }
-          if (!stack_times.empty() && stack_times.top().return_address == (target&0x1FDFFFFF)) {
-            FunctionCallCounts[(target-8)&0x1FDFFFFF][stack_times.top().jump_address].ticks += TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks-stack_times.top().start_tick;
-            stack_times.pop();
+          if (!s_stack_times.empty() && s_stack_times.back().return_address == target) {
+            s_function_call_counts[(target-8)&PHYSICAL_MEMORY_ADDRESS_MASK][s_stack_times.back().jump_address&PHYSICAL_MEMORY_ADDRESS_MASK].counts += g_profiler_summary-s_stack_times.back().start_counts;
+            s_stack_times.pop_back();
           }
           else {
-            FunctionCallCounts[(g_state.pc&0x1FDFFFFF)-4][target&0x1FDFFFFF].calls++;
+            s_stack_times.push_back({
+              .return_address = g_state.npc,
+              .jump_address = target&PHYSICAL_MEMORY_ADDRESS_MASK,
+              .start_counts = g_profiler_summary
+            });
+            s_function_call_counts[(g_state.pc-4)&PHYSICAL_MEMORY_ADDRESS_MASK][target&PHYSICAL_MEMORY_ADDRESS_MASK].calls++;
           }
+#endif
           Branch(target);
         }
         break;
@@ -1206,8 +1318,17 @@ restart_instruction:
           g_state.next_instruction_is_branch_delay_slot = true;
           const u32 target = ReadReg(inst.r.rs);
           WriteReg(inst.r.rd, g_state.npc);
-          stack_times.push({ .return_address = g_state.npc&0x1FDFFFFF, .jump_address=target&0x1FDFFFFF, .start_tick = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks });
-          FunctionCallCounts[(g_state.pc&0x1FDFFFFF)-4][target&0x1FDFFFFF].calls++;
+#ifdef CPU_PROFILER
+          // even though it could be to $ra, a jump-and-link is still unlikely
+          // to be a return
+          g_profiler_summary.Cycles = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks;
+          s_stack_times.push_back({
+            .return_address = g_state.npc,
+            .jump_address = target&PHYSICAL_MEMORY_ADDRESS_MASK,
+            .start_counts = g_profiler_summary
+          });
+          s_function_call_counts[(g_state.pc-4)&PHYSICAL_MEMORY_ADDRESS_MASK][target&PHYSICAL_MEMORY_ADDRESS_MASK].calls++;
+#endif
           Branch(target);
         }
         break;
@@ -1551,13 +1672,17 @@ restart_instruction:
     {
       g_state.next_instruction_is_branch_delay_slot = true;
       u32 target = (g_state.pc & UINT32_C(0xF0000000)) | (inst.j.target << 2);
-      if (!stack_times.empty() && stack_times.top().return_address == (target&0x1FDFFFFF)) {
-        FunctionCallCounts[(target-8)&0x1FDFFFFF][stack_times.top().jump_address].ticks += TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks-stack_times.top().start_tick;
-        stack_times.pop();
-      }
-      else {
-        FunctionCallCounts[(g_state.pc&0x1FDFFFFF)-4][target&0x1FDFFFFF].calls++;
-      }
+#ifdef CPU_PROFILER
+      // no way to tell if this is a intra-procedure jump or a tail call
+      // hopefully no harm in tracking both
+      g_profiler_summary.Cycles = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks;
+      s_stack_times.push_back({
+        .return_address = g_state.npc,
+        .jump_address = target&PHYSICAL_MEMORY_ADDRESS_MASK,
+        .start_counts = g_profiler_summary
+      });
+      s_function_call_counts[(g_state.pc-4)&PHYSICAL_MEMORY_ADDRESS_MASK][target&PHYSICAL_MEMORY_ADDRESS_MASK].calls++;
+#endif
       Branch(target);
     }
     break;
@@ -1567,8 +1692,15 @@ restart_instruction:
       WriteReg(Reg::ra, g_state.npc);
       g_state.next_instruction_is_branch_delay_slot = true;
       u32 target = (g_state.pc & UINT32_C(0xF0000000)) | (inst.j.target << 2);
-      stack_times.push({ .return_address = g_state.npc&0x1FDFFFFF, .jump_address=target&0x1FDFFFFF, .start_tick = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks });
-      FunctionCallCounts[(g_state.pc&0x1FDFFFFF)-4][target&0x1FDFFFFF].calls++;
+#ifdef CPU_PROFILER
+      g_profiler_summary.Cycles = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks;
+      s_stack_times.push_back({
+        .return_address = g_state.npc,
+        .jump_address = target&PHYSICAL_MEMORY_ADDRESS_MASK,
+        .start_counts = g_profiler_summary
+      });
+      s_function_call_counts[(g_state.pc-4)&PHYSICAL_MEMORY_ADDRESS_MASK][target&PHYSICAL_MEMORY_ADDRESS_MASK].calls++;
+#endif
       Branch(target);
     }
     break;
@@ -2154,13 +2286,20 @@ template<PGXPMode pgxp_mode, bool debug>
       g_state.branch_was_taken = false;
       g_state.exception_raised = false;
 
-      const int fetchTickStart = g_state.pending_ticks;
+#ifdef CPU_PROFILER
+      g_profiler_summary.Cycles = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks;
+      const ProfilerCountSet fetchTickStart = g_profiler_summary;
+#endif
       // fetch the next instruction - even if this fails, it'll still refetch on the flush so we can continue
       if (!FetchInstruction())
         continue;
-      TickCounts[(g_state.npc&0x1FDFFFFF)>>2] += (g_state.pending_ticks-fetchTickStart);
-
-      const int tickStart = g_state.pending_ticks;
+      
+#ifdef CPU_PROFILER
+      g_profiler_summary.Cycles = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks;
+      GetProfilerCounts(g_state.pc) += g_profiler_summary-fetchTickStart;
+      
+      ProfilerCountSet tickStart = g_profiler_summary;
+#endif
 
       // trace functionality
       if constexpr (debug)
@@ -2185,7 +2324,12 @@ template<PGXPMode pgxp_mode, bool debug>
       // execute the instruction we previously fetched
       ExecuteInstruction<pgxp_mode, debug>();
 
-      TickCounts[(g_state.current_instruction_pc&0x1FDFFFFF)>>2] += g_state.pending_ticks-tickStart+1;
+#ifdef CPU_PROFILER
+      g_profiler_summary.Cycles = TimingEvents::GetGlobalTickCounter()+g_state.pending_ticks;
+      // the tick before fetch was uncounted, add it back
+      tickStart.Cycles -= 1;
+      GetProfilerCounts(g_state.current_instruction_pc) += g_profiler_summary-tickStart;
+#endif
 
       // next load delay
       UpdateLoadDelay();
