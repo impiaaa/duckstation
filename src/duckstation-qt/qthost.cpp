@@ -1,8 +1,10 @@
-﻿// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "qthost.h"
+#include "autoupdaterdialog.h"
 #include "displaywidget.h"
+#include "logwindow.h"
 #include "mainwindow.h"
 #include "qtprogresscallback.h"
 #include "qtutils.h"
@@ -200,7 +202,7 @@ bool QtHost::InitializeConfig(std::string settings_filename)
   if (!Log::IsConsoleOutputEnabled() &&
       s_base_settings_interface->GetBoolValue("Logging", "LogToConsole", Settings::DEFAULT_LOG_TO_CONSOLE))
   {
-    Log::SetConsoleOutputParams(true, nullptr, LOGLEVEL_NONE);
+    Log::SetConsoleOutputParams(true, s_base_settings_interface->GetBoolValue("Logging", "LogTimestamps", true));
   }
 
   // TEMPORARY: Migrate controller settings to new interface.
@@ -696,7 +698,7 @@ std::optional<WindowInfo> EmuThread::acquireRenderWindow(bool recreate_window)
 
   const bool window_fullscreen = m_is_fullscreen && !m_is_exclusive_fullscreen;
   const bool render_to_main = !m_is_exclusive_fullscreen && !window_fullscreen && m_is_rendering_to_main;
-  const bool use_main_window_pos = m_is_exclusive_fullscreen && shouldRenderToMain();
+  const bool use_main_window_pos = shouldRenderToMain();
 
   return emit onAcquireRenderWindowRequested(recreate_window, window_fullscreen, render_to_main, m_is_surfaceless,
                                              use_main_window_pos);
@@ -1204,33 +1206,33 @@ void EmuThread::saveScreenshot()
   System::SaveScreenshot(nullptr, true, true);
 }
 
+void Host::OnAchievementsLoginRequested(Achievements::LoginRequestReason reason)
+{
+  emit g_emu_thread->achievementsLoginRequested(reason);
+}
+
+void Host::OnAchievementsLoginSuccess(const char* username, u32 points, u32 sc_points, u32 unread_messages)
+{
+  emit g_emu_thread->achievementsLoginSucceeded(QString::fromUtf8(username), points, sc_points, unread_messages);
+}
+
 void Host::OnAchievementsRefreshed()
 {
-#ifdef WITH_CHEEVOS
   u32 game_id = 0;
-  u32 achievement_count = 0;
-  u32 max_points = 0;
 
   QString game_info;
 
   if (Achievements::HasActiveGame())
   {
     game_id = Achievements::GetGameID();
-    achievement_count = Achievements::GetAchievementCount();
-    max_points = Achievements::GetMaximumPointsForGame();
 
-    game_info = qApp
-                  ->translate("EmuThread", "Game ID: %1\n"
-                                           "Game Title: %2\n"
-                                           "Achievements: %5 (%6)\n\n")
-                  .arg(game_id)
+    game_info = qApp->translate("EmuThread", "Game: %1 (%2)\n")
                   .arg(QString::fromStdString(Achievements::GetGameTitle()))
-                  .arg(achievement_count)
-                  .arg(qApp->translate("EmuThread", "%n points", "", max_points));
+                  .arg(game_id);
 
-    const std::string rich_presence_string(Achievements::GetRichPresenceString());
-    if (!rich_presence_string.empty())
-      game_info.append(QString::fromStdString(rich_presence_string));
+    const std::string& rich_presence_string = Achievements::GetRichPresenceString();
+    if (Achievements::HasRichPresence() && !rich_presence_string.empty())
+      game_info.append(QString::fromStdString(StringUtil::Ellipsise(rich_presence_string, 128)));
     else
       game_info.append(qApp->translate("EmuThread", "Rich presence inactive or unsupported."));
   }
@@ -1239,15 +1241,12 @@ void Host::OnAchievementsRefreshed()
     game_info = qApp->translate("EmuThread", "Game not loaded or no RetroAchievements available.");
   }
 
-  emit g_emu_thread->achievementsRefreshed(game_id, game_info, achievement_count, max_points);
-#endif
+  emit g_emu_thread->achievementsRefreshed(game_id, game_info);
 }
 
-void Host::OnAchievementsChallengeModeChanged()
+void Host::OnAchievementsHardcoreModeChanged(bool enabled)
 {
-#ifdef WITH_CHEEVOS
-  emit g_emu_thread->achievementsChallengeModeChanged();
-#endif
+  emit g_emu_thread->achievementsChallengeModeChanged(enabled);
 }
 
 void EmuThread::doBackgroundControllerPoll()
@@ -1568,13 +1567,6 @@ void Host::OnGameChanged(const std::string& disc_path, const std::string& game_s
 
 void Host::SetMouseMode(bool relative, bool hide_cursor)
 {
-  // TODO: Find a better home for this.
-  if (InputManager::HasPointerAxisBinds())
-  {
-    relative = true;
-    hide_cursor = true;
-  }
-
   emit g_emu_thread->mouseModeRequested(relative, hide_cursor);
 }
 
@@ -1766,7 +1758,7 @@ void QtHost::PrintCommandLineHelp(const char* progname)
   std::fprintf(stderr, "  -settings <filename>: Loads a custom settings configuration from the\n"
                        "    specified filename. Default settings applied if file not found.\n");
   std::fprintf(stderr, "  -earlyconsole: Creates console as early as possible, for logging.\n");
-#ifdef WITH_RAINTEGRATION
+#ifdef ENABLE_RAINTEGRATION
   std::fprintf(stderr, "  -raintegration: Use RAIntegration instead of built-in achievement support.\n");
 #endif
   std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -1907,7 +1899,14 @@ bool QtHost::ParseCommandLineParametersAndInitializeConfig(QApplication& app,
         InitializeEarlyConsole();
         continue;
       }
-#ifdef WITH_RAINTEGRATION
+      else if (CHECK_ARG("-updatecleanup"))
+      {
+        if (AutoUpdaterDialog::isSupported())
+          AutoUpdaterDialog::cleanupAfterUpdate();
+
+        continue;
+      }
+#ifdef ENABLE_RAINTEGRATION
       else if (CHECK_ARG("-raintegration"))
       {
         Achievements::SwitchToRAIntegration();
@@ -1939,7 +1938,7 @@ bool QtHost::ParseCommandLineParametersAndInitializeConfig(QApplication& app,
   {
     // NOTE: No point translating this, because no config means the language won't be loaded anyway.
     QMessageBox::critical(nullptr, QStringLiteral("Error"), QStringLiteral("Failed to initialize config."));
-    return EXIT_FAILURE;
+    return false;
   }
 
   // Check the file we're starting actually exists.
@@ -2030,6 +2029,9 @@ int main(int argc, char* argv[])
   // Set theme before creating any windows.
   MainWindow::updateApplicationTheme();
 
+  // Start logging early.
+  LogWindow::updateSettings();
+
   // Start up the CPU thread.
   QtHost::HookSignals();
   EmuThread::start();
@@ -2045,7 +2047,6 @@ int main(int argc, char* argv[])
 
   // Create all window objects, the emuthread might still be starting up at this point.
   main_window = new MainWindow();
-  main_window->initialize();
 
   // When running in batch mode, ensure game list is loaded, but don't scan for any new files.
   if (!s_batch_mode)

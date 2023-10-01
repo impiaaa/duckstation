@@ -456,9 +456,6 @@ bool ShouldUseVSync();
 /// Quick switch between software and hardware rendering.
 void ToggleSoftwareRendering();
 
-/// Updates software cursor state, based on controllers.
-void UpdateSoftwareCursor();
-
 /// Resizes the render window to the display size, with an optional scale.
 /// If the scale is set to 0, the internal resolution will be used, otherwise it is treated as a multiplier to 1x.
 void RequestDisplaySize(float scale = 0.0f);
@@ -478,6 +475,11 @@ void ClearMemorySaveStates();
 void UpdateMemorySaveStateSettings();
 bool LoadRewindState(u32 skip_saves = 0, bool consume_state = true);
 void SetRunaheadReplayFlag();
+
+#ifdef ENABLE_DISCORD_PRESENCE
+/// Called when rich presence changes.
+void UpdateDiscordPresence();
+#endif
 
 namespace Internal {
 /// Called on process startup.

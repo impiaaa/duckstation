@@ -160,31 +160,19 @@ DEFINE_HOTKEY("Screenshot", TRANSLATE_NOOP("Hotkeys", "General"), TRANSLATE_NOOP
                   System::SaveScreenshot();
               })
 
-#if !defined(__ANDROID__) && defined(WITH_CHEEVOS)
+#if !defined(__ANDROID__)
 DEFINE_HOTKEY("OpenAchievements", TRANSLATE_NOOP("Hotkeys", "General"),
               TRANSLATE_NOOP("Hotkeys", "Open Achievement List"), [](s32 pressed) {
                 if (!pressed)
-                {
-                  if (!FullscreenUI::OpenAchievementsWindow())
-                  {
-                    Host::AddOSDMessage(
-                      TRANSLATE_STR("OSDMessage", "Achievements are disabled or unavailable for  game."), 10.0f);
-                  }
-                }
+                  FullscreenUI::OpenAchievementsWindow();
               })
 
 DEFINE_HOTKEY("OpenLeaderboards", TRANSLATE_NOOP("Hotkeys", "General"),
               TRANSLATE_NOOP("Hotkeys", "Open Leaderboard List"), [](s32 pressed) {
                 if (!pressed)
-                {
-                  if (!FullscreenUI::OpenLeaderboardsWindow())
-                  {
-                    Host::AddOSDMessage(
-                      TRANSLATE_STR("OSDMessage", "Leaderboards are disabled or unavailable for  game."), 10.0f);
-                  }
-                }
+                  FullscreenUI::OpenLeaderboardsWindow();
               })
-#endif // !defined(__ANDROID__) && defined(WITH_CHEEVOS)
+#endif // !defined(__ANDROID__)
 
 DEFINE_HOTKEY("Reset", TRANSLATE_NOOP("Hotkeys", "System"), TRANSLATE_NOOP("Hotkeys", "Reset System"), [](s32 pressed) {
   if (!pressed)
@@ -329,6 +317,9 @@ DEFINE_HOTKEY("TogglePGXP", TRANSLATE_NOOP("Hotkeys", "Graphics"), TRANSLATE_NOO
                   // we need to recompile all blocks if pgxp is toggled on/off
                   if (g_settings.IsUsingCodeCache())
                     CPU::CodeCache::Flush();
+
+                  // need to swap interpreters
+                  System::InterruptExecution();
                 }
               })
 

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "input_manager.h"
@@ -173,6 +173,9 @@ static std::array<std::array<PointerAxisState, static_cast<u8>(InputPointerAxis:
                   InputManager::MAX_POINTER_DEVICES>
   s_pointer_state;
 static std::array<float, static_cast<u8>(InputPointerAxis::Count)> s_pointer_axis_scale;
+
+using PointerMoveCallback = std::function<void(InputBindingKey key, float value)>;
+static std::vector<std::pair<u32, PointerMoveCallback>> s_pointer_move_callbacks;
 
 // ------------------------------------------------------------------------
 // Binding Parsing
@@ -481,7 +484,7 @@ static std::array<const char*, static_cast<u32>(InputSourceType::Count)> s_input
   "XInput",
   "RawInput",
 #endif
-#ifdef WITH_SDL2
+#ifdef ENABLE_SDL2
   "SDL",
 #endif
 #ifdef __ANDROID__
@@ -512,17 +515,12 @@ bool InputManager::GetInputSourceDefaultEnabled(InputSourceType type)
       return false;
 
     case InputSourceType::XInput:
-      // Disable xinput by default if we have SDL.
-#ifdef WITH_SDL2
       return false;
-#else
-      return true;
-#endif
     case InputSourceType::RawInput:
       return false;
 #endif
 
-#ifdef WITH_SDL2
+#ifdef ENABLE_SDL2
     case InputSourceType::SDL:
       return true;
 #endif
@@ -700,20 +698,63 @@ void InputManager::AddHotkeyBindings(SettingsInterface& si)
 void InputManager::AddPadBindings(SettingsInterface& si, const std::string& section, u32 pad_index,
                                   const Controller::ControllerInfo* cinfo)
 {
-  for (u32 i = 0; i < cinfo->num_bindings; i++)
+  for (const Controller::ControllerBindingInfo& bi : cinfo->bindings)
   {
-    const Controller::ControllerBindingInfo& bi = cinfo->bindings[i];
     const std::vector<std::string> bindings(si.GetStringList(section.c_str(), bi.name));
-    if (!bindings.empty())
-    {
-      AddBindings(bindings, InputAxisEventHandler{[pad_index, bind_index = bi.bind_index](float value) {
-                    if (!System::IsValid())
-                      return;
 
-                    Controller* c = System::GetController(pad_index);
-                    if (c)
-                      c->SetBindState(bind_index, value);
-                  }});
+    switch (bi.type)
+    {
+      case InputBindingInfo::Type::Button:
+      case InputBindingInfo::Type::HalfAxis:
+      case InputBindingInfo::Type::Axis:
+      {
+        if (!bindings.empty())
+        {
+          AddBindings(bindings, InputAxisEventHandler{[pad_index, bind_index = bi.bind_index](float value) {
+                        if (!System::IsValid())
+                          return;
+
+                        Controller* c = System::GetController(pad_index);
+                        if (c)
+                          c->SetBindState(bind_index, value);
+                      }});
+        }
+      }
+      break;
+
+      case InputBindingInfo::Type::Pointer:
+      {
+        auto cb = [pad_index, base = bi.bind_index](InputBindingKey key, float value) {
+          if (!System::IsValid())
+            return;
+
+          Controller* c = System::GetController(pad_index);
+          if (c)
+            c->SetBindState(base + key.data, value);
+        };
+
+        // bind pointer 0 by default
+        if (bindings.empty())
+        {
+          s_pointer_move_callbacks.emplace_back(0, std::move(cb));
+        }
+        else
+        {
+          for (const std::string& binding : bindings)
+          {
+            const std::optional<u32> key(GetIndexFromPointerBinding(binding));
+            if (!key.has_value())
+              continue;
+
+            s_pointer_move_callbacks.emplace_back(0, cb);
+          }
+        }
+      }
+      break;
+
+      default:
+        Log_ErrorPrintf("Unhandled binding info type %u", static_cast<u32>(bi.type));
+        break;
     }
   }
 
@@ -1001,6 +1042,8 @@ bool InputManager::PreprocessEvent(InputBindingKey key, float value, GenericInpu
 
 void InputManager::GenerateRelativeMouseEvents()
 {
+  const bool system_running = System::IsRunning();
+
   for (u32 device = 0; device < MAX_POINTER_DEVICES; device++)
   {
     for (u32 axis = 0; axis < static_cast<u32>(static_cast<u8>(InputPointerAxis::Count)); axis++)
@@ -1016,11 +1059,23 @@ void InputManager::GenerateRelativeMouseEvents()
         continue;
       }
 
+      if (!system_running)
+        continue;
+
       const float value = std::clamp(unclamped_value, -1.0f, 1.0f);
       if (value != state.last_value)
       {
         state.last_value = value;
         InvokeEvents(key, value, GenericInputBinding::Unknown);
+      }
+
+      if (delta != 0.0f)
+      {
+        for (const std::pair<u32, PointerMoveCallback>& pmc : s_pointer_move_callbacks)
+        {
+          if (pmc.first == device)
+            pmc.second(key, delta);
+        }
       }
     }
   }
@@ -1067,7 +1122,24 @@ void InputManager::UpdatePointerRelativeDelta(u32 index, InputPointerAxis axis, 
 
 void InputManager::UpdateHostMouseMode()
 {
-  // TODO: Move from System to here.
+  // Check for relative mode bindings, and enable if there's anything using it.
+  bool has_relative_mode_bindings = !s_pointer_move_callbacks.empty();
+  if (!has_relative_mode_bindings)
+  {
+    for (const auto& it : s_binding_map)
+    {
+      const InputBindingKey& key = it.first;
+      if (key.source_type == InputSourceType::Pointer && key.source_subtype == InputSubclass::PointerAxis &&
+          key.data >= static_cast<u32>(InputPointerAxis::X) && key.data <= static_cast<u32>(InputPointerAxis::Y))
+      {
+        has_relative_mode_bindings = true;
+        break;
+      }
+    }
+  }
+
+  const bool has_software_cursor = ImGuiManager::HasSoftwareCursor(0);
+  Host::SetMouseMode(has_relative_mode_bindings, has_relative_mode_bindings || has_software_cursor);
 }
 
 bool InputManager::IsUsingRawInput()
@@ -1077,22 +1149,6 @@ bool InputManager::IsUsingRawInput()
 #else
   return false;
 #endif
-}
-
-bool InputManager::HasPointerAxisBinds()
-{
-  std::unique_lock lock(s_binding_map_write_lock);
-  for (const auto& it : s_binding_map)
-  {
-    const InputBindingKey& key = it.first;
-    if (key.source_type == InputSourceType::Pointer && key.source_subtype == InputSubclass::PointerAxis &&
-        key.data >= static_cast<u32>(InputPointerAxis::X) && key.data <= static_cast<u32>(InputPointerAxis::Y))
-    {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 void InputManager::SetDefaultSourceConfig(SettingsInterface& si)
@@ -1113,8 +1169,8 @@ void InputManager::ClearPortBindings(SettingsInterface& si, u32 port)
   if (!info)
     return;
 
-  for (u32 i = 0; i < info->num_bindings; i++)
-    si.DeleteValue(section.c_str(), info->bindings[i].name);
+  for (const Controller::ControllerBindingInfo& bi : info->bindings)
+    si.DeleteValue(section.c_str(), bi.name);
 }
 
 void InputManager::CopyConfiguration(SettingsInterface* dest_si, const SettingsInterface& src_si,
@@ -1144,11 +1200,8 @@ void InputManager::CopyConfiguration(SettingsInterface* dest_si, const SettingsI
 
     if (copy_pad_bindings)
     {
-      for (u32 i = 0; i < info->num_bindings; i++)
-      {
-        const Controller::ControllerBindingInfo& bi = info->bindings[i];
+      for (const Controller::ControllerBindingInfo& bi : info->bindings)
         dest_si->CopyStringListValue(src_si, section.c_str(), bi.name);
-      }
 
       for (u32 i = 0; i < NUM_MACRO_BUTTONS_PER_CONTROLLER; i++)
       {
@@ -1160,9 +1213,8 @@ void InputManager::CopyConfiguration(SettingsInterface* dest_si, const SettingsI
 
     if (copy_pad_config)
     {
-      for (u32 i = 0; i < info->num_settings; i++)
+      for (const SettingInfo& csi : info->settings)
       {
-        const SettingInfo& csi = info->settings[i];
         switch (csi.type)
         {
           case SettingInfo::Type::Boolean:
@@ -1232,9 +1284,8 @@ bool InputManager::MapController(SettingsInterface& si, u32 controller,
     return false;
 
   u32 num_mappings = 0;
-  for (u32 i = 0; i < info->num_bindings; i++)
+  for (const Controller::ControllerBindingInfo& bi : info->bindings)
   {
-    const Controller::ControllerBindingInfo& bi = info->bindings[i];
     if (bi.generic_mapping == GenericInputBinding::Unknown)
       continue;
 
@@ -1407,7 +1458,7 @@ void InputManager::LoadMacroButtonConfig(SettingsInterface& si, const std::strin
                                          const Controller::ControllerInfo* cinfo)
 {
   s_macro_buttons[pad] = {};
-  if (cinfo->num_bindings == 0)
+  if (cinfo->bindings.empty())
     return;
 
   for (u32 i = 0; i < NUM_MACRO_BUTTONS_PER_CONTROLLER; i++)
@@ -1426,11 +1477,11 @@ void InputManager::LoadMacroButtonConfig(SettingsInterface& si, const std::strin
     for (const std::string_view& button : buttons_split)
     {
       const Controller::ControllerBindingInfo* binding = nullptr;
-      for (u32 j = 0; j < cinfo->num_bindings; j++)
+      for (const Controller::ControllerBindingInfo& bi : cinfo->bindings)
       {
-        if (button == cinfo->bindings[j].name)
+        if (button == bi.name)
         {
-          binding = &cinfo->bindings[j];
+          binding = &bi;
           break;
         }
       }
@@ -1551,6 +1602,7 @@ void InputManager::ReloadBindings(SettingsInterface& si, SettingsInterface& bind
 
   s_binding_map.clear();
   s_pad_vibration_array.clear();
+  s_pointer_move_callbacks.clear();
 
   // Hotkeys use the base configuration, except if the custom hotkeys option is enabled.
   const bool use_profile_hotkeys = si.GetBoolValue("ControllerPorts", "UseProfileHotkeyBindings", false);
@@ -1578,6 +1630,8 @@ void InputManager::ReloadBindings(SettingsInterface& si, SettingsInterface& bind
                                        default_scale),
                       1.0f);
   }
+
+  UpdateHostMouseMode();
 }
 
 bool InputManager::MigrateBindings(SettingsInterface& si)
@@ -1660,9 +1714,9 @@ bool InputManager::MigrateBindings(SettingsInterface& si)
         if (bnum >= std::size(button_mapping))
           continue;
 
-        new_bind.Fmt("SDL-{}/{}", cnum, button_mapping[bnum]);
+        new_bind.fmt("SDL-{}/{}", cnum, button_mapping[bnum]);
         si.SetStringValue(new_section.c_str(), new_key, new_bind);
-        Log_DevPrintf("%s -> %s", old_bind.c_str(), new_bind.GetCharArray());
+        Log_DevPrintf("%s -> %s", old_bind.c_str(), new_bind.c_str());
         num_changes++;
       }
       else if (std::sscanf(old_bind.c_str(), "Controller%u/%cAxis%u", &cnum, &dir, &bnum) == 3)
@@ -1670,16 +1724,16 @@ bool InputManager::MigrateBindings(SettingsInterface& si)
         if (bnum >= std::size(axis_mapping))
           continue;
 
-        new_bind.Fmt("SDL-{}/{}{}", cnum, dir, axis_mapping[bnum]);
+        new_bind.fmt("SDL-{}/{}{}", cnum, dir, axis_mapping[bnum]);
         si.SetStringValue(new_section.c_str(), new_key, new_bind);
-        Log_DevPrintf("%s -> %s", old_bind.c_str(), new_bind.GetCharArray());
+        Log_DevPrintf("%s -> %s", old_bind.c_str(), new_bind.c_str());
         num_changes++;
       }
       else if (StringUtil::StartsWith(old_bind.c_str(), "Keyboard/Keypad+"))
       {
-        new_bind.Fmt("Keyboard/Numpad{}", old_bind.substr(16));
+        new_bind.fmt("Keyboard/Numpad{}", old_bind.substr(16));
         si.SetStringValue(new_section.c_str(), new_key, new_bind);
-        Log_DevPrintf("%s -> %s", old_bind.c_str(), new_bind.GetCharArray());
+        Log_DevPrintf("%s -> %s", old_bind.c_str(), new_bind.c_str());
         num_changes++;
       }
       else if (StringUtil::StartsWith(old_bind.c_str(), "Keyboard/"))
@@ -1710,12 +1764,12 @@ bool InputManager::MigrateBindings(SettingsInterface& si)
         if (bnum >= std::size(axis_mapping))
           continue;
 
-        new_bind.Fmt("SDL-{}/-{}", cnum, axis_mapping[bnum]);
+        new_bind.fmt("SDL-{}/-{}", cnum, axis_mapping[bnum]);
         si.SetStringValue(new_section.c_str(), new_neg_key, new_bind);
-        new_bind.Fmt("SDL-{}/+{}", cnum, axis_mapping[bnum]);
+        new_bind.fmt("SDL-{}/+{}", cnum, axis_mapping[bnum]);
         si.SetStringValue(new_section.c_str(), new_pos_key, new_bind);
 
-        Log_DevPrintf("%s -> %s", old_bind.c_str(), new_bind.GetCharArray());
+        Log_DevPrintf("%s -> %s", old_bind.c_str(), new_bind.c_str());
         num_changes++;
       }
     }
@@ -1726,9 +1780,9 @@ bool InputManager::MigrateBindings(SettingsInterface& si)
       unsigned cnum;
       if (std::sscanf(rumble_source.c_str(), "Controller%u", &cnum) == 1)
       {
-        new_bind.Fmt("SDL-{}/LargeMotor", cnum);
+        new_bind.fmt("SDL-{}/LargeMotor", cnum);
         si.SetStringValue(new_section.c_str(), "LargeMotor", new_bind);
-        new_bind.Fmt("SDL-{}/SmallMotor", cnum);
+        new_bind.fmt("SDL-{}/SmallMotor", cnum);
         si.SetStringValue(new_section.c_str(), "SmallMotor", new_bind);
         num_changes++;
       }
@@ -1931,7 +1985,7 @@ void InputManager::ReloadSources(SettingsInterface& si, std::unique_lock<std::mu
   UpdateInputSourceState(si, settings_lock, InputSourceType::XInput, &InputSource::CreateXInputSource);
   UpdateInputSourceState(si, settings_lock, InputSourceType::RawInput, &InputSource::CreateWin32RawInputSource);
 #endif
-#ifdef WITH_SDL2
+#ifdef ENABLE_SDL2
   UpdateInputSourceState(si, settings_lock, InputSourceType::SDL, &InputSource::CreateSDLSource);
 #endif
 #ifdef __ANDROID__

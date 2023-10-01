@@ -7,7 +7,7 @@
     <ClInclude Include="heap_array.h" />
     <ClInclude Include="rectangle.h" />
     <ClInclude Include="log.h" />
-    <ClInclude Include="string.h" />
+    <ClInclude Include="small_string.h" />
     <ClInclude Include="byte_stream.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="assert.h" />
@@ -43,9 +43,10 @@
     <ClInclude Include="build_timestamp.h" />
     <ClInclude Include="sha1_digest.h" />
     <ClInclude Include="fastjmp.h" />
+    <ClInclude Include="memmap.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="string.cpp" />
+    <ClCompile Include="small_string.cpp" />
     <ClCompile Include="byte_stream.cpp" />
     <ClCompile Include="log.cpp" />
     <ClCompile Include="timer.cpp" />
@@ -68,6 +69,7 @@
     <ClCompile Include="threading.cpp" />
     <ClCompile Include="sha1_digest.cpp" />
     <ClCompile Include="fastjmp.cpp" />
+    <ClCompile Include="memmap.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="bitfield.natvis" />

@@ -40,7 +40,7 @@ Other features include:
  - Namco GunCon lightgun support (simulated with mouse).
  - NeGcon support.
  - Qt and "Big Picture" UI.
- - Automatic updates for Windows builds.
+ - Automatic updates for Windows builds (Mac and Linux AppImage in Preview channel).
  - Automatic content scanning - game titles/hashes are provided by redump.org.
  - Optional automatic switching of memory cards for each game.
  - Supports loading cheats from existing lists.
@@ -88,7 +88,7 @@ The Qt frontend includes an automatic update checker. Builds downloaded after 20
 
 ### Linux
 
-The only supported version of DuckStation for Linux are the AppImage and Flatpak in the releases page. Other AppImages or Flatpaks, **including Flathub**/"Discover" store **are not supported**, and if history is any indication, **likely broken** because packagers tend to modify things they don't understand.
+The only supported version of DuckStation for Linux are the AppImage and Flatpak in the releases page. If you installed DuckStation from another source or distribution (e.g. EmuDeck), you should contact the packager for support, we have no control over it.
 
 #### AppImage
 
@@ -101,7 +101,11 @@ The AppImages require a distribution equivalent to Ubuntu 22.04 or newer to run.
 
  - Go to https://github.com/stenzek/duckstation/releases/tag/preview, and download `duckstation-x64.flatpak`.
  - Run `flatpak install ./duckstation-x64.flatpak`.
- - Use `flatpak run org.duckstation.duckstation` to start, or select `DuckStation` in the launcher of your desktop environment.
+
+or, if you have FlatHub set up:
+ - Run `flatpak install org.duckstation.DuckStation`.
+
+Use `flatpak run org.duckstation.DuckStation` to start, or select `DuckStation` in the launcher of your desktop environment.
  
 ### macOS
 
@@ -173,7 +177,6 @@ Requirements (Debian/Ubuntu package names):
 5. Run the binary, located in the build directory under `bin/duckstation-qt`.
 
 ### macOS
-**NOTE:** macOS is highly experimental and not tested by the developer. Use at your own risk; things may be horribly broken. Vulkan support may be unstable, so sticking to OpenGL or software renderer is recommended.
 
 Requirements:
  - CMake

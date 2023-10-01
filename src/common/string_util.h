@@ -60,6 +60,15 @@ static inline int Strncasecmp(const char* s1, const char* s2, std::size_t n)
 #endif
 }
 
+// Case-insensitive equality of string views.
+static inline bool EqualNoCase(std::string_view s1, std::string_view s2)
+{
+  if (s1.empty() || s2.empty())
+    return (s1.empty() == s2.empty());
+
+  return (Strncasecmp(s1.data(), s2.data(), std::min(s1.length(), s2.length())) == 0);
+}
+
 /// Wrapper around std::from_chars
 template<typename T, std::enable_if_t<std::is_integral<T>::value, bool> = true>
 inline std::optional<T> FromChars(const std::string_view& str, int base = 10)
@@ -270,6 +279,10 @@ void EncodeAndAppendUTF8(std::string& s, char32_t ch);
 size_t DecodeUTF8(const void* bytes, size_t length, char32_t* ch);
 size_t DecodeUTF8(const std::string_view& str, size_t offset, char32_t* ch);
 size_t DecodeUTF8(const std::string& str, size_t offset, char32_t* ch);
+
+// Replaces the end of a string with ellipsis if it exceeds the specified length.
+std::string Ellipsise(const std::string_view& str, u32 max_length, const char* ellipsis = "...");
+void EllipsiseInPlace(std::string& str, u32 max_length, const char* ellipsis = "...");
 
 /// Strided memcpy/memcmp.
 ALWAYS_INLINE static void StrideMemCpy(void* dst, std::size_t dst_stride, const void* src, std::size_t src_stride,

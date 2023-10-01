@@ -142,7 +142,7 @@ bool MetalDevice::CreateDevice(const std::string_view& adapter, bool threaded_pr
       }
 
       if (device == nil)
-        Log_ErrorPrint(fmt::format("Failed to find device named '{}'. Trying default.", adapter).c_str());
+        Log_ErrorFmt("Failed to find device named '{}'. Trying default.", adapter);
     }
 
     if (device == nil)
@@ -174,6 +174,12 @@ bool MetalDevice::CreateDevice(const std::string_view& adapter, bool threaded_pr
     CreateCommandBuffer();
     RenderBlankFrame();
 
+    if (!LoadShaders())
+    {
+      Log_ErrorPrint("Failed to load shaders.");
+      return false;
+    }
+
     if (!CreateBuffers())
     {
       Log_ErrorPrintf("Failed to create buffers.");
@@ -198,7 +204,7 @@ void MetalDevice::SetFeatures()
   }
 
   m_max_multisamples = 0;
-  for (u32 multisamples = 1; multisamples < 16; multisamples++)
+  for (u32 multisamples = 1; multisamples < 16; multisamples *= 2)
   {
     if (![m_device supportsTextureSampleCount:multisamples])
       break;
@@ -211,9 +217,69 @@ void MetalDevice::SetFeatures()
   m_features.supports_texture_buffers = true;
   m_features.texture_buffers_emulated_with_ssbo = true;
   m_features.geometry_shaders = false;
-  m_features.partial_msaa_resolve = true;
+  m_features.partial_msaa_resolve = false;
   m_features.shader_cache = true;
   m_features.pipeline_cache = false;
+}
+
+bool MetalDevice::LoadShaders()
+{
+  @autoreleasepool
+  {
+    auto try_lib = [this](NSString* name) -> id<MTLLibrary> {
+      NSBundle* bundle = [NSBundle mainBundle];
+      NSString* path = [bundle pathForResource:name ofType:@"metallib"];
+      if (path == nil)
+      {
+        // Xcode places it alongside the binary.
+        path = [NSString stringWithFormat:@"%@/%@.metallib", [bundle bundlePath], name];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path])
+          return nil;
+      }
+
+      id<MTLLibrary> lib = [m_device newLibraryWithFile:path error:nil];
+      if (lib == nil)
+        return nil;
+
+      return [lib retain];
+    };
+
+    if (!(m_shaders = try_lib(@"Metal23")) && !(m_shaders = try_lib(@"Metal22")) &&
+        !(m_shaders = try_lib(@"Metal21")) && !(m_shaders = try_lib(@"default")))
+    {
+      return false;
+    }
+
+    return true;
+  }
+}
+
+id<MTLFunction> MetalDevice::GetFunctionFromLibrary(id<MTLLibrary> library, NSString* name)
+{
+  id<MTLFunction> function = [library newFunctionWithName:name];
+  return function;
+}
+
+id<MTLComputePipelineState> MetalDevice::CreateComputePipeline(id<MTLFunction> function, NSString* name)
+{
+  MTLComputePipelineDescriptor* desc = [MTLComputePipelineDescriptor new];
+  if (name != nil)
+    [desc setLabel:name];
+  [desc setComputeFunction:function];
+
+  NSError* err = nil;
+  id<MTLComputePipelineState> pipeline = [m_device newComputePipelineStateWithDescriptor:desc
+                                                                                 options:MTLPipelineOptionNone
+                                                                              reflection:nil
+                                                                                   error:&err];
+  [desc release];
+  if (pipeline == nil)
+  {
+    LogNSError(err, "Create compute pipeline failed:");
+    return nil;
+  }
+
+  return pipeline;
 }
 
 void MetalDevice::DestroyDevice()
@@ -243,6 +309,17 @@ void MetalDevice::DestroyDevice()
     [it.second release];
   m_cleanup_objects.clear();
 
+  for (auto& it : m_resolve_pipelines)
+  {
+    if (it.second != nil)
+      [it.second release];
+  }
+  m_resolve_pipelines.clear();
+  if (m_shaders != nil)
+  {
+    [m_shaders release];
+    m_shaders = nil;
+  }
   if (m_queue != nil)
   {
     [m_queue release];
@@ -434,133 +511,22 @@ GPUDevice::AdapterAndModeList MetalDevice::GetAdapterAndModeList()
   return StaticGetAdapterAndModeList();
 }
 
-#if 0
-bool MetalDevice::CreateTimestampQueries()
-{
-  for (u32 i = 0; i < NUM_TIMESTAMP_QUERIES; i++)
-  {
-    for (u32 j = 0; j < 3; j++)
-    {
-      const CMetal_QUERY_DESC qdesc((j == 0) ? Metal_QUERY_TIMESTAMP_DISJOINT : Metal_QUERY_TIMESTAMP);
-      const HRESULT hr = m_device->CreateQuery(&qdesc, m_timestamp_queries[i][j].ReleaseAndGetAddressOf());
-      if (FAILED(hr))
-      {
-        m_timestamp_queries = {};
-        return false;
-      }
-    }
-  }
-
-  KickTimestampQuery();
-  return true;
-}
-
-void MetalDevice::DestroyTimestampQueries()
-{
-  if (!m_timestamp_queries[0][0])
-    return;
-
-  if (m_timestamp_query_started)
-    m_context->End(m_timestamp_queries[m_write_timestamp_query][1].Get());
-
-  m_timestamp_queries = {};
-  m_read_timestamp_query = 0;
-  m_write_timestamp_query = 0;
-  m_waiting_timestamp_queries = 0;
-  m_timestamp_query_started = 0;
-}
-
-void MetalDevice::PopTimestampQuery()
-{
-  while (m_waiting_timestamp_queries > 0)
-  {
-    Metal_QUERY_DATA_TIMESTAMP_DISJOINT disjoint;
-    const HRESULT disjoint_hr = m_context->GetData(m_timestamp_queries[m_read_timestamp_query][0].Get(), &disjoint,
-                                                   sizeof(disjoint), Metal_ASYNC_GETDATA_DONOTFLUSH);
-    if (disjoint_hr != S_OK)
-      break;
-
-    if (disjoint.Disjoint)
-    {
-      Log_VerbosePrintf("GPU timing disjoint, resetting.");
-      m_read_timestamp_query = 0;
-      m_write_timestamp_query = 0;
-      m_waiting_timestamp_queries = 0;
-      m_timestamp_query_started = 0;
-    }
-    else
-    {
-      u64 start = 0, end = 0;
-      const HRESULT start_hr = m_context->GetData(m_timestamp_queries[m_read_timestamp_query][1].Get(), &start,
-                                                  sizeof(start), Metal_ASYNC_GETDATA_DONOTFLUSH);
-      const HRESULT end_hr = m_context->GetData(m_timestamp_queries[m_read_timestamp_query][2].Get(), &end, sizeof(end),
-                                                Metal_ASYNC_GETDATA_DONOTFLUSH);
-      if (start_hr == S_OK && end_hr == S_OK)
-      {
-        const float delta =
-          static_cast<float>(static_cast<double>(end - start) / (static_cast<double>(disjoint.Frequency) / 1000.0));
-        m_accumulated_gpu_time += delta;
-        m_read_timestamp_query = (m_read_timestamp_query + 1) % NUM_TIMESTAMP_QUERIES;
-        m_waiting_timestamp_queries--;
-      }
-    }
-  }
-
-  if (m_timestamp_query_started)
-  {
-    m_context->End(m_timestamp_queries[m_write_timestamp_query][2].Get());
-    m_context->End(m_timestamp_queries[m_write_timestamp_query][0].Get());
-    m_write_timestamp_query = (m_write_timestamp_query + 1) % NUM_TIMESTAMP_QUERIES;
-    m_timestamp_query_started = false;
-    m_waiting_timestamp_queries++;
-  }
-}
-
-void MetalDevice::KickTimestampQuery()
-{
-  if (m_timestamp_query_started || !m_timestamp_queries[0][0] || m_waiting_timestamp_queries == NUM_TIMESTAMP_QUERIES)
-    return;
-
-  m_context->Begin(m_timestamp_queries[m_write_timestamp_query][0].Get());
-  m_context->End(m_timestamp_queries[m_write_timestamp_query][1].Get());
-  m_timestamp_query_started = true;
-}
-#endif
-
 bool MetalDevice::SetGPUTimingEnabled(bool enabled)
 {
-#if 0
   if (m_gpu_timing_enabled == enabled)
     return true;
 
+  std::unique_lock lock(m_fence_mutex);
   m_gpu_timing_enabled = enabled;
-  if (m_gpu_timing_enabled)
-  {
-    if (!CreateTimestampQueries())
-      return false;
-
-    KickTimestampQuery();
-    return true;
-  }
-  else
-  {
-    DestroyTimestampQueries();
-    return true;
-  }
-#else
-  return false;
-#endif
+  m_accumulated_gpu_time = 0.0;
+  m_last_gpu_time_end = 0.0;
+  return true;
 }
 
 float MetalDevice::GetAndResetAccumulatedGPUTime()
 {
-#if 0
-  const float value = m_accumulated_gpu_time;
-  m_accumulated_gpu_time = 0.0f;
-  return value;
-#else
-  return 0.0f;
-#endif
+  std::unique_lock lock(m_fence_mutex);
+  return std::exchange(m_accumulated_gpu_time, 0.0) * 1000.0;
 }
 
 MetalShader::MetalShader(GPUShaderStage stage, id<MTLLibrary> library, id<MTLFunction> function)
@@ -847,7 +813,7 @@ std::unique_ptr<GPUPipeline> MetalDevice::CreatePipeline(const GPUPipeline::Grap
 
     // General
     const MTLPrimitiveType primitive = primitives[static_cast<u8>(config.primitive)];
-    desc.rasterSampleCount = config.per_sample_shading ? config.samples : 1;
+    desc.rasterSampleCount = config.samples;
 
     // Metal-specific stuff
     desc.vertexBuffers[0].mutability = MTLMutabilityImmutable;
@@ -1070,6 +1036,15 @@ std::unique_ptr<GPUTexture> MetalDevice::CreateTexture(u32 width, u32 height, u3
     desc.depth = levels;
     desc.pixelFormat = pixel_format;
     desc.mipmapLevelCount = levels;
+    if (samples > 1)
+    {
+      desc.textureType = (layers > 1) ? MTLTextureType2DMultisampleArray : MTLTextureType2DMultisample;
+      desc.sampleCount = samples;
+    }
+    else if (layers > 1)
+    {
+      desc.textureType = MTLTextureType2DArray;
+    }
 
     switch (type)
     {
@@ -1450,30 +1425,62 @@ void MetalDevice::CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 d
 void MetalDevice::ResolveTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level,
                                        GPUTexture* src, u32 src_x, u32 src_y, u32 width, u32 height)
 {
-#if 0
-	DebugAssert(src_level < src->GetLevels() && src_layer < src->GetLayers());
-	DebugAssert((src_x + width) <= src->GetMipWidth(src_level));
-	DebugAssert((src_y + height) <= src->GetMipHeight(src_level));
-	DebugAssert(dst_level < dst->GetLevels() && dst_layer < dst->GetLayers());
-	DebugAssert((dst_x + width) <= dst->GetMipWidth(dst_level));
-	DebugAssert((dst_y + height) <= dst->GetMipHeight(dst_level));
-	DebugAssert(!dst->IsMultisampled() && src->IsMultisampled());
+  DebugAssert((src_x + width) <= src->GetWidth());
+  DebugAssert((src_y + height) <= src->GetHeight());
+  DebugAssert(dst_level < dst->GetLevels() && dst_layer < dst->GetLayers());
+  DebugAssert((dst_x + width) <= dst->GetMipWidth(dst_level));
+  DebugAssert((dst_y + height) <= dst->GetMipHeight(dst_level));
+  DebugAssert(!dst->IsMultisampled() && src->IsMultisampled());
 
-	// DX11 can't resolve partial rects.
-	Assert(src_x == dst_x && src_y == dst_y);
+  // Only does first level for now..
+  DebugAssert(dst_level == 0 && dst_layer == 0);
 
-	MetalTexture* dst11 = static_cast<MetalTexture*>(dst);
-	MetalTexture* src11 = static_cast<MetalTexture*>(src);
+  const GPUTexture::Format src_format = dst->GetFormat();
+  const GPUTexture::Format dst_format = dst->GetFormat();
+  id<MTLComputePipelineState> resolve_pipeline = nil;
+  if (auto iter = std::find_if(m_resolve_pipelines.begin(), m_resolve_pipelines.end(),
+                               [src_format, dst_format](const auto& it) {
+                                 return it.first.first == src_format && it.first.second == dst_format;
+                               });
+      iter != m_resolve_pipelines.end())
+  {
+    resolve_pipeline = iter->second;
+  }
+  else
+  {
+    // Need to compile it.
+    @autoreleasepool
+    {
+      const bool is_depth = GPUTexture::IsDepthFormat(src_format);
+      id<MTLFunction> function =
+        [GetFunctionFromLibrary(m_shaders, is_depth ? @"depthResolveKernel" : @"colorResolveKernel") autorelease];
+      if (function == nil)
+        Panic("Failed to get resolve kernel");
 
-	src11->CommitClear(m_context.Get());
-	dst11->CommitClear(m_context.Get());
+      resolve_pipeline = [CreateComputePipeline(function, is_depth ? @"Depth Resolve" : @"Color Resolve") autorelease];
+      if (resolve_pipeline != nil)
+        [resolve_pipeline retain];
+      m_resolve_pipelines.emplace_back(std::make_pair(src_format, dst_format), resolve_pipeline);
+    }
+  }
+  if (resolve_pipeline == nil)
+    Panic("Failed to get resolve pipeline");
 
-	m_context->ResolveSubresource(dst11->GetD3DTexture(), MetalCalcSubresource(dst_level, dst_layer, dst->GetLevels()),
-																src11->GetD3DTexture(), MetalCalcSubresource(src_level, src_layer, src->GetLevels()),
-																dst11->GetDXGIFormat());
-#else
-  Panic("Fixme");
-#endif
+  if (InRenderPass())
+    EndRenderPass();
+
+  const u32 threadgroupHeight = resolve_pipeline.maxTotalThreadsPerThreadgroup / resolve_pipeline.threadExecutionWidth;
+  const MTLSize intrinsicThreadgroupSize = MTLSizeMake(resolve_pipeline.threadExecutionWidth, threadgroupHeight, 1);
+  const MTLSize threadgroupsInGrid =
+    MTLSizeMake((src->GetWidth() + intrinsicThreadgroupSize.width - 1) / intrinsicThreadgroupSize.width,
+                (src->GetHeight() + intrinsicThreadgroupSize.height - 1) / intrinsicThreadgroupSize.height, 1);
+
+  id<MTLComputeCommandEncoder> computeEncoder = [m_render_cmdbuf computeCommandEncoder];
+  [computeEncoder setComputePipelineState:resolve_pipeline];
+  [computeEncoder setTexture:static_cast<MetalTexture*>(src)->GetMTLTexture() atIndex:0];
+  [computeEncoder setTexture:static_cast<MetalTexture*>(dst)->GetMTLTexture() atIndex:1];
+  [computeEncoder dispatchThreadgroups:threadgroupsInGrid threadsPerThreadgroup:intrinsicThreadgroupSize];
+  [computeEncoder endEncoding];
 }
 
 void MetalDevice::ClearRenderTarget(GPUTexture* t, u32 c)
@@ -1595,7 +1602,7 @@ std::unique_ptr<GPUTextureBuffer> MetalDevice::CreateTextureBuffer(GPUTextureBuf
   return tb;
 }
 
-void MetalDevice::PushDebugGroup(const char* fmt, ...)
+void MetalDevice::PushDebugGroup(const char* name)
 {
 }
 
@@ -1603,7 +1610,7 @@ void MetalDevice::PopDebugGroup()
 {
 }
 
-void MetalDevice::InsertDebugMessage(const char* fmt, ...)
+void MetalDevice::InsertDebugMessage(const char* msg)
 {
 }
 
@@ -2042,19 +2049,30 @@ void MetalDevice::CreateCommandBuffer()
     DebugAssert(m_render_cmdbuf == nil);
     const u64 fence_counter = ++m_current_fence_counter;
     m_render_cmdbuf = [[m_queue commandBufferWithUnretainedReferences] retain];
-    [m_render_cmdbuf addCompletedHandler:[this, fence_counter](id<MTLCommandBuffer>) {
-      CommandBufferCompletedOffThread(fence_counter);
+    [m_render_cmdbuf addCompletedHandler:[this, fence_counter](id<MTLCommandBuffer> buffer) {
+      CommandBufferCompletedOffThread(buffer, fence_counter);
     }];
   }
 
   CleanupObjects();
 }
 
-void MetalDevice::CommandBufferCompletedOffThread(u64 fence_counter)
+void MetalDevice::CommandBufferCompletedOffThread(id<MTLCommandBuffer> buffer, u64 fence_counter)
 {
   std::unique_lock lock(m_fence_mutex);
   m_completed_fence_counter.store(std::max(m_completed_fence_counter.load(std::memory_order_acquire), fence_counter),
                                   std::memory_order_release);
+
+  if (m_gpu_timing_enabled)
+  {
+    const double begin = std::max(m_last_gpu_time_end, [buffer GPUStartTime]);
+    const double end = [buffer GPUEndTime];
+    if (end > begin)
+    {
+      m_accumulated_gpu_time += end - begin;
+      m_last_gpu_time_end = end;
+    }
+  }
 }
 
 void MetalDevice::SubmitCommandBuffer(bool wait_for_completion)

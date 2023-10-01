@@ -58,6 +58,7 @@ enum class PGXPMode : u8
 
 enum class GPURenderer : u8
 {
+  Automatic,
 #ifdef _WIN32
   HardwareD3D11,
   HardwareD3D12,
@@ -65,10 +66,10 @@ enum class GPURenderer : u8
 #ifdef __APPLE__
   HardwareMetal,
 #endif
-#ifdef WITH_VULKAN
+#ifdef ENABLE_VULKAN
   HardwareVulkan,
 #endif
-#ifdef WITH_OPENGL
+#ifdef ENABLE_OPENGL
   HardwareOpenGL,
 #endif
   Software,
@@ -144,7 +145,7 @@ enum class DisplayScalingMode : u8
 enum class AudioBackend : u8
 {
   Null,
-#ifdef WITH_CUBEB
+#ifdef ENABLE_CUBEB
   Cubeb,
 #endif
 #ifdef _WIN32
@@ -201,10 +202,4 @@ enum class CPUFastmemMode
   MMap,
   LUT,
   Count
-};
-
-enum : size_t
-{
-  HOST_PAGE_SIZE = 4096,
-  HOST_PAGE_OFFSET_MASK = HOST_PAGE_SIZE - 1,
 };

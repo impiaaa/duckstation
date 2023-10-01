@@ -101,34 +101,6 @@ bool Settings::HasAnyPerGameMemoryCards() const
   });
 }
 
-std::array<TinyString, NUM_CONTROLLER_AND_CARD_PORTS> Settings::GeneratePortLabels() const
-{
-  static constexpr std::array<std::array<bool, NUM_MULTITAPS>, static_cast<size_t>(MultitapMode::Count)>
-    multitap_enabled_on_port = {{{false, false}, {true, false}, {false, true}, {true, true}}};
-
-  std::array<TinyString, NUM_CONTROLLER_AND_CARD_PORTS> labels;
-
-  u32 logical_port = 0;
-  for (u32 physical_port = 0; physical_port < NUM_MULTITAPS; physical_port++)
-  {
-    if (multitap_enabled_on_port[static_cast<size_t>(multitap_mode)][physical_port])
-    {
-      for (u32 i = 0; i < 4; i++)
-      {
-        labels[logical_port] = TinyString::FromFormat("Port %u%c", physical_port + 1u, 'A' + i);
-        logical_port++;
-      }
-    }
-    else
-    {
-      labels[logical_port] = TinyString::FromFormat("Port %u", physical_port + 1u);
-      logical_port++;
-    }
-  }
-
-  return labels;
-}
-
 void Settings::CPUOverclockPercentToFraction(u32 percent, u32* numerator, u32* denominator)
 {
   const u32 percent_gcd = std::gcd(percent, 100);
@@ -365,20 +337,25 @@ void Settings::Load(SettingsInterface& si)
   memory_card_use_playlist_title = si.GetBoolValue("MemoryCards", "UsePlaylistTitle", true);
 
   achievements_enabled = si.GetBoolValue("Cheevos", "Enabled", false);
-  achievements_test_mode = si.GetBoolValue("Cheevos", "TestMode", false);
+  achievements_hardcore_mode = si.GetBoolValue("Cheevos", "ChallengeMode", false);
+  achievements_notifications = si.GetBoolValue("Cheevos", "Notifications", true);
+  achievements_leaderboard_notifications = si.GetBoolValue("Cheevos", "LeaderboardNotifications", true);
+  achievements_sound_effects = si.GetBoolValue("Cheevos", "SoundEffects", true);
+  achievements_overlays = si.GetBoolValue("Cheevos", "Overlays", true);
+  achievements_encore_mode = si.GetBoolValue("Cheevos", "EncoreMode", false);
+  achievements_spectator_mode = si.GetBoolValue("Cheevos", "SpectatorMode", false);
   achievements_unofficial_test_mode = si.GetBoolValue("Cheevos", "UnofficialTestMode", false);
   achievements_use_first_disc_from_playlist = si.GetBoolValue("Cheevos", "UseFirstDiscFromPlaylist", true);
-  achievements_rich_presence = si.GetBoolValue("Cheevos", "RichPresence", true);
-  achievements_challenge_mode = si.GetBoolValue("Cheevos", "ChallengeMode", false);
-  achievements_leaderboards = si.GetBoolValue("Cheevos", "Leaderboards", true);
-  achievements_notifications = si.GetBoolValue("Cheevos", "Notifications", true);
-  achievements_sound_effects = si.GetBoolValue("Cheevos", "SoundEffects", true);
-  achievements_primed_indicators = si.GetBoolValue("Cheevos", "PrimedIndicators", true);
   achievements_use_raintegration = si.GetBoolValue("Cheevos", "UseRAIntegration", false);
+  achievements_notification_duration =
+    si.GetIntValue("Cheevos", "NotificationsDuration", DEFAULT_ACHIEVEMENT_NOTIFICATION_TIME);
+  achievements_leaderboard_duration =
+    si.GetIntValue("Cheevos", "LeaderboardsDuration", DEFAULT_LEADERBOARD_NOTIFICATION_TIME);
 
   log_level = ParseLogLevelName(si.GetStringValue("Logging", "LogLevel", GetLogLevelName(DEFAULT_LOG_LEVEL)).c_str())
                 .value_or(DEFAULT_LOG_LEVEL);
   log_filter = si.GetStringValue("Logging", "LogFilter", "");
+  log_timestamps = si.GetBoolValue("Logging", "LogTimestamps", true);
   log_to_console = si.GetBoolValue("Logging", "LogToConsole", DEFAULT_LOG_TO_CONSOLE);
   log_to_debug = si.GetBoolValue("Logging", "LogToDebug", false);
   log_to_window = si.GetBoolValue("Logging", "LogToWindow", false);
@@ -564,19 +541,22 @@ void Settings::Save(SettingsInterface& si) const
   si.SetStringValue("ControllerPorts", "MultitapMode", GetMultitapModeName(multitap_mode));
 
   si.SetBoolValue("Cheevos", "Enabled", achievements_enabled);
-  si.SetBoolValue("Cheevos", "TestMode", achievements_test_mode);
+  si.SetBoolValue("Cheevos", "ChallengeMode", achievements_hardcore_mode);
+  si.SetBoolValue("Cheevos", "Notifications", achievements_notifications);
+  si.SetBoolValue("Cheevos", "LeaderboardNotifications", achievements_leaderboard_notifications);
+  si.SetBoolValue("Cheevos", "SoundEffects", achievements_sound_effects);
+  si.SetBoolValue("Cheevos", "Overlays", achievements_overlays);
+  si.SetBoolValue("Cheevos", "EncoreMode", achievements_encore_mode);
+  si.SetBoolValue("Cheevos", "SpectatorMode", achievements_spectator_mode);
   si.SetBoolValue("Cheevos", "UnofficialTestMode", achievements_unofficial_test_mode);
   si.SetBoolValue("Cheevos", "UseFirstDiscFromPlaylist", achievements_use_first_disc_from_playlist);
-  si.SetBoolValue("Cheevos", "RichPresence", achievements_rich_presence);
-  si.SetBoolValue("Cheevos", "ChallengeMode", achievements_challenge_mode);
-  si.SetBoolValue("Cheevos", "Leaderboards", achievements_leaderboards);
-  si.SetBoolValue("Cheevos", "Notifications", achievements_notifications);
-  si.SetBoolValue("Cheevos", "SoundEffects", achievements_sound_effects);
-  si.SetBoolValue("Cheevos", "PrimedIndicators", achievements_primed_indicators);
   si.SetBoolValue("Cheevos", "UseRAIntegration", achievements_use_raintegration);
+  si.SetIntValue("Cheevos", "NotificationsDuration", achievements_notification_duration);
+  si.SetIntValue("Cheevos", "LeaderboardsDuration", achievements_leaderboard_duration);
 
   si.SetStringValue("Logging", "LogLevel", GetLogLevelName(log_level));
   si.SetStringValue("Logging", "LogFilter", log_filter.c_str());
+  si.SetBoolValue("Logging", "LogTimestamps", log_timestamps);
   si.SetBoolValue("Logging", "LogToConsole", log_to_console);
   si.SetBoolValue("Logging", "LogToDebug", log_to_debug);
   si.SetBoolValue("Logging", "LogToWindow", log_to_window);
@@ -630,7 +610,6 @@ void Settings::FixIncompatibleSettings(bool display_osd_messages)
     g_settings.use_old_mdec_routines = false;
     g_settings.pcdrv_enable = false;
     g_settings.bios_patch_fast_boot = false;
-    g_settings.bios_tty_logging = false;
   }
 
   if (g_settings.pcdrv_enable && g_settings.pcdrv_root.empty())
@@ -653,7 +632,7 @@ void Settings::FixIncompatibleSettings(bool display_osd_messages)
     }
   }
 
-#ifndef WITH_MMAP_FASTMEM
+#ifndef ENABLE_MMAP_FASTMEM
   if (g_settings.cpu_fastmem_mode == CPUFastmemMode::MMap)
   {
     Log_WarningPrintf("mmap fastmem is not available on this platform, using LUT instead.");
@@ -696,7 +675,7 @@ void Settings::FixIncompatibleSettings(bool display_osd_messages)
   }
 
   // if challenge mode is enabled, disable things like rewind since they use save states
-  if (Achievements::ChallengeModeActive())
+  if (Achievements::IsHardcoreModeActive())
   {
     g_settings.emulation_speed =
       (g_settings.emulation_speed != 0.0f) ? std::max(g_settings.emulation_speed, 1.0f) : 0.0f;
@@ -725,14 +704,15 @@ void Settings::FixIncompatibleSettings(bool display_osd_messages)
 
 void Settings::UpdateLogSettings()
 {
-  Log::SetFilterLevel(log_level);
-  Log::SetConsoleOutputParams(log_to_console, log_filter.empty() ? nullptr : log_filter.c_str(), log_level);
-  Log::SetDebugOutputParams(log_to_debug, log_filter.empty() ? nullptr : log_filter.c_str(), log_level);
+  Log::SetLogLevel(log_level);
+  Log::SetLogfilter(log_filter);
+  Log::SetConsoleOutputParams(log_to_console, log_timestamps);
+  Log::SetDebugOutputParams(log_to_debug);
 
   if (log_to_file)
   {
-    Log::SetFileOutputParams(log_to_file, Path::Combine(EmuFolders::DataRoot, "duckstation.log").c_str(), true,
-                             log_filter.empty() ? nullptr : log_filter.c_str(), log_level);
+    Log::SetFileOutputParams(log_to_file, Path::Combine(EmuFolders::DataRoot, "duckstation.log").c_str(),
+                             log_timestamps);
   }
   else
   {
@@ -916,34 +896,40 @@ const char* Settings::GetCPUFastmemModeDisplayName(CPUFastmemMode mode)
   return Host::TranslateToCString("CPUFastmemMode", s_cpu_fastmem_mode_display_names[static_cast<u8>(mode)]);
 }
 
-static constexpr auto s_gpu_renderer_names = make_array(
+static constexpr std::array<const char*, static_cast<u32>(GPURenderer::Count)> s_gpu_renderer_names = {{
+  "Automatic",
 #ifdef _WIN32
-  "D3D11", "D3D12",
+  "D3D11",
+  "D3D12",
 #endif
 #ifdef __APPLE__
   "Metal",
 #endif
-#ifdef WITH_VULKAN
+#ifdef ENABLE_VULKAN
   "Vulkan",
 #endif
-#ifdef WITH_OPENGL
+#ifdef ENABLE_OPENGL
   "OpenGL",
 #endif
-  "Software");
-static constexpr auto s_gpu_renderer_display_names = make_array(
+  "Software",
+}};
+static constexpr std::array<const char*, static_cast<u32>(GPURenderer::Count)> s_gpu_renderer_display_names = {{
+  TRANSLATE_NOOP("GPURenderer", "Automatic"),
 #ifdef _WIN32
-  TRANSLATE_NOOP("GPURenderer", "Hardware (D3D11)"), TRANSLATE_NOOP("GPURenderer", "Hardware (D3D12)"),
+  TRANSLATE_NOOP("GPURenderer", "Hardware (D3D11)"),
+  TRANSLATE_NOOP("GPURenderer", "Hardware (D3D12)"),
 #endif
 #ifdef __APPLE__
   TRANSLATE_NOOP("GPURenderer", "Hardware (Metal)"),
 #endif
-#ifdef WITH_VULKAN
+#ifdef ENABLE_VULKAN
   TRANSLATE_NOOP("GPURenderer", "Hardware (Vulkan)"),
 #endif
-#ifdef WITH_OPENGL
+#ifdef ENABLE_OPENGL
   TRANSLATE_NOOP("GPURenderer", "Hardware (OpenGL)"),
 #endif
-  TRANSLATE_NOOP("GPURenderer", "Software"));
+  TRANSLATE_NOOP("GPURenderer", "Software"),
+}};
 
 std::optional<GPURenderer> Settings::ParseRendererName(const char* str)
 {
@@ -982,15 +968,16 @@ RenderAPI Settings::GetRenderAPIForRenderer(GPURenderer renderer)
 #ifdef __APPLE__
       return RenderAPI::Metal;
 #endif
-#ifdef WITH_VULKAN
+#ifdef ENABLE_VULKAN
     case GPURenderer::HardwareVulkan:
       return RenderAPI::Vulkan;
 #endif
-#ifdef WITH_OPENGL
+#ifdef ENABLE_OPENGL
     case GPURenderer::HardwareOpenGL:
       return RenderAPI::OpenGL;
 #endif
     case GPURenderer::Software:
+    case GPURenderer::Automatic:
     default:
       return GPUDevice::GetPreferredAPI();
   }
@@ -1241,7 +1228,7 @@ const char* Settings::GetDisplayScalingDisplayName(DisplayScalingMode mode)
 
 static constexpr const char* s_audio_backend_names[] = {
   "Null",
-#ifdef WITH_CUBEB
+#ifdef ENABLE_CUBEB
   "Cubeb",
 #endif
 #ifdef _WIN32
@@ -1253,7 +1240,7 @@ static constexpr const char* s_audio_backend_names[] = {
 };
 static constexpr const char* s_audio_backend_display_names[] = {
   TRANSLATE_NOOP("AudioBackend", "Null (No Output)"),
-#ifdef WITH_CUBEB
+#ifdef ENABLE_CUBEB
   TRANSLATE_NOOP("AudioBackend", "Cubeb"),
 #endif
 #ifdef _WIN32
@@ -1542,4 +1529,133 @@ bool EmuFolders::EnsureFoldersExist()
            result;
   result = FileSystem::EnsureDirectoryExists(Textures.c_str(), false) && result;
   return result;
+}
+
+static const char* s_log_filters[] = {
+  "Achievements",
+  "AnalogController",
+  "AnalogJoystick",
+  "AudioStream",
+  "AutoUpdaterDialog",
+  "BIOS",
+  "Bus",
+  "ByteStream",
+  "CDImage",
+  "CDImageBin",
+  "CDImageCHD",
+  "CDImageCueSheet",
+  "CDImageDevice",
+  "CDImageEcm",
+  "CDImageMds",
+  "CDImageMemory",
+  "CDImagePBP",
+  "CDImagePPF",
+  "CDROM",
+  "CDROMAsyncReader",
+  "CDSubChannelReplacement",
+  "CPU::CodeCache",
+  "CPU::Core",
+  "CPU::Recompiler",
+  "Common::PageFaultHandler",
+  "ControllerBindingWidget",
+  "CueParser",
+  "Cheats",
+  "DMA",
+  "DisplayWidget",
+  "FileSystem",
+  "FullscreenUI",
+  "GDBConnection",
+  "GDBProtocol",
+  "GDBServer",
+  "GPU",
+  "GPUBackend",
+  "GPUDevice",
+  "GPUShaderCache",
+  "GPUTexture",
+  "GPU_HW",
+  "GPU_SW",
+  "GameDatabase",
+  "GameList",
+  "GunCon",
+  "HTTPDownloader",
+  "Host",
+  "HostInterfaceProgressCallback",
+  "INISettingsInterface",
+  "ISOReader",
+  "ImGuiFullscreen",
+  "ImGuiManager",
+  "Image",
+  "InputManager",
+  "InterruptController",
+  "JitCodeBuffer",
+  "MDEC",
+  "MainWindow",
+  "MemoryArena",
+  "MemoryCard",
+  "Multitap",
+  "NoGUIHost",
+  "PCDrv",
+  "PGXP",
+  "PSFLoader",
+  "Pad",
+  "PlatformMisc",
+  "PlayStationMouse",
+  "PostProcessing",
+  "ProgressCallback",
+  "QTTranslations",
+  "QtHost",
+  "ReShadeFXShader",
+  "Recompiler::CodeGenerator",
+  "RegTestHost",
+  "SDLInputSource",
+  "SIO",
+  "SPIRVCompiler",
+  "SPU",
+  "Settings",
+  "ShaderGen",
+  "StateWrapper",
+  "System",
+  "TextureReplacements",
+  "Timers",
+  "TimingEvents",
+  "WAVWriter",
+  "WindowInfo",
+
+#ifdef ENABLE_CUBEB
+  "CubebAudioStream",
+#endif
+
+#ifdef ENABLE_OPENGL
+  "GL::Context",
+  "OpenGLDevice",
+#endif
+
+#ifdef ENABLE_VULKAN
+  "VulkanDevice",
+#endif
+
+#if defined(_WIN32)
+  "D3D11Device",
+  "D3D12Device",
+  "D3D12StreamBuffer",
+  "D3DCommon",
+  "DInputSource",
+  "Win32ProgressCallback",
+  "Win32RawInputSource",
+  "XAudio2AudioStream",
+  "XInputSource",
+#elif defined(__APPLE__)
+  "CocoaNoGUIPlatform",
+  "CocoaProgressCallback",
+  "MetalDevice",
+#else
+  "ContextEGLWayland",
+  "X11NoGUIPlatform",
+  "WaylandNoGUIPlatform",
+#endif
+};
+
+std::span<const char*> Settings::GetLogFilters()
+{
+  return s_log_filters;
 }

@@ -325,14 +325,25 @@ void Host::SetMouseMode(bool relative, bool hide_cursor)
   //
 }
 
-#ifdef WITH_CHEEVOS
+void Host::OnAchievementsLoginRequested(Achievements::LoginRequestReason reason)
+{
+  // noop
+}
+
+void Host::OnAchievementsLoginSuccess(const char* username, u32 points, u32 sc_points, u32 unread_messages)
+{
+  // noop
+}
 
 void Host::OnAchievementsRefreshed()
 {
   // noop
 }
 
-#endif
+void Host::OnAchievementsHardcoreModeChanged(bool enabled)
+{
+  // noop
+}
 
 std::optional<u32> InputManager::ConvertHostKeyboardStringToCode(const std::string_view& str)
 {
@@ -494,7 +505,7 @@ bool RegTestHost::ParseCommandLineParameters(int argc, char* argv[], std::option
           return false;
         }
 
-        Log::SetConsoleOutputParams(true, nullptr, level.value());
+        Log::SetConsoleOutputParams(true, level.value());
         s_base_settings_interface->SetStringValue("Logging", "LogLevel", Settings::GetLogLevelName(level.value()));
         continue;
       }
@@ -555,6 +566,7 @@ int main(int argc, char* argv[])
     return EXIT_FAILURE;
   }
 
+  System::Internal::ProcessStartup();
   RegTestHost::HookSignals();
 
   int result = -1;
@@ -583,5 +595,6 @@ int main(int argc, char* argv[])
   result = 0;
 
 cleanup:
+  System::Internal::ProcessShutdown();
   return result;
 }

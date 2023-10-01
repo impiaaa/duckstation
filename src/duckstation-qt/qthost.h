@@ -45,13 +45,12 @@ class GPUDevice;
 class MainWindow;
 class DisplayWidget;
 
+namespace Achievements {
+enum class LoginRequestReason;
+}
+
 Q_DECLARE_METATYPE(std::optional<bool>);
 Q_DECLARE_METATYPE(std::shared_ptr<SystemBootParameters>);
-
-// These cause errors when compiling with gcc, implicitly defined?
-// Q_DECLARE_METATYPE(std::function<void()>);
-// Q_DECLARE_METATYPE(GPURenderer);
-// Q_DECLARE_METATYPE(InputBindingKey);
 
 class EmuThread : public QThread
 {
@@ -88,6 +87,7 @@ public:
   static void stop();
 
   ALWAYS_INLINE bool isOnThread() const { return QThread::currentThread() == this; }
+  ALWAYS_INLINE bool isOnUIThread() const { return QThread::currentThread() == m_ui_thread; }
 
   ALWAYS_INLINE QEventLoop* getEventLoop() const { return m_event_loop; }
 
@@ -141,8 +141,11 @@ Q_SIGNALS:
   void inputProfileLoaded();
   void mouseModeRequested(bool relative, bool hide_cursor);
   void fullscreenUIStateChange(bool running);
-  void achievementsRefreshed(quint32 id, const QString& game_info_string, quint32 total, quint32 points);
-  void achievementsChallengeModeChanged();
+  void achievementsLoginRequested(Achievements::LoginRequestReason reason);
+  void achievementsLoginSucceeded(const QString& display_name, quint32 points, quint32 sc_points,
+                                  quint32 unread_messages);
+  void achievementsRefreshed(quint32 id, const QString& game_info_string);
+  void achievementsChallengeModeChanged(bool enabled);
   void cheatEnabled(quint32 index, bool enabled);
 
 public Q_SLOTS:
@@ -274,4 +277,9 @@ void QueueSettingsSave();
 /// VM state, safe to access on UI thread.
 bool IsSystemValid();
 bool IsSystemPaused();
+
+/// Accessors for game information.
+const QString& GetCurrentGameTitle();
+const QString& GetCurrentGameSerial();
+const QString& GetCurrentGamePath();
 } // namespace QtHost

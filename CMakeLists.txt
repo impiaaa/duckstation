@@ -11,69 +11,51 @@ message("Build Type: ${CMAKE_BUILD_TYPE}")
 
 # Pull in modules.
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMakeModules/")
+include(DuckStationUtils)
 
 # Platform detection.
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
   set(LINUX TRUE)
-  set(SUPPORTS_X11 TRUE)
-  set(SUPPORTS_WAYLAND TRUE)
 elseif(${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD")
   set(FREEBSD TRUE)
-  set(SUPPORTS_X11 TRUE)
 endif()
 
-# Global options.
-option(BUILD_NOGUI_FRONTEND "Build the NoGUI frontend" OFF)
-option(BUILD_QT_FRONTEND "Build the Qt frontend" ON)
-option(BUILD_REGTEST "Build regression test runner" OFF)
-option(BUILD_TESTS "Build unit tests" OFF)
-option(ENABLE_CUBEB "Build with Cubeb audio output" ON)
+# Renderer options.
 option(ENABLE_OPENGL "Build with OpenGL renderer" ON)
 option(ENABLE_VULKAN "Build with Vulkan renderer" ON)
-option(ENABLE_DISCORD_PRESENCE "Build with Discord Rich Presence support" ON)
-option(ENABLE_CHEEVOS "Build with RetroAchievements support" ON)
-#option(USE_SDL2 "Link with SDL2 for controller support" ON)
-set(USE_SDL2 ON)
 
+# Global options.
+if(NOT ANDROID)
+  option(BUILD_NOGUI_FRONTEND "Build the NoGUI frontend" OFF)
+  option(BUILD_QT_FRONTEND "Build the Qt frontend" ON)
+  option(BUILD_REGTEST "Build regression test runner" OFF)
+  option(BUILD_TESTS "Build unit tests" OFF)
 
-# OpenGL context creation methods.
-if(SUPPORTS_X11)
-  option(USE_X11 "Support X11 window system" ON)
-endif()
-if(SUPPORTS_WAYLAND)
-  option(USE_WAYLAND "Support Wayland window system" ON)
-endif()
-if((LINUX OR FREEBSD) AND NOT ANDROID)
-  option(USE_DBUS "Enable DBus support for screensaver inhibiting" ON)
-endif()
+  set(ENABLE_CUBEB ON)
+  set(ENABLE_DISCORD_PRESENCE ON)
+  set(ENABLE_SDL2 ON)
 
-if(ANDROID)
-  if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+  if(LINUX OR FREEBSD)
+    option(ENABLE_X11 "Support X11 window system" ON)
+    option(ENABLE_WAYLAND "Support Wayland window system" ON)
   endif()
-  set(BUILD_NOGUI_FRONTEND OFF CACHE BOOL "")
-  set(BUILD_QT_FRONTEND OFF CACHE BOOL "")
-  set(BUILD_REGTEST OFF CACHE BOOL "")
-  set(ENABLE_CUBEB OFF CACHE BOOL "")
-  set(ENABLE_OPENGL ON CACHE BOOL "")
-  set(ENABLE_VULKAN ON CACHE BOOL "")
-  set(ENABLE_DISCORD_PRESENCE OFF CACHE BOOL "")
-  set(ENABLE_CHEEVOS ON CACHE BOOL "")
-  set(USE_SDL2 OFF CACHE BOOL "")
-  set(USE_X11 OFF CACHE BOOL "")
-  set(USE_WAYLAND OFF CACHE BOOL "")
+  if(APPLE)
+    option(SKIP_POSTPROCESS_BUNDLE "Disable bundle post-processing, including Qt additions" OFF)
+  endif()
 endif()
 
 
 # Required libraries.
-if(USE_SDL2)
+if(ENABLE_SDL2)
   find_package(SDL2 2.28.2 REQUIRED)
 endif()
 if(NOT WIN32 AND NOT ANDROID)
   find_package(CURL REQUIRED)
-  find_package(Libbacktrace)
-  if(NOT LIBBACKTRACE_FOUND)
-    message(WARNING "libbacktrace not found, crashes will not produce backtraces.")
+  if(NOT APPLE)
+    find_package(Libbacktrace)
+    if(NOT LIBBACKTRACE_FOUND)
+      message(WARNING "libbacktrace not found, crashes will not produce backtraces.")
+    endif()
   endif()
 endif()
 if(BUILD_QT_FRONTEND)
@@ -84,21 +66,18 @@ endif()
 # Everything except Windows/Mac use EGL.
 if(ENABLE_OPENGL AND (LINUX OR FREEBSD OR ANDROID))
   find_package(EGL REQUIRED)
-  set(USE_EGL TRUE)
+  set(ENABLE_EGL TRUE)
 endif()
 
 
-if(USE_X11)
+if(ENABLE_X11)
   find_package(X11 REQUIRED)
   if (NOT X11_Xrandr_FOUND)
     message(FATAL_ERROR "XRandR extension is required")
   endif()
 endif()
-if(USE_WAYLAND)
+if(ENABLE_WAYLAND)
   message(STATUS "Wayland support enabled")
-endif()
-if(ENABLE_CHEEVOS)
-  message(STATUS "RetroAchievements support enabled")
 endif()
 
 
@@ -201,6 +180,7 @@ else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions -fno-rtti")
 endif()
 
+
 # Write binaries to a seperate directory.
 if(WIN32)
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin/${CPU_ARCH}")
@@ -226,6 +206,9 @@ endif()
 if(BUILD_TESTS)
   enable_testing()
 endif()
+
+# Prevent fmt from being built with exceptions, or being thrown at call sites.
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DFMT_EXCEPTIONS=0")
 
 # Use C++17 for building dependencies (some aren't C++20-aware, e.g. reshadefx).
 set(CMAKE_CXX_STANDARD 17)

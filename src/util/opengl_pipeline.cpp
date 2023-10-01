@@ -12,7 +12,7 @@
 #include "common/log.h"
 #include "common/path.h"
 #include "common/scoped_guard.h"
-#include "common/string.h"
+#include "common/small_string.h"
 #include "common/string_util.h"
 
 #include "fmt/format.h"
@@ -21,7 +21,7 @@
 
 #include <cerrno>
 
-Log_SetChannel(OpenGLPipeline);
+Log_SetChannel(OpenGLDevice);
 
 struct PipelineDiskCacheFooter
 {
@@ -290,20 +290,23 @@ GLuint OpenGLDevice::LookupProgramCache(const OpenGLPipeline::ProgramCacheKey& k
     return it->second.program_id;
   }
 
+  const GLuint program_id = CompileProgram(plconfig);
+  if (program_id == 0)
+  {
+    // Compile failed, don't add to map, it just gets confusing.
+    return 0;
+  }
+
   OpenGLPipeline::ProgramCacheItem item;
-  item.program_id = CompileProgram(plconfig);
-  item.reference_count = 0;
+  item.program_id = program_id;
+  item.reference_count = 1;
   item.file_format = 0;
   item.file_offset = 0;
   item.file_uncompressed_size = 0;
   item.file_compressed_size = 0;
-  if (item.program_id != 0)
-  {
+  if (m_pipeline_disk_cache_file)
     AddToPipelineCache(&item);
-    item.reference_count++;
-  }
 
-  // Insert into cache even if we failed, so we don't compile it again, but don't increment reference count.
   m_program_cache.emplace(key, item);
   return item.program_id;
 }
@@ -357,7 +360,7 @@ GLuint OpenGLDevice::CompileProgram(const GPUPipeline::GraphicsConfig& plconfig)
       {
         glBindAttribLocation(
           program_id, i,
-          TinyString::FromFmt("{}{}", semantic_vars[static_cast<u8>(va.semantic.GetValue())], va.semantic_index));
+          TinyString::from_fmt("{}{}", semantic_vars[static_cast<u8>(va.semantic.GetValue())], va.semantic_index));
       }
     }
 
@@ -417,7 +420,7 @@ void OpenGLDevice::PostLinkProgram(const GPUPipeline::GraphicsConfig& plconfig, 
     const u32 num_textures = std::max<u32>(GetActiveTexturesForLayout(plconfig.layout), 1);
     for (u32 i = 0; i < num_textures; i++)
     {
-      location = glGetUniformLocation(program_id, TinyString::FromFmt("samp{}", i));
+      location = glGetUniformLocation(program_id, TinyString::from_fmt("samp{}", i));
       if (location >= 0)
         glUniform1i(location, i);
     }
@@ -442,6 +445,10 @@ void OpenGLDevice::UnrefProgram(const OpenGLPipeline::ProgramCacheKey& key)
 
   glDeleteProgram(it->second.program_id);
   it->second.program_id = 0;
+
+  // If it's not in the pipeline cache, we need to remove it completely, otherwise we won't recreate it.
+  if (it->second.file_uncompressed_size == 0)
+    m_program_cache.erase(it);
 }
 
 GLuint OpenGLDevice::LookupVAOCache(const OpenGLPipeline::VertexArrayCacheKey& key)
@@ -594,9 +601,6 @@ ALWAYS_INLINE static void ApplyRasterizationState(const GPUPipeline::Rasterizati
     glEnable(GL_CULL_FACE);
     glCullFace((rs.cull_mode == GPUPipeline::CullMode::Front) ? GL_FRONT : GL_BACK);
   }
-
-  // TODO: always enabled, should be done at init time
-  glEnable(GL_SCISSOR_TEST);
 }
 
 ALWAYS_INLINE static void ApplyDepthState(const GPUPipeline::DepthState& ds)
@@ -611,7 +615,8 @@ ALWAYS_INLINE static void ApplyDepthState(const GPUPipeline::DepthState& ds)
     GL_EQUAL,   // Equal
   }};
 
-  (ds.depth_test != GPUPipeline::DepthFunc::Never) ? glEnable(GL_DEPTH_TEST) : glDisable(GL_DEPTH_TEST);
+  (ds.depth_test != GPUPipeline::DepthFunc::Always || ds.depth_write) ? glEnable(GL_DEPTH_TEST) :
+                                                                        glDisable(GL_DEPTH_TEST);
   glDepthFunc(func_mapping[static_cast<u8>(ds.depth_test.GetValue())]);
   glDepthMask(ds.depth_write);
 }
@@ -938,8 +943,11 @@ bool OpenGLDevice::DiscardPipelineCache()
 void OpenGLDevice::ClosePipelineCache()
 {
   const ScopedGuard file_closer = [this]() {
-    std::fclose(m_pipeline_disk_cache_file);
-    m_pipeline_disk_cache_file = nullptr;
+    if (m_pipeline_disk_cache_file)
+    {
+      std::fclose(m_pipeline_disk_cache_file);
+      m_pipeline_disk_cache_file = nullptr;
+    }
   };
 
   if (!m_pipeline_disk_cache_changed)

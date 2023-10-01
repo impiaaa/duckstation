@@ -230,9 +230,9 @@ public:
                                                     DynamicHeapArray<u8>* out_binary = nullptr) override;
   std::unique_ptr<GPUPipeline> CreatePipeline(const GPUPipeline::GraphicsConfig& config) override;
 
-  void PushDebugGroup(const char* fmt, ...) override;
+  void PushDebugGroup(const char* name) override;
   void PopDebugGroup() override;
-  void InsertDebugMessage(const char* fmt, ...) override;
+  void InsertDebugMessage(const char* msg) override;
 
   void MapVertexBuffer(u32 vertex_size, u32 vertex_count, void** map_ptr, u32* map_space,
                        u32* map_base_vertex) override;
@@ -299,6 +299,10 @@ private:
   ALWAYS_INLINE NSView* GetWindowView() const { return (__bridge NSView*)m_window_info.window_handle; }
 
   void SetFeatures();
+  bool LoadShaders();
+
+  id<MTLFunction> GetFunctionFromLibrary(id<MTLLibrary> library, NSString* name);
+  id<MTLComputePipelineState> CreateComputePipeline(id<MTLFunction> function, NSString* name);
 
   std::unique_ptr<GPUShader> CreateShaderFromMSL(GPUShaderStage stage, const std::string_view& source,
                                                  const std::string_view& entry_point);
@@ -306,7 +310,7 @@ private:
   id<MTLDepthStencilState> GetDepthState(const GPUPipeline::DepthState& ds);
 
   void CreateCommandBuffer();
-  void CommandBufferCompletedOffThread(u64 fence_counter);
+  void CommandBufferCompletedOffThread(id<MTLCommandBuffer> buffer, u64 fence_counter);
   void WaitForPreviousCommandBuffers();
   void CleanupObjects();
 
@@ -332,11 +336,6 @@ private:
   bool CreateBuffers();
   void DestroyBuffers();
 
-  bool CreateTimestampQueries();
-  void DestroyTimestampQueries();
-  void PopTimestampQuery();
-  void KickTimestampQuery();
-
   id<MTLDevice> m_device;
   id<MTLCommandQueue> m_queue;
 
@@ -358,6 +357,10 @@ private:
   MetalStreamBuffer m_index_buffer;
   MetalStreamBuffer m_uniform_buffer;
   MetalStreamBuffer m_texture_upload_buffer;
+
+  id<MTLLibrary> m_shaders = nil;
+  std::vector<std::pair<std::pair<GPUTexture::Format, GPUTexture::Format>, id<MTLComputePipelineState>>>
+    m_resolve_pipelines;
 
   id<MTLCommandBuffer> m_upload_cmdbuf = nil;
   id<MTLBlitCommandEncoder> m_upload_encoder = nil;
@@ -381,10 +384,6 @@ private:
 
   bool m_vsync_enabled = false;
 
-  //  std::array<std::array<ComPtr<IMetalQuery>, 3>, NUM_TIMESTAMP_QUERIES> m_timestamp_queries = {};
-  //  u8 m_read_timestamp_query = 0;
-  //  u8 m_write_timestamp_query = 0;
-  //  u8 m_waiting_timestamp_queries = 0;
-  //  bool m_timestamp_query_started = false;
-  //  float m_accumulated_gpu_time = 0.0f;
+  double m_accumulated_gpu_time = 0;
+  double m_last_gpu_time_end = 0;
 };

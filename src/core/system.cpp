@@ -74,7 +74,7 @@ Log_SetChannel(System);
 #include <mmsystem.h>
 #endif
 
-#ifdef WITH_DISCORD_PRESENCE
+#ifdef ENABLE_DISCORD_PRESENCE
 #include "discord_rpc.h"
 #endif
 
@@ -132,10 +132,9 @@ static void UpdateSessionTime(const std::string& prev_serial);
 
 static void SetTimerResolutionIncreased(bool enabled);
 
-#ifdef WITH_DISCORD_PRESENCE
+#ifdef ENABLE_DISCORD_PRESENCE
 static void InitializeDiscordPresence();
 static void ShutdownDiscordPresence();
-static void UpdateDiscordPresence(bool rich_presence_only);
 static void PollDiscordPresence();
 #endif
 } // namespace System
@@ -232,58 +231,53 @@ static u32 s_runahead_replay_frames = 0;
 // Used to track play time. We use a monotonic timer here, in case of clock changes.
 static u64 s_session_start_time = 0;
 
-#ifdef WITH_DISCORD_PRESENCE
-// discord rich presence
+#ifdef ENABLE_DISCORD_PRESENCE
 static bool s_discord_presence_active = false;
-#ifdef WITH_CHEEVOS
-static std::string s_discord_presence_cheevos_string;
-#endif
 #endif
 
 static TinyString GetTimestampStringForFileName()
 {
-  return TinyString::FromFmt("{:%Y-%m-%d_%H-%M-%S}", fmt::localtime(std::time(nullptr)));
+  return TinyString::from_fmt("{:%Y-%m-%d_%H-%M-%S}", fmt::localtime(std::time(nullptr)));
 }
 
 void System::Internal::ProcessStartup()
 {
+  if (!Bus::AllocateMemory())
+    Panic("Failed to allocate memory for emulated bus.");
+
   // This will call back to Host::LoadSettings() -> ReloadSources().
   LoadSettings(false);
 
-#ifdef WITH_CHEEVOS
-#ifdef WITH_RAINTEGRATION
+#ifdef ENABLE_RAINTEGRATION
   if (Host::GetBaseBoolSettingValue("Cheevos", "UseRAIntegration", false))
     Achievements::SwitchToRAIntegration();
 #endif
   if (g_settings.achievements_enabled)
     Achievements::Initialize();
-#endif
 }
 
 void System::Internal::ProcessShutdown()
 {
-#ifdef WITH_DISCORD_PRESENCE
+#ifdef ENABLE_DISCORD_PRESENCE
   ShutdownDiscordPresence();
 #endif
 
-#ifdef WITH_CHEEVOS
-  Achievements::Shutdown();
-#endif
+  Achievements::Shutdown(false);
 
   InputManager::CloseSources();
+
+  Bus::ReleaseMemory();
 }
 
 void System::Internal::IdlePollUpdate()
 {
   InputManager::PollSources();
 
-#ifdef WITH_DISCORD_PRESENCE
+#ifdef ENABLE_DISCORD_PRESENCE
   PollDiscordPresence();
 #endif
 
-#ifdef WITH_CHEEVOS
-  Achievements::ProcessPendingHTTPRequests();
-#endif
+  Achievements::IdleUpdate();
 }
 
 System::State System::GetState()
@@ -548,7 +542,7 @@ ConsoleRegion System::GetConsoleRegionForDiscRegion(DiscRegion region)
 
 std::string System::GetGameHashId(GameHash hash)
 {
-  return StringUtil::StdStringFromFormat("HASH-%" PRIX64, hash);
+  return fmt::format("HASH-{:X}", hash);
 }
 
 bool System::GetGameDetailsFromImage(CDImage* cdi, std::string* out_id, GameHash* out_hash)
@@ -1068,13 +1062,11 @@ void System::ResetSystem()
   if (!IsValid())
     return;
 
-#ifdef WITH_CHEEVOS
   if (!Achievements::ConfirmSystemReset())
     return;
 
-  if (Achievements::ResetChallengeMode())
+  if (Achievements::ResetHardcoreMode())
     ApplySettings(false);
-#endif
 
   InternalReset();
   ResetPerformanceCounters();
@@ -1096,9 +1088,7 @@ void System::PauseSystem(bool paused)
 
     InputManager::PauseVibration();
 
-#ifdef WITH_CHEEVOS
     Achievements::OnSystemPaused(true);
-#endif
 
     if (g_settings.inhibit_screensaver)
       PlatformMisc::ResumeScreensaver();
@@ -1110,9 +1100,7 @@ void System::PauseSystem(bool paused)
   {
     FullscreenUI::OnSystemResumed();
 
-#ifdef WITH_CHEEVOS
     Achievements::OnSystemPaused(false);
-#endif
 
     if (g_settings.inhibit_screensaver)
       PlatformMisc::SuspendScreensaver();
@@ -1131,13 +1119,11 @@ bool System::LoadState(const char* filename)
   if (!IsValid())
     return false;
 
-#ifdef WITH_CHEEVOS
-  if (Achievements::ChallengeModeActive() &&
-      !Achievements::ConfirmChallengeModeDisable(TRANSLATE("Achievements", "Loading state")))
+  if (Achievements::IsHardcoreModeActive() &&
+      !Achievements::ConfirmHardcoreModeDisable(TRANSLATE("Achievements", "Loading state")))
   {
     return false;
   }
-#endif
 
   Common::Timer load_timer;
 
@@ -1265,11 +1251,11 @@ bool System::BootSystem(SystemBootParameters parameters)
           (do_exe_boot ? GetRegionForExe(parameters.filename.c_str()) : GetRegionForPsf(parameters.filename.c_str()));
         Log_InfoPrintf("EXE/PSF Region: %s", Settings::GetDiscRegionDisplayName(file_region));
         s_region = GetConsoleRegionForDiscRegion(file_region);
-        if (do_psf_boot)
-          psf_boot = std::move(parameters.filename);
-        else
-          exe_boot = std::move(parameters.filename);
       }
+      if (do_psf_boot)
+        psf_boot = std::move(parameters.filename);
+      else
+        exe_boot = std::move(parameters.filename);
     }
     else
     {
@@ -1350,17 +1336,15 @@ bool System::BootSystem(SystemBootParameters parameters)
     return false;
   }
 
-#ifdef WITH_CHEEVOS
   // Check for resuming with hardcore mode.
-  if (!parameters.save_state.empty() && Achievements::ChallengeModeActive() &&
-      !Achievements::ConfirmChallengeModeDisable(TRANSLATE("Achievements", "Resuming state")))
+  if (!parameters.save_state.empty() && Achievements::IsHardcoreModeActive() &&
+      !Achievements::ConfirmHardcoreModeDisable(TRANSLATE("Achievements", "Resuming state")))
   {
     s_state = State::Shutdown;
     ClearRunningGame();
     Host::OnSystemDestroyed();
     return false;
   }
-#endif
 
   // Load BIOS image.
   if (!LoadBIOS(parameters.override_bios))
@@ -1419,7 +1403,6 @@ bool System::BootSystem(SystemBootParameters parameters)
 
   // Good to go.
   s_state = State::Running;
-  UpdateSoftwareCursor();
   SPU::GetOutputStream()->SetPaused(false);
 
   FullscreenUI::OnSystemStarted();
@@ -1653,7 +1636,6 @@ void System::DestroySystem()
   if (s_keep_gpu_device_on_shutdown && g_gpu_device)
   {
     g_gpu_device->SetDisplayMaxFPS(0.0f);
-    UpdateSoftwareCursor();
   }
   else
   {
@@ -1683,12 +1665,10 @@ void System::ClearRunningGame()
 
   Host::OnGameChanged(s_running_game_path, s_running_game_serial, s_running_game_title);
 
-#ifdef WITH_CHEEVOS
   Achievements::GameChanged(s_running_game_path, nullptr);
-#endif
 
-#ifdef WITH_DISCORD_PRESENCE
-  UpdateDiscordPresence(false);
+#ifdef ENABLE_DISCORD_PRESENCE
+  UpdateDiscordPresence();
 #endif
 }
 
@@ -1760,12 +1740,10 @@ void System::FrameDone()
   if (s_cheat_list)
     s_cheat_list->Apply();
 
-#ifdef WITH_CHEEVOS
   if (Achievements::IsActive())
     Achievements::FrameUpdate();
-#endif
 
-#ifdef WITH_DISCORD_PRESENCE
+#ifdef ENABLE_DISCORD_PRESENCE
   PollDiscordPresence();
 #endif
 
@@ -1904,6 +1882,13 @@ void System::Throttle()
   Common::Timer::SleepUntil(s_next_frame_time, false);
 #endif
 
+#if 0
+  Log_DevPrintf("Asked for %.2f ms, slept for %.2f ms, %.2f ms late",
+                Common::Timer::ConvertValueToMilliseconds(s_next_frame_time - current_time),
+                Common::Timer::ConvertValueToMilliseconds(Common::Timer::GetCurrentValue() - current_time),
+                Common::Timer::ConvertValueToMilliseconds(Common::Timer::GetCurrentValue() - s_next_frame_time));
+#endif
+
   s_next_frame_time += s_frame_period;
 }
 
@@ -1969,7 +1954,8 @@ bool System::CreateGPU(GPURenderer renderer, bool is_switching)
 {
   const RenderAPI api = Settings::GetRenderAPIForRenderer(renderer);
 
-  if (!g_gpu_device || (renderer != GPURenderer::Software && g_gpu_device->GetRenderAPI() != api))
+  if (!g_gpu_device ||
+      (renderer != GPURenderer::Software && !GPUDevice::IsSameRenderAPI(g_gpu_device->GetRenderAPI(), api)))
   {
     if (g_gpu_device)
     {
@@ -2124,23 +2110,13 @@ bool System::DoState(StateWrapper& sw, GPUTexture** host_texture, bool update_di
       if (!sw.DoMarker("Cheevos"))
         return false;
 
-#ifdef WITH_CHEEVOS
       if (!Achievements::DoState(sw))
         return false;
-#else
-      // if we compiled without cheevos, we need to toss out the data from states which were
-      u32 data_size = 0;
-      sw.Do(&data_size);
-      if (data_size > 0)
-        sw.SkipBytes(data_size);
-#endif
     }
     else
     {
-#ifdef WITH_CHEEVOS
       // loading an old state without cheevos, so reset the runtime
-      Achievements::ResetRuntime();
-#endif
+      Achievements::ResetClient();
     }
   }
 
@@ -2201,9 +2177,7 @@ void System::InternalReset()
   TimingEvents::Reset();
   ResetPerformanceCounters();
 
-#ifdef WITH_CHEEVOS
-  Achievements::ResetRuntime();
-#endif
+  Achievements::ResetClient();
 }
 
 std::string System::GetMediaPathFromSaveState(const char* path)
@@ -2286,19 +2260,20 @@ bool System::LoadStateFromStream(ByteStream* state, bool update_display, bool ig
         {
           if (old_media)
           {
-            Host::AddFormattedOSDMessage(
-              30.0f,
-              TRANSLATE("OSDMessage", "Failed to open CD image from save state '%s': %s. Using "
-                                      "existing image '%s', this may result in instability."),
-              media_filename.c_str(), error.GetDescription().c_str(), old_media->GetFileName().c_str());
+            Host::AddOSDMessage(
+              fmt::format(TRANSLATE_FS("OSDMessage", "Failed to open CD image from save state '{}': {}.\nUsing "
+                                                     "existing image '{}', this may result in instability."),
+                          media_filename, error.GetDescription(), old_media->GetFileName()),
+              Host::OSD_CRITICAL_ERROR_DURATION);
             media = std::move(old_media);
             header.media_subimage_index = media->GetCurrentSubImage();
           }
           else
           {
-            Host::ReportFormattedErrorAsync("Error",
-                                            TRANSLATE("System", "Failed to open CD image '%s' used by save state: %s."),
-                                            media_filename.c_str(), error.GetDescription().c_str());
+            Host::ReportErrorAsync(
+              TRANSLATE_SV("OSDMessage", "Error"),
+              fmt::format(TRANSLATE_FS("System", "Failed to open CD image '{}' used by save state: {}."),
+                          media_filename, error.GetDescription()));
             return false;
           }
         }
@@ -2314,9 +2289,11 @@ bool System::LoadStateFromStream(ByteStream* state, bool update_display, bool ig
           (media->HasSubImages() && media->GetCurrentSubImage() != header.media_subimage_index &&
            !media->SwitchSubImage(header.media_subimage_index, &error)))
       {
-        Host::ReportFormattedErrorAsync(
-          "Error", TRANSLATE("System", "Failed to switch to subimage %u in CD image '%s' used by save state: %s."),
-          header.media_subimage_index + 1u, media_filename.c_str(), error.GetDescription().c_str());
+        Host::ReportErrorAsync(
+          TRANSLATE_SV("OSDMessage", "Error"),
+          fmt::format(
+            TRANSLATE_FS("System", "Failed to switch to subimage {} in CD image '{}' used by save state: {}."),
+            header.media_subimage_index + 1u, media_filename, error.GetDescription()));
         return false;
       }
       else
@@ -2345,15 +2322,8 @@ bool System::LoadStateFromStream(ByteStream* state, bool update_display, bool ig
 
   ClearMemorySaveStates();
 
-#ifdef WITH_CHEEVOS
   // Updating game/loading settings can turn on hardcore mode. Catch this.
-  if (Achievements::ChallengeModeActive())
-  {
-    Host::AddKeyedOSDMessage("challenge_mode_reset",
-                             TRANSLATE_STR("Achievements", "Hardcore mode disabled by state switch."), 10.0f);
-    Achievements::DisableChallengeMode();
-  }
-#endif
+  Achievements::DisableHardcoreMode();
 
   if (!state->SeekAbsolute(header.offset_to_data))
     return false;
@@ -2713,10 +2683,8 @@ void System::SetRewindState(bool enabled)
     return;
   }
 
-#ifdef WITH_CHEEVOS
-  if (Achievements::ChallengeModeActive() && !Achievements::ConfirmChallengeModeDisable("Rewinding"))
+  if (Achievements::IsHardcoreModeActive() && !Achievements::ConfirmHardcoreModeDisable("Rewinding"))
     return;
-#endif
 
   System::SetRewinding(enabled);
   UpdateSpeedLimiterState();
@@ -2727,10 +2695,8 @@ void System::DoFrameStep()
   if (!IsValid())
     return;
 
-#ifdef WITH_CHEEVOS
-  if (Achievements::ChallengeModeActive() && !Achievements::ConfirmChallengeModeDisable("Frame stepping"))
+  if (Achievements::IsHardcoreModeActive() && !Achievements::ConfirmHardcoreModeDisable("Frame stepping"))
     return;
-#endif
 
   s_frame_step_request = true;
   PauseSystem(false);
@@ -2741,10 +2707,8 @@ void System::DoToggleCheats()
   if (!System::IsValid())
     return;
 
-#ifdef WITH_CHEEVOS
-  if (Achievements::ChallengeModeActive() && !Achievements::ConfirmChallengeModeDisable("Toggling cheats"))
+  if (Achievements::IsHardcoreModeActive() && !Achievements::ConfirmHardcoreModeDisable("Toggling cheats"))
     return;
-#endif
 
   CheatList* cl = GetCheatList();
   if (!cl)
@@ -3334,18 +3298,16 @@ void System::UpdateRunningGame(const char* path, CDImage* image, bool booting)
 
   g_texture_replacements.SetGameID(s_running_game_serial);
 
-#ifdef WITH_CHEEVOS
   if (booting)
-    Achievements::ResetChallengeMode();
+    Achievements::ResetHardcoreMode();
 
   Achievements::GameChanged(s_running_game_path, image);
-#endif
 
   UpdateGameSettingsLayer();
   ApplySettings(true);
 
   s_cheat_list.reset();
-  if (g_settings.auto_load_cheats && !Achievements::ChallengeModeActive())
+  if (g_settings.auto_load_cheats && !Achievements::IsHardcoreModeActive())
     LoadCheatListFromGameTitle();
 
   if (s_running_game_serial != prev_serial)
@@ -3353,8 +3315,8 @@ void System::UpdateRunningGame(const char* path, CDImage* image, bool booting)
 
   SaveStateSelectorUI::RefreshList();
 
-#ifdef WITH_DISCORD_PRESENCE
-  UpdateDiscordPresence(false);
+#ifdef ENABLE_DISCORD_PRESENCE
+  UpdateDiscordPresence();
 #endif
 
   Host::OnGameChanged(s_running_game_path, s_running_game_serial, s_running_game_title);
@@ -3375,25 +3337,21 @@ bool System::CheckForSBIFile(CDImage* image)
   {
     return Host::ConfirmMessage(
       "Confirm Unsupported Configuration",
-      StringUtil::StdStringFromFormat(
-        TRANSLATE(
-          "System",
-          "You are attempting to run a libcrypt protected game without an SBI file:\n\n%s: %s\n\nThe game will "
-          "likely not run properly.\n\nPlease check the README for instructions on how to add an SBI file.\n\nDo "
-          "you wish to continue?"),
-        s_running_game_serial.c_str(), s_running_game_title.c_str())
-        .c_str());
+      LargeString::from_fmt(
+        TRANSLATE_FS("System", "You are attempting to run a libcrypt protected game without an SBI file:\n\n{0}: "
+                               "{1}\n\nThe game will likely not run properly.\n\nPlease check the README for "
+                               "instructions on how to add an SBI file.\n\nDo you wish to continue?"),
+        s_running_game_serial, s_running_game_title));
   }
   else
   {
     Host::ReportErrorAsync(
       TRANSLATE("System", "Error"),
-      SmallString::FromFormat(
-        TRANSLATE("System",
-                  "You are attempting to run a libcrypt protected game without an SBI file:\n\n%s: %s\n\nYour dump is "
-                  "incomplete, you must add the SBI file to run this game. \n\n"
-                  "The name of the SBI file must match the name of the disc image."),
-        s_running_game_serial.c_str(), s_running_game_title.c_str()));
+      LargeString::from_fmt(
+        TRANSLATE_FS("System", "You are attempting to run a libcrypt protected game without an SBI file:\n\n{0}: "
+                               "{1}\n\nYour dump is incomplete, you must add the SBI file to run this game. \n\nThe "
+                               "name of the SBI file must match the name of the disc image."),
+        s_running_game_serial, s_running_game_title));
     return false;
   }
 }
@@ -3710,24 +3668,18 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
       {
         UpdateControllers();
         ResetControllers();
-        UpdateSoftwareCursor();
         controllers_updated = true;
       }
     }
-
-    if (IsValid() && !controllers_updated)
-    {
-      UpdateControllerSettings();
-      UpdateSoftwareCursor();
-    }
   }
+
+  if (IsValid() && !controllers_updated)
+    UpdateControllerSettings();
 
   if (g_settings.multitap_mode != old_settings.multitap_mode)
     UpdateMultitaps();
 
-#ifdef WITH_CHEEVOS
   Achievements::UpdateSettings(old_settings);
-#endif
 
   FullscreenUI::CheckForConfigChanges(old_settings);
 
@@ -3740,6 +3692,7 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
   }
 
   if (g_settings.log_level != old_settings.log_level || g_settings.log_filter != old_settings.log_filter ||
+      g_settings.log_timestamps != old_settings.log_timestamps ||
       g_settings.log_to_console != old_settings.log_to_console ||
       g_settings.log_to_debug != old_settings.log_to_debug || g_settings.log_to_window != old_settings.log_to_window ||
       g_settings.log_to_file != old_settings.log_to_file)
@@ -4299,10 +4252,9 @@ std::optional<ExtendedSaveStateInfo> System::InternalGetExtendedSaveStateInfo(By
   ExtendedSaveStateInfo ssi;
   if (header.version < SAVE_STATE_MINIMUM_VERSION || header.version > SAVE_STATE_VERSION)
   {
-    ssi.title = StringUtil::StdStringFromFormat(
-      TRANSLATE("CommonHostInterface", "Invalid version %u (%s version %u)"), header.version,
-      header.version > SAVE_STATE_VERSION ? "maximum" : "minimum",
-      header.version > SAVE_STATE_VERSION ? SAVE_STATE_VERSION : SAVE_STATE_MINIMUM_VERSION);
+    ssi.title = fmt::format(TRANSLATE_FS("System", "Invalid version {} ({} version {})"), header.version,
+                            header.version > SAVE_STATE_VERSION ? "maximum" : "minimum",
+                            header.version > SAVE_STATE_VERSION ? SAVE_STATE_VERSION : SAVE_STATE_MINIMUM_VERSION);
     return ssi;
   }
 
@@ -4410,7 +4362,7 @@ bool System::LoadCheatList(const char* filename)
 bool System::LoadCheatListFromGameTitle()
 {
   // Called when booting, needs to test for shutdown.
-  if (IsShutdown() || Achievements::ChallengeModeActive())
+  if (IsShutdown() || Achievements::IsHardcoreModeActive())
     return false;
 
   const std::string filename(GetCheatFileName());
@@ -4422,7 +4374,7 @@ bool System::LoadCheatListFromGameTitle()
 
 bool System::LoadCheatListFromDatabase()
 {
-  if (IsShutdown() || s_running_game_serial.empty() || Achievements::ChallengeModeActive())
+  if (IsShutdown() || s_running_game_serial.empty() || Achievements::IsHardcoreModeActive())
     return false;
 
   std::unique_ptr<CheatList> cl = std::make_unique<CheatList>();
@@ -4601,38 +4553,6 @@ void System::ToggleSoftwareRendering()
   ResetPerformanceCounters();
 }
 
-void System::UpdateSoftwareCursor()
-{
-  if (!IsValid())
-  {
-    Host::SetMouseMode(false, false);
-    ImGuiManager::ClearSoftwareCursor(0);
-    return;
-  }
-
-  std::string image_path;
-  float image_scale = 1.0f;
-  bool relative_mode = false;
-  bool hide_cursor = false;
-
-  for (u32 i = 0; i < NUM_CONTROLLER_AND_CARD_PORTS; i++)
-  {
-    Controller* controller = System::GetController(i);
-    if (controller && controller->GetSoftwareCursor(&image_path, &image_scale, &relative_mode))
-    {
-      hide_cursor = true;
-      break;
-    }
-  }
-
-  Host::SetMouseMode(relative_mode, hide_cursor);
-
-  if (!image_path.empty())
-    ImGuiManager::SetSoftwareCursor(0, std::move(image_path), image_scale);
-  else
-    ImGuiManager::ClearSoftwareCursor(0);
-}
-
 void System::RequestDisplaySize(float scale /*= 0.0f*/)
 {
   if (!IsValid())
@@ -4677,7 +4597,9 @@ bool System::PresentDisplay(bool allow_skip_present)
     FullscreenUI::Render();
     ImGuiManager::RenderTextOverlays();
     ImGuiManager::RenderOSDMessages();
-    ImGuiManager::RenderSoftwareCursors();
+
+    if (s_state == State::Running)
+      ImGuiManager::RenderSoftwareCursors();
   }
 
   // Debug windows are always rendered, otherwise mouse input breaks on skip.
@@ -4739,7 +4661,7 @@ void System::SetTimerResolutionIncreased(bool enabled)
 void System::UpdateSessionTime(const std::string& prev_serial)
 {
   const u64 ctime = Common::Timer::GetCurrentValue();
-  if (!prev_serial.empty())
+  if (!prev_serial.empty() && GameList::IsGameListLoaded())
   {
     // round up to seconds
     const std::time_t etime =
@@ -4757,7 +4679,7 @@ u64 System::GetSessionPlayedTime()
   return static_cast<u64>(std::round(Common::Timer::ConvertValueToSeconds(ctime - s_session_start_time)));
 }
 
-#ifdef WITH_DISCORD_PRESENCE
+#ifdef ENABLE_DISCORD_PRESENCE
 
 void System::InitializeDiscordPresence()
 {
@@ -4768,7 +4690,7 @@ void System::InitializeDiscordPresence()
   Discord_Initialize("705325712680288296", &handlers, 0, nullptr);
   s_discord_presence_active = true;
 
-  UpdateDiscordPresence(false);
+  UpdateDiscordPresence();
 }
 
 void System::ShutdownDiscordPresence()
@@ -4779,64 +4701,27 @@ void System::ShutdownDiscordPresence()
   Discord_ClearPresence();
   Discord_Shutdown();
   s_discord_presence_active = false;
-#ifdef WITH_CHEEVOS
-  s_discord_presence_cheevos_string.clear();
-#endif
 }
 
-void System::UpdateDiscordPresence(bool rich_presence_only)
+void System::UpdateDiscordPresence()
 {
   if (!s_discord_presence_active)
     return;
-
-#ifdef WITH_CHEEVOS
-  // Update only if RetroAchievements rich presence has changed
-  const std::string& new_rich_presence = Achievements::GetRichPresenceString();
-  if (new_rich_presence == s_discord_presence_cheevos_string && rich_presence_only)
-  {
-    return;
-  }
-  s_discord_presence_cheevos_string = new_rich_presence;
-#else
-  if (rich_presence_only)
-  {
-    return;
-  }
-#endif
 
   // https://discord.com/developers/docs/rich-presence/how-to#updating-presence-update-presence-payload-fields
   DiscordRichPresence rp = {};
   rp.largeImageKey = "duckstation_logo";
   rp.largeImageText = "DuckStation PS1/PSX Emulator";
   rp.startTimestamp = std::time(nullptr);
+  rp.details = System::IsValid() ? System::GetGameTitle().c_str() : "No Game Running";
 
-  SmallString details_string;
-  if (!System::IsShutdown())
+  std::string state_string;
+  if (Achievements::HasRichPresence())
   {
-    details_string.AppendFormattedString("%s (%s)", System::GetGameTitle().c_str(), System::GetGameSerial().c_str());
+    const auto lock = Achievements::GetLock();
+    state_string = StringUtil::Ellipsise(Achievements::GetRichPresenceString(), 128);
+    rp.state = state_string.c_str();
   }
-  else
-  {
-    details_string.AppendString("No Game Running");
-  }
-
-#ifdef WITH_CHEEVOS
-  SmallString state_string;
-  // Trim to 128 bytes as per Discord-RPC requirements
-  if (s_discord_presence_cheevos_string.length() >= 128)
-  {
-    // 124 characters + 3 dots + null terminator
-    state_string = s_discord_presence_cheevos_string.substr(0, 124);
-    state_string.AppendString("...");
-  }
-  else
-  {
-    state_string = s_discord_presence_cheevos_string;
-  }
-
-  rp.state = state_string;
-#endif
-  rp.details = details_string;
 
   Discord_UpdatePresence(&rp);
 }
@@ -4845,8 +4730,6 @@ void System::PollDiscordPresence()
 {
   if (!s_discord_presence_active)
     return;
-
-  UpdateDiscordPresence(true);
 
   Discord_RunCallbacks();
 }

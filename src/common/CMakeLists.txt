@@ -29,6 +29,8 @@ add_library(common
   log.cpp
   log.h
   make_array.h
+  memmap.cpp
+  memmap.h
   md5_digest.cpp
   md5_digest.h
   memory_settings_interface.cpp
@@ -44,8 +46,8 @@ add_library(common
   settings_interface.h
   sha1_digest.cpp
   sha1_digest.h
-  string.cpp
-  string.h
+  small_string.cpp
+  small_string.h
   string_util.cpp
   string_util.h
   thirdparty/thread_pool.cpp
@@ -70,7 +72,7 @@ if(WIN32)
     thirdparty/StackWalker.h
     windows_headers.h
   )
-  target_link_libraries(common PRIVATE winhttp.lib)
+  target_link_libraries(common PRIVATE winhttp.lib OneCore.lib)
 endif()
 
 if(MSVC)
@@ -84,6 +86,17 @@ if(MSVC)
   endif()
 endif()
 
+if(APPLE)
+  set(MAC_SOURCES
+    cocoa_tools.h
+    cocoa_tools.mm
+  )
+  target_sources(common PRIVATE ${MAC_SOURCES})
+  set_source_files_properties(${MAC_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
+  find_library(COCOA_LIBRARY Cocoa REQUIRED)
+  target_link_libraries(common PRIVATE ${COCOA_LIBRARY})
+endif()
+
 if(NOT WIN32 AND NOT ANDROID)
   target_sources(common PRIVATE
     http_downloader_curl.cpp
@@ -94,7 +107,7 @@ if(NOT WIN32 AND NOT ANDROID)
   )
 
   if(LIBBACKTRACE_FOUND)
-    target_compile_definitions(common PRIVATE "-DUSE_LIBBACKTRACE=1")
+    target_compile_definitions(common PRIVATE "-DENABLE_LIBBACKTRACE=1")
     target_link_libraries(common PRIVATE libbacktrace::libbacktrace)
   endif()
 endif()

@@ -263,7 +263,7 @@ bool NoGUIHost::InitializeConfig(std::string settings_filename)
   if (!Log::IsConsoleOutputEnabled() &&
       s_base_settings_interface->GetBoolValue("Logging", "LogToConsole", Settings::DEFAULT_LOG_TO_CONSOLE))
   {
-    Log::SetConsoleOutputParams(true, nullptr, LOGLEVEL_NONE);
+    Log::SetConsoleOutputParams(true, s_base_settings_interface->GetBoolValue("Logging", "LogTimestamps", true));
   }
 
   return true;
@@ -751,23 +751,29 @@ void Host::OnGameChanged(const std::string& disc_path, const std::string& game_s
   NoGUIHost::UpdateWindowTitle(game_name);
 }
 
+void Host::OnAchievementsLoginRequested(Achievements::LoginRequestReason reason)
+{
+  // noop
+}
+
+void Host::OnAchievementsLoginSuccess(const char* username, u32 points, u32 sc_points, u32 unread_messages)
+{
+  // noop
+}
+
 void Host::OnAchievementsRefreshed()
+{
+  // noop
+}
+
+void Host::OnAchievementsHardcoreModeChanged(bool enabled)
 {
   // noop
 }
 
 void Host::SetMouseMode(bool relative, bool hide_cursor)
 {
-#if 0
-  // TODO: Find a better home for this.
-  if (InputManager::HasPointerAxisBinds())
-  {
-    relative = true;
-    hide_cursor = true;
-  }
-
-  // emit g_emu_thread->mouseModeRequested(relative, hide_cursor);
-#endif
+  // noop
 }
 
 void Host::PumpMessagesOnCPUThread()

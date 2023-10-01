@@ -120,15 +120,22 @@ bool OpenGLTexture::Create(u32 width, u32 height, u32 layers, u32 levels, u32 sa
 
       if (data)
       {
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, data_pitch / GetPixelSize(format));
+
         // TODO: Fix data for mipmaps here.
         if (layers > 1)
           glTexSubImage3D(target, 0, 0, 0, 0, width, height, layers, gl_format, gl_type, data);
         else
           glTexSubImage2D(target, 0, 0, 0, width, height, gl_format, gl_type, data);
+
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
       }
     }
     else
     {
+      if (data)
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, data_pitch / GetPixelSize(format));
+
       for (u32 i = 0; i < levels; i++)
       {
         // TODO: Fix data pointer here.
@@ -137,6 +144,9 @@ bool OpenGLTexture::Create(u32 width, u32 height, u32 layers, u32 levels, u32 sa
         else
           glTexImage2D(target, i, gl_internal_format, width, height, 0, gl_format, gl_type, data);
       }
+
+      if (data)
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 
       glTexParameteri(target, GL_TEXTURE_BASE_LEVEL, 0);
       glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, levels);
@@ -203,9 +213,10 @@ bool OpenGLTexture::Update(u32 x, u32 y, u32 width, u32 height, const void* data
 
   if (!sb || map_size > sb->GetChunkSize())
   {
-    GL_INS("Not using PBO for map size %u", map_size);
+    GL_INS_FMT("Not using PBO for map size {}", map_size);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / GetPixelSize());
-    glTextureSubImage2D(target, layer, x, y, width, height, gl_format, gl_type, data);
+    glTexSubImage2D(target, layer, x, y, width, height, gl_format, gl_type, data);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
   }
   else
   {
@@ -215,8 +226,9 @@ bool OpenGLTexture::Update(u32 x, u32 y, u32 width, u32 height, const void* data
     sb->Bind();
 
     glPixelStorei(GL_UNPACK_ROW_LENGTH, preferred_pitch / GetPixelSize());
-    glTextureSubImage2D(GL_TEXTURE_2D, layer, x, y, width, height, gl_format, gl_type,
-                        reinterpret_cast<void*>(static_cast<uintptr_t>(map.buffer_offset)));
+    glTexSubImage2D(GL_TEXTURE_2D, layer, x, y, width, height, gl_format, gl_type,
+                    reinterpret_cast<void*>(static_cast<uintptr_t>(map.buffer_offset)));
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 
     sb->Unbind();
   }
@@ -261,12 +273,12 @@ void OpenGLTexture::Unmap()
   sb->Unmap(upload_size);
   sb->Bind();
 
-  glPixelStorei(GL_UNPACK_ROW_LENGTH, m_map_width);
-
   OpenGLDevice::BindUpdateTextureUnit();
 
   const GLenum target = GetGLTarget();
   glBindTexture(target, m_id);
+
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / GetPixelSize());
 
   const auto [gl_internal_format, gl_format, gl_type] = GetPixelFormatMapping(m_format);
   if (IsTextureArray())
@@ -282,9 +294,9 @@ void OpenGLTexture::Unmap()
 
   glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 
-  sb->Unbind();
-
   glBindTexture(target, 0);
+
+  sb->Unbind();
 }
 
 void OpenGLTexture::SetDebugName(const std::string_view& name)

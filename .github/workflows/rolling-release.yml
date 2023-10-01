@@ -234,12 +234,29 @@ jobs:
       if: steps.cache-deps.outputs.cache-hit != 'true'
       run: scripts/build-dependencies.sh
 
+    - name: Tag as preview build
+      if: github.ref == 'refs/heads/master'
+      run: |
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define SCM_RELEASE_ASSET "DuckStation-x64.AppImage"' >> src/scmversion/tag.h
+        echo '#define SCM_RELEASE_TAGS {"latest", "preview"}' >> src/scmversion/tag.h
+        echo '#define SCM_RELEASE_TAG "preview"' >> src/scmversion/tag.h
+
+    - name: Tag as dev build
+      if: github.ref == 'refs/heads/dev'
+      run: |
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define SCM_RELEASE_ASSET "DuckStation-x64.AppImage"' >> src/scmversion/tag.h
+        echo '#define SCM_RELEASE_TAGS {"latest", "preview"}' >> src/scmversion/tag.h
+        echo '#define SCM_RELEASE_TAG "latest"' >> src/scmversion/tag.h
+
+
     - name: Compile build
       shell: bash
       run: |
         mkdir build
         cd build
-        cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_NOGUI_FRONTEND=OFF -DBUILD_QT_FRONTEND=ON -DBUILD_TESTS=OFF -DUSE_WAYLAND=ON -DUSE_X11=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_PREFIX_PATH=$HOME/deps -DCMAKE_TOOLCHAIN_FILE=../scripts/clang-toolchain.cmake ..
+        cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_PREFIX_PATH=$HOME/deps -DCMAKE_TOOLCHAIN_FILE=../scripts/clang-toolchain.cmake ..
         cmake --build . --parallel
         cd ..
         scripts/make-appimage.sh $(realpath .) $(realpath ./build) $HOME/deps DuckStation-x64
@@ -264,15 +281,15 @@ jobs:
 
     - name: Generate AppStream XML
       run: |
-        scripts/generate-metainfo.sh scripts/flatpak/org.duckstation.duckstation.metainfo.xml
-        cat scripts/flatpak/org.duckstation.duckstation.metainfo.xml
-        flatpak run org.freedesktop.appstream-glib validate scripts/flatpak/org.duckstation.duckstation.metainfo.xml
+        scripts/generate-metainfo.sh scripts/flatpak
+        cat scripts/flatpak/org.duckstation.DuckStation.metainfo.xml
+        flatpak run org.freedesktop.appstream-glib validate scripts/flatpak/org.duckstation.DuckStation.metainfo.xml
 
     - name: Build Flatpak
       uses: flatpak/flatpak-github-actions/flatpak-builder@v6.1
       with:
         bundle: duckstation-x64.flatpak
-        manifest-path: scripts/flatpak/org.duckstation.duckstation.json
+        manifest-path: scripts/flatpak/org.duckstation.DuckStation.json
         arch: x86_64
         build-bundle: true
         verbose: true
@@ -316,6 +333,22 @@ jobs:
     - name: Build Dependencies
       if: steps.cache-deps-mac.outputs.cache-hit != 'true'
       run: scripts/build-dependencies-mac.sh
+
+    - name: Tag as preview build
+      if: github.ref == 'refs/heads/master'
+      run: |
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define SCM_RELEASE_ASSET "duckstation-mac-release.zip"' >> src/scmversion/tag.h
+        echo '#define SCM_RELEASE_TAGS {"latest", "preview"}' >> src/scmversion/tag.h
+        echo '#define SCM_RELEASE_TAG "preview"' >> src/scmversion/tag.h
+
+    - name: Tag as dev build
+      if: github.ref == 'refs/heads/dev'
+      run: |
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define SCM_RELEASE_ASSET "duckstation-mac-release.zip"' >> src/scmversion/tag.h
+        echo '#define SCM_RELEASE_TAGS {"latest", "preview"}' >> src/scmversion/tag.h
+        echo '#define SCM_RELEASE_TAG "latest"' >> src/scmversion/tag.h
 
     - name: Compile and zip .app
       shell: bash

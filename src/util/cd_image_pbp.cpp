@@ -666,7 +666,7 @@ bool CDImagePBP::OpenDisc(u32 index, Error* error)
   if (m_disc_offsets.size() > 1)
   {
     std::string sbi_path(Path::StripExtension(m_filename));
-    sbi_path += TinyString::FromFormat("_%u.sbi", index + 1);
+    sbi_path += TinyString::from_fmt("_%u.sbi", index + 1).view();
     m_sbi.LoadSBI(sbi_path.c_str());
   }
   else
@@ -876,7 +876,7 @@ std::string CDImagePBP::GetSubImageMetadata(u32 index, const std::string_view& t
   {
     const std::string* title = LookupStringSFOTableEntry("TITLE", m_sfo_table);
     if (title && !title->empty())
-      return StringUtil::StdStringFromFormat("%s (Disc %u)", title->c_str(), index + 1);
+      return fmt::format("{} (Disc {})", *title, index + 1);
   }
 
   return CDImage::GetSubImageMetadata(index, type);

@@ -43,8 +43,6 @@ add_library(util
   iso_reader.h
   jit_code_buffer.cpp
   jit_code_buffer.h
-  memory_arena.cpp
-  memory_arena.h
   page_fault_handler.cpp
   page_fault_handler.h
   platform_misc.h
@@ -79,20 +77,17 @@ if(ENABLE_CUBEB)
     cubeb_audio_stream.cpp
     cubeb_audio_stream.h
   )
-  target_compile_definitions(util PUBLIC "WITH_CUBEB=1")
+  target_compile_definitions(util PUBLIC "ENABLE_CUBEB=1")
   target_link_libraries(util PRIVATE cubeb)
 endif()
 
-if(USE_X11)
-  target_compile_definitions(util PRIVATE "-DUSE_X11=1")
-  target_include_directories(util PRIVATE "${X11_INCLUDE_DIR}" "${X11_Xrandr_INCLUDE_PATH}")
-  target_link_libraries(util PRIVATE "${X11_LIBRARIES}" "${X11_Xrandr_LIB}")
+if(ENABLE_X11)
+  target_compile_definitions(util PRIVATE "-DENABLE_X11=1")
+  target_link_libraries(util PRIVATE X11::X11 X11::Xrandr)
 endif()
 
-if(USE_WAYLAND)
-  target_compile_definitions(util PRIVATE "-DUSE_WAYLAND=1")
-elseif(SUPPORTS_WAYLAND)
-  message(WARNING "Wayland support for renderers is disabled.\nDuckStation will FAIL to start on Wayland.")
+if(ENABLE_WAYLAND)
+  target_compile_definitions(util PRIVATE "-DENABLE_WAYLAND=1")
 endif()
 
 if(ENABLE_OPENGL)
@@ -109,7 +104,7 @@ if(ENABLE_OPENGL)
     opengl_texture.cpp
     opengl_texture.h
   )
-  target_compile_definitions(util PUBLIC "WITH_OPENGL=1")
+  target_compile_definitions(util PUBLIC "ENABLE_OPENGL=1")
   target_link_libraries(util PRIVATE glad)
 
   if(WIN32)
@@ -125,9 +120,9 @@ if(ENABLE_OPENGL)
       gl/context_egl.cpp
       gl/context_egl.h
     )
-    target_compile_definitions(util PRIVATE "-DUSE_EGL=1")
+    target_compile_definitions(util PRIVATE "-DENABLE_EGL=1")
 
-    if(USE_X11)
+    if(ENABLE_X11)
       target_sources(util PRIVATE
         gl/context_egl_x11.cpp
         gl/context_egl_x11.h
@@ -138,7 +133,7 @@ if(ENABLE_OPENGL)
       # makes the data types opaque, we can still use it with X11 if needed.
       target_compile_definitions(util PRIVATE "-DEGL_NO_X11=1")
     endif()
-    if(USE_WAYLAND)
+    if(ENABLE_WAYLAND)
       target_sources(util PRIVATE
         gl/context_egl_wayland.cpp
         gl/context_egl_wayland.h
@@ -157,6 +152,7 @@ if(ENABLE_OPENGL)
       gl/context_agl.mm
       gl/context_agl.h
     )
+    set_source_files_properties(gl/context_agl.mm PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
   endif()
 endif()
 
@@ -190,20 +186,15 @@ if(ENABLE_VULKAN)
     vulkan_texture.cpp
     vulkan_texture.h
   )
-  target_compile_definitions(util PUBLIC "WITH_VULKAN=1")
-
-  if(APPLE)
-    # Needed for Vulkan Swap Chain.
-    target_link_libraries(util PRIVATE "objc")
-  endif()
+  target_compile_definitions(util PUBLIC "ENABLE_VULKAN=1")
 endif()
 
-if(USE_SDL2)
+if(ENABLE_SDL2)
   target_sources(util PRIVATE 
     sdl_input_source.cpp
     sdl_input_source.h
   )
-  target_compile_definitions(util PUBLIC "WITH_SDL2=1")
+  target_compile_definitions(util PUBLIC "ENABLE_SDL2=1")
   target_link_libraries(util PUBLIC SDL2::SDL2)
 
   # Copy bundled SDL2 to output on Windows.
@@ -217,14 +208,6 @@ if(USE_SDL2)
     add_custom_command(TARGET util POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SDL2_DLL_PATH}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/SDL2.dll")
   endif()
-endif()
-
-if(USE_DBUS)
-	target_compile_definitions(util PRIVATE USE_DBUS)
-	find_package(PkgConfig REQUIRED)
-	pkg_check_modules(DBUS REQUIRED dbus-1)
-	target_include_directories(util PRIVATE ${DBUS_INCLUDE_DIRS})
-	target_link_libraries(util PRIVATE ${DBUS_LINK_LIBRARIES})
 endif()
 
 if(WIN32)
@@ -268,14 +251,20 @@ if(WIN32)
     target_link_libraries(util PRIVATE WinPixEventRuntime::WinPixEventRuntime)
   endif()
 elseif(APPLE)
+  include(AddMetalSources)
+
   set(MAC_SOURCES
-    cocoa_tools.h
     metal_device.h
     metal_device.mm
+    metal_layer.h
     metal_stream_buffer.h
     metal_stream_buffer.mm
     platform_misc_mac.mm
   )
+  set(METAL_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/metal_shaders.metal"
+  )
+  set_property(GLOBAL PROPERTY UTIL_METAL_SOURCES ${METAL_SOURCES})
   target_sources(util PRIVATE ${MAC_SOURCES})
   find_library(IOK_LIBRARY IOKit REQUIRED)
   find_library(METAL_LIBRARY Metal)
@@ -286,4 +275,29 @@ elseif(NOT ANDROID)
   target_sources(util PRIVATE
     platform_misc_unix.cpp
   )
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(DBUS REQUIRED dbus-1)
+  target_include_directories(util PRIVATE ${DBUS_INCLUDE_DIRS})
+  target_link_libraries(util PRIVATE ${DBUS_LINK_LIBRARIES})
 endif()
+
+function(add_util_resources target)
+  if(APPLE)
+    get_property(UTIL_METAL_SOURCES GLOBAL PROPERTY UTIL_METAL_SOURCES)
+    add_metal_sources(${target} ${UTIL_METAL_SOURCES})
+
+    # Copy MoltenVK into the bundle
+    unset(MOLTENVK_PATH CACHE)
+    find_file(MOLTENVK_PATH NAMES
+      libMoltenVK.dylib
+      lib/libMoltenVK.dylib
+    )
+    if (MOLTENVK_PATH)
+      target_sources(${target} PRIVATE "${MOLTENVK_PATH}")
+      set_source_files_properties("${MOLTENVK_PATH}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+      message(STATUS "Using MoltenVK from ${MOLTENVK_PATH}")
+    else()
+      message(WARNING "MoltenVK not found in path, it will depend on the target system having it.")
+    endif()
+  endif()
+endfunction()

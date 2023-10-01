@@ -210,17 +210,13 @@ void OpenGLDevice::InvalidateRenderTarget(GPUTexture* t)
     CommitClear(m_current_framebuffer);
 }
 
-void OpenGLDevice::PushDebugGroup(const char* fmt, ...)
+void OpenGLDevice::PushDebugGroup(const char* name)
 {
 #ifdef _DEBUG
   if (!glPushDebugGroup)
     return;
 
-  std::va_list ap;
-  va_start(ap, fmt);
-  const std::string buf(StringUtil::StdStringFromFormatV(fmt, ap));
-  va_end(ap);
-  glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 0, static_cast<GLsizei>(buf.size()), buf.c_str());
+  glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 0, static_cast<GLsizei>(std::strlen(name)), name);
 #endif
 }
 
@@ -234,20 +230,16 @@ void OpenGLDevice::PopDebugGroup()
 #endif
 }
 
-void OpenGLDevice::InsertDebugMessage(const char* fmt, ...)
+void OpenGLDevice::InsertDebugMessage(const char* msg)
 {
 #ifdef _DEBUG
   if (!glDebugMessageInsert)
     return;
 
-  std::va_list ap;
-  va_start(ap, fmt);
-  const std::string buf(StringUtil::StdStringFromFormatV(fmt, ap));
-  va_end(ap);
-  if (!buf.empty())
+  if (msg[0] != '\0')
   {
     glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_OTHER, 0, GL_DEBUG_SEVERITY_NOTIFICATION,
-                         static_cast<GLsizei>(buf.size()), buf.c_str());
+                         static_cast<GLsizei>(std::strlen(msg)), msg);
   }
 #endif
 }
@@ -341,6 +333,9 @@ bool OpenGLDevice::CreateDevice(const std::string_view& adapter, bool threaded_p
   if (!CreateBuffers(buggy_pbo))
     return false;
 
+  // Scissor test should always be enabled.
+  glEnable(GL_SCISSOR_TEST);
+
   return true;
 }
 
@@ -349,7 +344,7 @@ bool OpenGLDevice::CheckFeatures(bool* buggy_pbo)
   const bool is_gles = m_gl_context->IsGLES();
 
   bool vendor_id_amd = false;
-  //bool vendor_id_nvidia = false;
+  // bool vendor_id_nvidia = false;
   bool vendor_id_intel = false;
   bool vendor_id_arm = false;
   bool vendor_id_qualcomm = false;
@@ -395,7 +390,7 @@ bool OpenGLDevice::CheckFeatures(bool* buggy_pbo)
   const bool is_shitty_mobile_driver = (vendor_id_powervr || vendor_id_qualcomm || vendor_id_arm);
   const bool is_buggy_pbo =
     (!GLAD_GL_VERSION_4_4 && !GLAD_GL_ARB_buffer_storage && !GLAD_GL_EXT_buffer_storage) || is_shitty_mobile_driver;
-  *buggy_pbo = true;// is_buggy_pbo;
+  *buggy_pbo = is_buggy_pbo;
   if (is_buggy_pbo && !is_shitty_mobile_driver)
     Log_WarningPrint("Not using PBOs for texture uploads because buffer_storage is unavailable.");
 
@@ -671,10 +666,6 @@ bool OpenGLDevice::BeginPresent(bool skip_present)
   }
 
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-  glDisable(GL_SCISSOR_TEST);
-  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
-  glEnable(GL_SCISSOR_TEST);
 
   const Common::Rectangle<s32> window_rc =
     Common::Rectangle<s32>::FromExtents(0, 0, m_window_info.surface_width, m_window_info.surface_height);
@@ -683,6 +674,9 @@ bool OpenGLDevice::BeginPresent(bool skip_present)
   m_last_scissor = window_rc;
   UpdateViewport();
   UpdateScissor();
+
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
   return true;
 }
 
@@ -958,6 +952,9 @@ void OpenGLDevice::SetFramebuffer(GPUFramebuffer* fb)
     UpdateViewport();
     UpdateScissor();
   }
+
+  if (FB)
+    CommitClear(FB);
 }
 
 void OpenGLDevice::SetTextureSampler(u32 slot, GPUTexture* texture, GPUSampler* sampler)

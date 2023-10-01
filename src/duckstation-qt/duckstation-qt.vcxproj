@@ -30,6 +30,7 @@
     <ClCompile Include="hotkeysettingswidget.cpp" />
     <ClCompile Include="inputbindingdialog.cpp" />
     <ClCompile Include="inputbindingwidgets.cpp" />
+    <ClCompile Include="logwindow.cpp" />
     <ClCompile Include="memoryviewwidget.cpp" />
     <ClCompile Include="displaywidget.cpp" />
     <ClCompile Include="gamelistsettingswidget.cpp" />
@@ -86,6 +87,7 @@
     <QtMoc Include="colorpickerbutton.h" />
     <ClInclude Include="controllersettingwidgetbinder.h" />
     <QtMoc Include="memoryviewwidget.h" />
+    <QtMoc Include="logwindow.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="settingwidgetbinder.h" />
@@ -258,6 +260,7 @@
     <ClCompile Include="$(IntDir)moc_hotkeysettingswidget.cpp" />
     <ClCompile Include="$(IntDir)moc_inputbindingdialog.cpp" />
     <ClCompile Include="$(IntDir)moc_inputbindingwidgets.cpp" />
+    <ClCompile Include="$(IntDir)moc_logwindow.cpp" />
     <ClCompile Include="$(IntDir)moc_mainwindow.cpp" />
     <ClCompile Include="$(IntDir)moc_memorycardsettingswidget.cpp" />
     <ClCompile Include="$(IntDir)moc_memorycardeditordialog.cpp" />
@@ -309,16 +312,16 @@
     <QtTs Include="translations\duckstation-qt_pl.ts">
       <FileType>Document</FileType>
     </QtTs>
-    <QtTs Include="translations\duckstation-qt_pt-br.ts">
+    <QtTs Include="translations\duckstation-qt_pt-BR.ts">
       <FileType>Document</FileType>
     </QtTs>
-    <QtTs Include="translations\duckstation-qt_pt-pt.ts">
+    <QtTs Include="translations\duckstation-qt_pt-PT.ts">
       <FileType>Document</FileType>
     </QtTs>
     <QtTs Include="translations\duckstation-qt_ru.ts">
       <FileType>Document</FileType>
     </QtTs>
-    <QtTs Include="translations\duckstation-qt_zh-cn.ts">
+    <QtTs Include="translations\duckstation-qt_zh-CN.ts">
       <FileType>Document</FileType>
     </QtTs>
   </ItemGroup>

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
@@ -27,7 +27,7 @@ enum class InputSourceType : u32
   XInput,
   RawInput,
 #endif
-#ifdef WITH_SDL2
+#ifdef ENABLE_SDL2
   SDL,
 #endif
 #ifdef __ANDROID__
@@ -326,9 +326,6 @@ void SetMacroButtonState(u32 pad, u32 index, bool state);
 /// Returns true if the raw input source is being used.
 bool IsUsingRawInput();
 
-/// Returns true if any bindings are present which require relative mouse movement.
-bool HasPointerAxisBinds();
-
 /// Restores default configuration.
 void SetDefaultSourceConfig(SettingsInterface& si);
 
@@ -359,4 +356,7 @@ void OnInputDeviceConnected(const std::string_view& identifier, const std::strin
 
 /// Called when an input device is disconnected.
 void OnInputDeviceDisconnected(const std::string_view& identifier);
+
+/// Enables "relative" mouse mode, locking the cursor position and returning relative coordinates.
+void SetMouseMode(bool relative, bool hide_cursor);
 } // namespace Host

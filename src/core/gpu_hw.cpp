@@ -51,10 +51,10 @@ ALWAYS_INLINE static u32 GetMaxResolutionScale()
   return g_gpu_device->GetMaxTextureSize() / VRAM_WIDTH;
 }
 
-ALWAYS_INLINE_RELEASE static u32 GetBoxDownsampleScale()
+ALWAYS_INLINE_RELEASE static u32 GetBoxDownsampleScale(u32 resolution_scale)
 {
-  u32 scale = std::min<u32>(g_settings.gpu_resolution_scale, g_settings.gpu_downsample_scale);
-  while ((g_settings.gpu_resolution_scale % scale) != 0)
+  u32 scale = std::min<u32>(resolution_scale, g_settings.gpu_downsample_scale);
+  while ((resolution_scale % scale) != 0)
     scale--;
   return scale;
 }
@@ -144,6 +144,49 @@ GPU_HW::~GPU_HW()
     m_sw_renderer->Shutdown();
     m_sw_renderer.reset();
   }
+}
+
+ALWAYS_INLINE void GPU_HW::BatchVertex::Set(float x_, float y_, float z_, float w_, u32 color_, u32 texpage_,
+                                            u16 packed_texcoord, u32 uv_limits_)
+{
+  Set(x_, y_, z_, w_, color_, texpage_, packed_texcoord & 0xFF, (packed_texcoord >> 8), uv_limits_);
+}
+
+ALWAYS_INLINE void GPU_HW::BatchVertex::Set(float x_, float y_, float z_, float w_, u32 color_, u32 texpage_, u16 u_,
+                                            u16 v_, u32 uv_limits_)
+{
+  x = x_;
+  y = y_;
+  z = z_;
+  w = w_;
+  color = color_;
+  texpage = texpage_;
+  u = u_;
+  v = v_;
+  uv_limits = uv_limits_;
+}
+
+ALWAYS_INLINE u32 GPU_HW::BatchVertex::PackUVLimits(u32 min_u, u32 max_u, u32 min_v, u32 max_v)
+{
+  return min_u | (min_v << 8) | (max_u << 16) | (max_v << 24);
+}
+
+ALWAYS_INLINE void GPU_HW::BatchVertex::SetUVLimits(u32 min_u, u32 max_u, u32 min_v, u32 max_v)
+{
+  uv_limits = PackUVLimits(min_u, max_u, min_v, max_v);
+}
+
+ALWAYS_INLINE void GPU_HW::AddVertex(const BatchVertex& v)
+{
+  std::memcpy(m_batch_current_vertex_ptr, &v, sizeof(BatchVertex));
+  m_batch_current_vertex_ptr++;
+}
+
+template<typename... Args>
+ALWAYS_INLINE void GPU_HW::AddNewVertex(Args&&... args)
+{
+  m_batch_current_vertex_ptr->Set(std::forward<Args>(args)...);
+  m_batch_current_vertex_ptr++;
 }
 
 const Threading::Thread* GPU_HW::GetSWThread() const
@@ -429,15 +472,16 @@ void GPU_HW::CheckSettings()
 
   if (m_downsample_mode == GPUDownsampleMode::Box)
   {
-    const u32 scale = GetBoxDownsampleScale();
-    if (scale != g_settings.gpu_downsample_scale || scale == g_settings.gpu_resolution_scale)
+    const u32 resolution_scale = CalculateResolutionScale();
+    const u32 box_downscale = GetBoxDownsampleScale(resolution_scale);
+    if (box_downscale != g_settings.gpu_downsample_scale || box_downscale == resolution_scale)
     {
       Host::AddIconOSDMessage(
         "BoxDownsampleUnsupported", ICON_FA_PAINT_BRUSH,
         fmt::format(
           TRANSLATE_FS("OSDMessage",
                        "Resolution scale {0}x is not divisible by downsample scale {1}x, using {2}x instead."),
-          g_settings.gpu_resolution_scale, g_settings.gpu_downsample_scale, scale),
+          resolution_scale, g_settings.gpu_downsample_scale, box_downscale),
         Host::OSD_ERROR_DURATION);
     }
     else
@@ -445,7 +489,7 @@ void GPU_HW::CheckSettings()
       Host::RemoveKeyedOSDMessage("BoxDownsampleUnsupported");
     }
 
-    if (scale == g_settings.gpu_resolution_scale)
+    if (box_downscale == g_settings.gpu_resolution_scale)
       m_downsample_mode = GPUDownsampleMode::Disabled;
   }
 
@@ -565,12 +609,17 @@ bool GPU_HW::CreateBuffers()
   const u32 texture_height = VRAM_HEIGHT * m_resolution_scale;
   const u8 samples = static_cast<u8>(m_multisamples);
 
+  // Needed for Metal resolve.
+  const GPUTexture::Type read_texture_type = (g_gpu_device->GetRenderAPI() == RenderAPI::Metal && m_multisamples > 1) ?
+                                               GPUTexture::Type::RWTexture :
+                                               GPUTexture::Type::Texture;
+
   if (!(m_vram_texture = g_gpu_device->CreateTexture(texture_width, texture_height, 1, 1, samples,
                                                      GPUTexture::Type::RenderTarget, VRAM_RT_FORMAT)) ||
       !(m_vram_depth_texture = g_gpu_device->CreateTexture(texture_width, texture_height, 1, 1, samples,
                                                            GPUTexture::Type::DepthStencil, VRAM_DS_FORMAT)) ||
-      !(m_vram_read_texture = g_gpu_device->CreateTexture(texture_width, texture_height, 1, 1, 1,
-                                                          GPUTexture::Type::Texture, VRAM_RT_FORMAT)) ||
+      !(m_vram_read_texture =
+          g_gpu_device->CreateTexture(texture_width, texture_height, 1, 1, 1, read_texture_type, VRAM_RT_FORMAT)) ||
       !(m_display_private_texture = g_gpu_device->CreateTexture(
           ((m_downsample_mode == GPUDownsampleMode::Adaptive) ? VRAM_WIDTH : GPU_MAX_DISPLAY_WIDTH) *
             m_resolution_scale,
@@ -628,7 +677,7 @@ bool GPU_HW::CreateBuffers()
   }
   else if (m_downsample_mode == GPUDownsampleMode::Box)
   {
-    const u32 downsample_scale = GetBoxDownsampleScale();
+    const u32 downsample_scale = GetBoxDownsampleScale(m_resolution_scale);
     if (!(m_downsample_render_texture =
             g_gpu_device->CreateTexture(VRAM_WIDTH * downsample_scale, VRAM_HEIGHT * downsample_scale, 1, 1, 1,
                                         GPUTexture::Type::RenderTarget, VRAM_RT_FORMAT)) ||
@@ -880,9 +929,7 @@ bool GPU_HW::CompilePipelines()
 
   std::unique_ptr<GPUShader> fullscreen_quad_vertex_shader =
     g_gpu_device->CreateShader(GPUShaderStage::Vertex, shadergen.GenerateScreenQuadVertexShader());
-  std::unique_ptr<GPUShader> uv_quad_vertex_shader =
-    g_gpu_device->CreateShader(GPUShaderStage::Vertex, shadergen.GenerateUVQuadVertexShader());
-  if (!fullscreen_quad_vertex_shader || !uv_quad_vertex_shader)
+  if (!fullscreen_quad_vertex_shader)
     return false;
 
   progress.Increment();
@@ -933,7 +980,7 @@ bool GPU_HW::CompilePipelines()
       if (!(m_vram_copy_pipelines[depth_test] = g_gpu_device->CreatePipeline(plconfig)))
         return false;
 
-      GL_OBJECT_NAME(m_vram_copy_pipelines[depth_test], "VRAM Write Pipeline, depth=%u", depth_test);
+      GL_OBJECT_NAME_FMT(m_vram_copy_pipelines[depth_test], "VRAM Write Pipeline, depth={}", depth_test);
 
       progress.Increment();
     }
@@ -958,7 +1005,7 @@ bool GPU_HW::CompilePipelines()
       if (!(m_vram_write_pipelines[depth_test] = g_gpu_device->CreatePipeline(plconfig)))
         return false;
 
-      GL_OBJECT_NAME(m_vram_write_pipelines[depth_test], "VRAM Write Pipeline, depth=%u", depth_test);
+      GL_OBJECT_NAME_FMT(m_vram_write_pipelines[depth_test], "VRAM Write Pipeline, depth={}", depth_test);
 
       progress.Increment();
     }
@@ -1106,8 +1153,8 @@ bool GPU_HW::CompilePipelines()
   else if (m_downsample_mode == GPUDownsampleMode::Box)
   {
     std::unique_ptr<GPUShader> fs = g_gpu_device->CreateShader(
-      GPUShaderStage::Fragment,
-      shadergen.GenerateBoxSampleDownsampleFragmentShader(m_resolution_scale / GetBoxDownsampleScale()));
+      GPUShaderStage::Fragment, shadergen.GenerateBoxSampleDownsampleFragmentShader(
+                                  m_resolution_scale / GetBoxDownsampleScale(m_resolution_scale)));
     if (!fs)
       return false;
 
@@ -1152,7 +1199,15 @@ void GPU_HW::DestroyPipelines()
   destroy(m_downsample_composite_pass_pipeline);
   m_downsample_composite_sampler.reset();
 
+  m_copy_pipeline.reset();
+
   m_display_pipelines.enumerate(destroy);
+}
+
+GPU_HW::BatchRenderMode GPU_HW::BatchConfig::GetRenderMode() const
+{
+  return transparency_mode == GPUTransparencyMode::Disabled ? BatchRenderMode::TransparencyDisabled :
+                                                              BatchRenderMode::TransparentAndOpaque;
 }
 
 void GPU_HW::UpdateVRAMReadTexture()
@@ -1964,6 +2019,11 @@ void GPU_HW::IncludeVRAMDirtyRectangle(const Common::Rectangle<u32>& rect)
   }
 }
 
+ALWAYS_INLINE bool GPU_HW::IsFlushed() const
+{
+  return m_batch_current_vertex_ptr == m_batch_start_vertex_ptr;
+}
+
 GPU_HW::InterlacedRenderMode GPU_HW::GetInterlacedRenderMode() const
 {
   if (IsInterlacedDisplayEnabled())
@@ -1975,6 +2035,27 @@ GPU_HW::InterlacedRenderMode GPU_HW::GetInterlacedRenderMode() const
   {
     return InterlacedRenderMode::None;
   }
+}
+
+ALWAYS_INLINE bool GPU_HW::NeedsTwoPassRendering() const
+{
+  // We need two-pass rendering when using BG-FG blending and texturing, as the transparency can be enabled
+  // on a per-pixel basis, and the opaque pixels shouldn't be blended at all.
+
+  // TODO: see if there's a better way we can do this. definitely can with fbfetch.
+  return (m_batch.texture_mode != GPUTextureMode::Disabled &&
+          (m_batch.transparency_mode == GPUTransparencyMode::BackgroundMinusForeground ||
+           (!m_supports_dual_source_blend && m_batch.transparency_mode != GPUTransparencyMode::Disabled)));
+}
+
+ALWAYS_INLINE u32 GPU_HW::GetBatchVertexSpace() const
+{
+  return static_cast<u32>(m_batch_end_vertex_ptr - m_batch_current_vertex_ptr);
+}
+
+ALWAYS_INLINE u32 GPU_HW::GetBatchVertexCount() const
+{
+  return static_cast<u32>(m_batch_current_vertex_ptr - m_batch_start_vertex_ptr);
 }
 
 void GPU_HW::EnsureVertexBufferSpace(u32 required_vertices)
@@ -2034,6 +2115,11 @@ void GPU_HW::ResetBatchVertexDepth()
   UpdateDepthBufferFromMaskBit();
 
   m_current_depth = 1;
+}
+
+ALWAYS_INLINE float GPU_HW::GetCurrentNormalizedVertexDepth() const
+{
+  return 1.0f - (static_cast<float>(m_current_depth) / 65535.0f);
 }
 
 void GPU_HW::UpdateSoftwareRenderer(bool copy_vram_from_hw)
@@ -2462,7 +2548,7 @@ void GPU_HW::FlushRender()
     return;
 
 #ifdef _DEBUG
-  GL_SCOPE("Hardware Draw %u", ++s_draw_number);
+  GL_SCOPE_FMT("Hardware Draw {}", ++s_draw_number);
 #endif
 
   if (m_batch_ubo_dirty)
@@ -2597,7 +2683,7 @@ void GPU_HW::DownsampleFramebuffer(GPUTexture* source, u32 left, u32 top, u32 wi
 
 void GPU_HW::DownsampleFramebufferAdaptive(GPUTexture* source, u32 left, u32 top, u32 width, u32 height)
 {
-  GL_PUSH("DownsampleFramebufferAdaptive (%u,%u => %u,%d)", left, top, left + width, left + height);
+  GL_PUSH_FMT("DownsampleFramebufferAdaptive ({},{} => {},{})", left, top, left + width, left + height);
 
   struct SmoothingUBOData
   {
@@ -2616,7 +2702,7 @@ void GPU_HW::DownsampleFramebufferAdaptive(GPUTexture* source, u32 left, u32 top
   // create mip chain
   for (u32 level = 1; level < levels; level++)
   {
-    GL_SCOPE("Create miplevel %u", level);
+    GL_SCOPE_FMT("Create miplevel {}", level);
 
     const u32 level_width = width >> level;
     const u32 level_height = height >> level;
@@ -2692,7 +2778,7 @@ void GPU_HW::DownsampleFramebufferAdaptive(GPUTexture* source, u32 left, u32 top
 
 void GPU_HW::DownsampleFramebufferBoxFilter(GPUTexture* source, u32 left, u32 top, u32 width, u32 height)
 {
-  const u32 factor = m_resolution_scale / GetBoxDownsampleScale();
+  const u32 factor = m_resolution_scale / GetBoxDownsampleScale(m_resolution_scale);
   const u32 ds_left = left / factor;
   const u32 ds_top = top / factor;
   const u32 ds_width = width / factor;

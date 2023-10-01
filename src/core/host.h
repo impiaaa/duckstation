@@ -5,7 +5,7 @@
 
 #include "util/host.h"
 
-#include "common/string.h"
+#include "common/small_string.h"
 #include "common/types.h"
 
 #include <ctime>
@@ -78,9 +78,6 @@ void ReportFormattedDebuggerMessage(const char* format, ...);
 /// Displays a loading screen with the logo, rendered with ImGui. Use when executing possibly-time-consuming tasks
 /// such as compiling shaders when starting up.
 void DisplayLoadingScreen(const char* message, int progress_min = -1, int progress_max = -1, int progress_value = -1);
-
-/// Enables "relative" mouse mode, locking the cursor position and returning relative coordinates.
-void SetMouseMode(bool relative, bool hide_cursor);
 
 /// Safely executes a function on the VM thread.
 void RunOnCPUThread(std::function<void()> function, bool block = false);

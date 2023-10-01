@@ -17,7 +17,7 @@
 #include "common/log.h"
 #include "common/path.h"
 #include "common/scoped_guard.h"
-#include "common/string.h"
+#include "common/small_string.h"
 
 #include "fmt/format.h"
 
@@ -662,7 +662,7 @@ bool VulkanDevice::CreateCommandBuffers()
       LOG_VULKAN_ERROR(res, "vkCreateCommandPool failed: ");
       return false;
     }
-    Vulkan::SetObjectName(m_device, resources.command_pool, TinyString::FromFmt("Frame Command Pool {}", frame_index));
+    Vulkan::SetObjectName(m_device, resources.command_pool, TinyString::from_fmt("Frame Command Pool {}", frame_index));
 
     VkCommandBufferAllocateInfo buffer_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr,
                                                resources.command_pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY,
@@ -677,7 +677,7 @@ bool VulkanDevice::CreateCommandBuffers()
     for (u32 i = 0; i < resources.command_buffers.size(); i++)
     {
       Vulkan::SetObjectName(m_device, resources.command_buffers[i],
-                            TinyString::FromFmt("Frame {} {}Command Buffer", frame_index, (i == 0) ? "Init" : ""));
+                            TinyString::from_fmt("Frame {} {}Command Buffer", frame_index, (i == 0) ? "Init" : ""));
     }
 
     VkFenceCreateInfo fence_info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT};
@@ -688,7 +688,7 @@ bool VulkanDevice::CreateCommandBuffers()
       LOG_VULKAN_ERROR(res, "vkCreateFence failed: ");
       return false;
     }
-    Vulkan::SetObjectName(m_device, resources.fence, TinyString::FromFmt("Frame Fence {}", frame_index));
+    Vulkan::SetObjectName(m_device, resources.fence, TinyString::from_fmt("Frame Fence {}", frame_index));
 
     if (!m_optional_extensions.vk_khr_push_descriptor)
     {
@@ -707,7 +707,7 @@ bool VulkanDevice::CreateCommandBuffers()
         return false;
       }
       Vulkan::SetObjectName(m_device, resources.descriptor_pool,
-                            TinyString::FromFmt("Frame Descriptor Pool {}", frame_index));
+                            TinyString::from_fmt("Frame Descriptor Pool {}", frame_index));
     }
 
     ++frame_index;
@@ -1557,12 +1557,12 @@ bool VulkanDevice::IsSuitableDefaultRenderer()
 
   // Check the first GPU, should be enough.
   const std::string& name = aml.adapter_names.front();
-  Log_InfoPrintf(fmt::format("Using Vulkan GPU '{}' for automatic renderer check.", name).c_str());
+  Log_InfoFmt("Using Vulkan GPU '{}' for automatic renderer check.", name);
 
   // Any software rendering (LLVMpipe, SwiftShader).
   if (StringUtil::StartsWithNoCase(name, "llvmpipe") || StringUtil::StartsWithNoCase(name, "SwiftShader"))
   {
-    Log_InfoPrintf("Not using Vulkan for software renderer.");
+    Log_InfoPrint("Not using Vulkan for software renderer.");
     return false;
   }
 
@@ -1570,11 +1570,11 @@ bool VulkanDevice::IsSuitableDefaultRenderer()
   // Plus, the Ivy Bridge and Haswell drivers are incomplete.
   if (StringUtil::StartsWithNoCase(name, "Intel"))
   {
-    Log_InfoPrintf("Not using Vulkan for Intel GPU.");
+    Log_InfoPrint("Not using Vulkan for Intel GPU.");
     return false;
   }
 
-  Log_InfoPrintf("Allowing Vulkan as default renderer.");
+  Log_InfoPrint("Allowing Vulkan as default renderer.");
   return true;
 #endif
 }
@@ -1640,7 +1640,7 @@ bool VulkanDevice::CreateDevice(const std::string_view& adapter, bool threaded_p
     u32 gpu_index = 0;
     for (; gpu_index < static_cast<u32>(gpus.size()); gpu_index++)
     {
-      Log_InfoPrint(fmt::format("GPU {}: {}", gpu_index, gpus[gpu_index].second).c_str());
+      Log_InfoFmt("GPU {}: {}", gpu_index, gpus[gpu_index].second);
       if (gpus[gpu_index].second == adapter)
       {
         m_physical_device = gpus[gpu_index].first;
@@ -1650,13 +1650,13 @@ bool VulkanDevice::CreateDevice(const std::string_view& adapter, bool threaded_p
 
     if (gpu_index == static_cast<u32>(gpus.size()))
     {
-      Log_WarningPrint(fmt::format("Requested GPU '{}' not found, using first ({})", adapter, gpus[0].second).c_str());
+      Log_WarningFmt("Requested GPU '{}' not found, using first ({})", adapter, gpus[0].second);
       m_physical_device = gpus[0].first;
     }
   }
   else
   {
-    Log_InfoPrint(fmt::format("No GPU requested, using first ({})", gpus[0].second).c_str());
+    Log_InfoFmt("No GPU requested, using first ({})", gpus[0].second);
     m_physical_device = gpus[0].first;
   }
 
@@ -1982,8 +1982,8 @@ std::string VulkanDevice::GetDriverInfo() const
   if (m_optional_extensions.vk_khr_driver_properties)
   {
     const VkPhysicalDeviceDriverProperties& props = m_device_driver_properties;
-    ret = StringUtil::StdStringFromFormat(
-      "Driver %u.%u.%u\nVulkan %u.%u.%u\nConformance Version %u.%u.%u.%u\n%s\n%s\n%s", VK_VERSION_MAJOR(driver_version),
+    ret = fmt::format(
+      "Driver {}.{}.{}\nVulkan {}.{}.{}\nConformance Version {}.{}.{}.{}\n{}\n{}\n{}", VK_VERSION_MAJOR(driver_version),
       VK_VERSION_MINOR(driver_version), VK_VERSION_PATCH(driver_version), VK_API_VERSION_MAJOR(api_version),
       VK_API_VERSION_MINOR(api_version), VK_API_VERSION_PATCH(api_version), props.conformanceVersion.major,
       props.conformanceVersion.minor, props.conformanceVersion.subminor, props.conformanceVersion.patch,
@@ -1991,10 +1991,10 @@ std::string VulkanDevice::GetDriverInfo() const
   }
   else
   {
-    ret = StringUtil::StdStringFromFormat("Driver %u.%u.%u\nVulkan %u.%u.%u\n%s", VK_VERSION_MAJOR(driver_version),
-                                          VK_VERSION_MINOR(driver_version), VK_VERSION_PATCH(driver_version),
-                                          VK_API_VERSION_MAJOR(api_version), VK_API_VERSION_MINOR(api_version),
-                                          VK_API_VERSION_PATCH(api_version), m_device_properties.deviceName);
+    ret =
+      fmt::format("Driver {}.{}.{}\nVulkan {}.{}.{}\n{}", VK_VERSION_MAJOR(driver_version),
+                  VK_VERSION_MINOR(driver_version), VK_VERSION_PATCH(driver_version), VK_API_VERSION_MAJOR(api_version),
+                  VK_API_VERSION_MINOR(api_version), VK_API_VERSION_PATCH(api_version), m_device_properties.deviceName);
   }
 
   return ret;
@@ -2109,16 +2109,11 @@ static std::array<float, 3> Palette(float phase, const std::array<float, 3>& a, 
 }
 #endif
 
-void VulkanDevice::PushDebugGroup(const char* fmt, ...)
+void VulkanDevice::PushDebugGroup(const char* name)
 {
 #ifdef _DEBUG
   if (!vkCmdBeginDebugUtilsLabelEXT || !m_debug_device)
     return;
-
-  std::va_list ap;
-  va_start(ap, fmt);
-  const std::string buf(StringUtil::StdStringFromFormatV(fmt, ap));
-  va_end(ap);
 
   const std::array<float, 3> color = Palette(static_cast<float>(++s_debug_scope_depth), {0.5f, 0.5f, 0.5f},
                                              {0.5f, 0.5f, 0.5f}, {1.0f, 1.0f, 0.5f}, {0.8f, 0.90f, 0.30f});
@@ -2126,7 +2121,7 @@ void VulkanDevice::PushDebugGroup(const char* fmt, ...)
   const VkDebugUtilsLabelEXT label = {
     VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
     nullptr,
-    buf.c_str(),
+    name,
     {color[0], color[1], color[2], 1.0f},
   };
   vkCmdBeginDebugUtilsLabelEXT(GetCurrentCommandBuffer(), &label);
@@ -2145,22 +2140,13 @@ void VulkanDevice::PopDebugGroup()
 #endif
 }
 
-void VulkanDevice::InsertDebugMessage(const char* fmt, ...)
+void VulkanDevice::InsertDebugMessage(const char* msg)
 {
 #ifdef _DEBUG
   if (!vkCmdInsertDebugUtilsLabelEXT || !m_debug_device)
     return;
 
-  std::va_list ap;
-  va_start(ap, fmt);
-  const std::string buf(StringUtil::StdStringFromFormatV(fmt, ap));
-  va_end(ap);
-
-  if (buf.empty())
-    return;
-
-  const VkDebugUtilsLabelEXT label = {
-    VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT, nullptr, buf.c_str(), {0.0f, 0.0f, 0.0f, 1.0f}};
+  const VkDebugUtilsLabelEXT label = {VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT, nullptr, msg, {0.0f, 0.0f, 0.0f, 1.0f}};
   vkCmdInsertDebugUtilsLabelEXT(GetCurrentCommandBuffer(), &label);
 #endif
 }

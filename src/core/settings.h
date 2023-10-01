@@ -4,7 +4,7 @@
 #pragma once
 #include "common/log.h"
 #include "common/settings_interface.h"
-#include "common/string.h"
+#include "common/small_string.h"
 #include "types.h"
 #include "util/audio_stream.h"
 #include <array>
@@ -180,16 +180,18 @@ struct Settings
 
   // achievements
   bool achievements_enabled = false;
-  bool achievements_test_mode = false;
+  bool achievements_hardcore_mode = false;
+  bool achievements_notifications = true;
+  bool achievements_leaderboard_notifications = true;
+  bool achievements_sound_effects = true;
+  bool achievements_overlays = true;
+  bool achievements_encore_mode = false;
+  bool achievements_spectator_mode = false;
   bool achievements_unofficial_test_mode = false;
   bool achievements_use_first_disc_from_playlist = true;
-  bool achievements_rich_presence = true;
-  bool achievements_challenge_mode = false;
-  bool achievements_leaderboards = true;
-  bool achievements_notifications = true;
-  bool achievements_sound_effects = true;
-  bool achievements_primed_indicators = true;
   bool achievements_use_raintegration = false;
+  s32 achievements_notification_duration = DEFAULT_ACHIEVEMENT_NOTIFICATION_TIME;
+  s32 achievements_leaderboard_duration = DEFAULT_LEADERBOARD_NOTIFICATION_TIME;
 
   struct DebugSettings
   {
@@ -244,10 +246,9 @@ struct Settings
   std::string pcdrv_root;
   bool pcdrv_enable_writes = false;
 
-  std::array<TinyString, NUM_CONTROLLER_AND_CARD_PORTS> GeneratePortLabels() const;
-
   LOGLEVEL log_level = DEFAULT_LOG_LEVEL;
   std::string log_filter;
+  bool log_timestamps = true;
   bool log_to_console = DEFAULT_LOG_TO_CONSOLE;
   bool log_to_debug = false;
   bool log_to_window = false;
@@ -345,6 +346,7 @@ struct Settings
   static std::optional<LOGLEVEL> ParseLogLevelName(const char* str);
   static const char* GetLogLevelName(LOGLEVEL level);
   static const char* GetLogLevelDisplayName(LOGLEVEL level);
+  static std::span<const char*> GetLogFilters();
 
   static std::optional<ConsoleRegion> ParseConsoleRegionName(const char* str);
   static const char* GetConsoleRegionName(ConsoleRegion region);
@@ -412,19 +414,7 @@ struct Settings
   static const char* GetMultitapModeDisplayName(MultitapMode mode);
 
   // Default to D3D11 on Windows as it's more performant and at this point, less buggy.
-#if defined(_WIN32) && defined(_M_ARM64)
-  static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::HardwareD3D12;
-#elif defined(_WIN32)
-  static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::HardwareD3D11;
-#elif defined(__APPLE__)
-  static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::HardwareMetal;
-#elif defined(WITH_OPENGL)
-  static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::HardwareOpenGL;
-#elif defined(WITH_VULKAN)
-  static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::HardwareVulkan;
-#else
-  static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::Software;
-#endif
+  static constexpr GPURenderer DEFAULT_GPU_RENDERER = GPURenderer::Automatic;
   static constexpr GPUTextureFilter DEFAULT_GPU_TEXTURE_FILTER = GPUTextureFilter::Nearest;
   static constexpr GPUDownsampleMode DEFAULT_GPU_DOWNSAMPLE_MODE = GPUDownsampleMode::Disabled;
   static constexpr GPUWireframeMode DEFAULT_GPU_WIREFRAME_MODE = GPUWireframeMode::Disabled;
@@ -432,9 +422,11 @@ struct Settings
   static constexpr float DEFAULT_GPU_PGXP_DEPTH_THRESHOLD = 300.0f;
   static constexpr float GPU_PGXP_DEPTH_THRESHOLD_SCALE = 4096.0f;
 
-#ifdef WITH_RECOMPILER
+#ifdef ENABLE_RECOMPILER
   static constexpr CPUExecutionMode DEFAULT_CPU_EXECUTION_MODE = CPUExecutionMode::Recompiler;
-#ifdef WITH_MMAP_FASTMEM
+
+  // LUT still ends up faster on Apple Silicon for now, because of 16K pages.
+#if defined(ENABLE_MMAP_FASTMEM) && (!defined(__APPLE__) || !defined(__aarch64__))
   static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::MMap;
 #else
   static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::LUT;
@@ -444,7 +436,7 @@ struct Settings
   static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::Disabled;
 #endif
 
-#if defined(WITH_CUBEB)
+#if defined(ENABLE_CUBEB)
   static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::Cubeb;
 #elif defined(_WIN32)
   static constexpr AudioBackend DEFAULT_AUDIO_BACKEND = AudioBackend::XAudio2;
@@ -472,6 +464,9 @@ struct Settings
   static constexpr MemoryCardType DEFAULT_MEMORY_CARD_1_TYPE = MemoryCardType::PerGameTitle;
   static constexpr MemoryCardType DEFAULT_MEMORY_CARD_2_TYPE = MemoryCardType::None;
   static constexpr MultitapMode DEFAULT_MULTITAP_MODE = MultitapMode::Disabled;
+
+  static constexpr s32 DEFAULT_ACHIEVEMENT_NOTIFICATION_TIME = 5;
+  static constexpr s32 DEFAULT_LEADERBOARD_NOTIFICATION_TIME = 10;
 
   static constexpr LOGLEVEL DEFAULT_LOG_LEVEL = LOGLEVEL_INFO;
 

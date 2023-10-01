@@ -25,11 +25,11 @@ Log_SetChannel(GPUDevice);
 #include "d3d_common.h"
 #endif
 
-#ifdef WITH_OPENGL
+#ifdef ENABLE_OPENGL
 #include "opengl_device.h"
 #endif
 
-#ifdef WITH_VULKAN
+#ifdef ENABLE_VULKAN
 #include "vulkan_device.h"
 #endif
 
@@ -108,10 +108,9 @@ bool GPUPipeline::InputLayout::operator==(const InputLayout& rhs) const
 
 bool GPUPipeline::InputLayout::operator!=(const InputLayout& rhs) const
 {
-  return (vertex_stride != rhs.vertex_stride ||
-          vertex_attributes.size() != rhs.vertex_attributes.size() ||
-            std::memcmp(vertex_attributes.data(), rhs.vertex_attributes.data(),
-                        sizeof(VertexAttribute) * rhs.vertex_attributes.size()) != 0);
+  return (vertex_stride != rhs.vertex_stride || vertex_attributes.size() != rhs.vertex_attributes.size() ||
+          std::memcmp(vertex_attributes.data(), rhs.vertex_attributes.data(),
+                      sizeof(VertexAttribute) * rhs.vertex_attributes.size()) != 0);
 }
 
 GPUPipeline::RasterizationState GPUPipeline::RasterizationState::GetNoCullState()
@@ -176,16 +175,29 @@ GPUDevice::~GPUDevice() = default;
 
 RenderAPI GPUDevice::GetPreferredAPI()
 {
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(_M_ARM64)
+  // Perfer DX11 on Windows, except ARM64, where QCom has slow DX11 drivers.
   return RenderAPI::D3D11;
-#else
+#elif defined(_WIN32) && defined(_M_ARM64)
+  return RenderAPI::D3D12;
+#elif defined(__APPLE__)
+  // Prefer Metal on MacOS.
   return RenderAPI::Metal;
+#elif defined(ENABLE_OPENGL) && defined(ENABLE_VULKAN)
+  // On Linux, if we have both GL and Vulkan, prefer VK if the driver isn't software.
+  return VulkanDevice::IsSuitableDefaultRenderer() ? RenderAPI::Vulkan : RenderAPI::OpenGL;
+#elif defined(ENABLE_OPENGL)
+  return RenderAPI::OpenGL;
+#elif defined(ENABLE_VULKAN)
+  return RenderAPI::Vulkan;
+#else
+  // Uhhh, what?
+  return RenderAPI::None;
 #endif
 }
 
 const char* GPUDevice::RenderAPIToString(RenderAPI api)
 {
-  // TODO: Combine ES
   switch (api)
   {
     // clang-format off
@@ -202,6 +214,12 @@ const char* GPUDevice::RenderAPIToString(RenderAPI api)
     default:
       return "Unknown";
   }
+}
+
+bool GPUDevice::IsSameRenderAPI(RenderAPI lhs, RenderAPI rhs)
+{
+  return (lhs == rhs || ((lhs == RenderAPI::OpenGL || lhs == RenderAPI::OpenGLES) &&
+                         (rhs == RenderAPI::OpenGL || rhs == RenderAPI::OpenGLES)));
 }
 
 bool GPUDevice::Create(const std::string_view& adapter, const std::string_view& shader_cache_path,
@@ -265,7 +283,7 @@ void GPUDevice::OpenShaderCache(const std::string_view& base_path, u32 version)
       if (m_features.pipeline_cache)
       {
         const std::string pc_filename =
-          Path::Combine(base_path, TinyString::FromFmt("{}.bin", GetShaderCacheBaseName("pipelines")));
+          Path::Combine(base_path, TinyString::from_fmt("{}.bin", GetShaderCacheBaseName("pipelines")));
         if (FileSystem::FileExists(pc_filename.c_str()))
         {
           Log_InfoPrintf("Removing old pipeline cache '%s'", pc_filename.c_str());
@@ -284,7 +302,7 @@ void GPUDevice::OpenShaderCache(const std::string_view& base_path, u32 version)
   if (m_features.pipeline_cache && !base_path.empty())
   {
     const std::string basename = GetShaderCacheBaseName("pipelines");
-    const std::string filename = Path::Combine(base_path, TinyString::FromFmt("{}.bin", basename));
+    const std::string filename = Path::Combine(base_path, TinyString::from_fmt("{}.bin", basename));
     if (ReadPipelineCache(filename))
       s_pipeline_cache_path = std::move(filename);
     else
@@ -337,12 +355,12 @@ std::string GPUDevice::GetShaderCacheBaseName(const std::string_view& type) cons
       ret = fmt::format("d3d12_{}{}", type, debug_suffix);
       break;
 #endif
-#ifdef WITH_VULKAN
+#ifdef ENABLE_VULKAN
     case RenderAPI::Vulkan:
       ret = fmt::format("vulkan_{}{}", type, debug_suffix);
       break;
 #endif
-#ifdef WITH_OPENGL
+#ifdef ENABLE_OPENGL
     case RenderAPI::OpenGL:
       ret = fmt::format("opengl_{}{}", type, debug_suffix);
       break;
@@ -635,7 +653,7 @@ bool GPUDevice::GetRequestedExclusiveFullscreenMode(u32* width, u32* height, flo
 
 std::string GPUDevice::GetFullscreenModeString(u32 width, u32 height, float refresh_rate)
 {
-  return StringUtil::StdStringFromFormat("%u x %u @ %f hz", width, height, refresh_rate);
+  return fmt::format("{} x {} @ {} hz", width, height, refresh_rate);
 }
 
 std::string GPUDevice::GetShaderDumpPath(const std::string_view& name)
@@ -747,12 +765,12 @@ std::unique_ptr<GPUDevice> GPUDevice::CreateDeviceForAPI(RenderAPI api)
 {
   switch (api)
   {
-#ifdef WITH_VULKAN
+#ifdef ENABLE_VULKAN
     case RenderAPI::Vulkan:
       return std::make_unique<VulkanDevice>();
 #endif
 
-#ifdef WITH_OPENGL
+#ifdef ENABLE_OPENGL
     case RenderAPI::OpenGL:
     case RenderAPI::OpenGLES:
       return std::make_unique<OpenGLDevice>();

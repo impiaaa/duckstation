@@ -423,7 +423,7 @@ std::string D3D11Device::GetDriverInfo() const
       DXGI_ADAPTER_DESC desc;
       if (SUCCEEDED(dxgi_adapter->GetDesc(&desc)))
       {
-        ret += StringUtil::StdStringFromFormat("VID: 0x%04X PID: 0x%04X\n", desc.VendorId, desc.DeviceId);
+        fmt::format_to(std::back_inserter(ret), "VID: 0x{:04X} PID: 0x{:04X}\n", desc.VendorId, desc.DeviceId);
         ret += StringUtil::WideStringToUTF8String(desc.Description);
         ret += "\n";
 
@@ -635,7 +635,7 @@ GPUDevice::AdapterAndModeList D3D11Device::StaticGetAdapterAndModeList()
   std::unique_lock lock(s_instance_mutex);
 
   // Device shouldn't be torn down since we have the lock.
-  if (g_gpu_device && g_gpu_device->GetRenderAPI() == RenderAPI::D3D12)
+  if (g_gpu_device && g_gpu_device->GetRenderAPI() == RenderAPI::D3D11)
   {
     GetAdapterAndModeList(&ret, D3D11Device::GetInstance().m_dxgi_factory.Get());
   }
@@ -781,18 +781,13 @@ float D3D11Device::GetAndResetAccumulatedGPUTime()
   return value;
 }
 
-void D3D11Device::PushDebugGroup(const char* fmt, ...)
+void D3D11Device::PushDebugGroup(const char* name)
 {
 #ifdef _DEBUG
   if (!m_annotation)
     return;
 
-  std::va_list ap;
-  va_start(ap, fmt);
-  std::string str(StringUtil::StdStringFromFormatV(fmt, ap));
-  va_end(ap);
-
-  m_annotation->BeginEvent(StringUtil::UTF8StringToWideString(str).c_str());
+  m_annotation->BeginEvent(StringUtil::UTF8StringToWideString(name).c_str());
 #endif
 }
 
@@ -806,18 +801,13 @@ void D3D11Device::PopDebugGroup()
 #endif
 }
 
-void D3D11Device::InsertDebugMessage(const char* fmt, ...)
+void D3D11Device::InsertDebugMessage(const char* msg)
 {
 #ifdef _DEBUG
   if (!m_annotation)
     return;
 
-  std::va_list ap;
-  va_start(ap, fmt);
-  std::string str(StringUtil::StdStringFromFormatV(fmt, ap));
-  va_end(ap);
-
-  m_annotation->SetMarker(StringUtil::UTF8StringToWideString(str).c_str());
+  m_annotation->SetMarker(StringUtil::UTF8StringToWideString(msg).c_str());
 #endif
 }
 
