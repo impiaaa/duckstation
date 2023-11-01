@@ -733,7 +733,7 @@ ControllerBindingWidget_Base::~ControllerBindingWidget_Base()
 
 QIcon ControllerBindingWidget_Base::getIcon() const
 {
-  return QIcon::fromTheme("BIOSSettings");
+  return QIcon::fromTheme("controller-strike-line");
 }
 
 void ControllerBindingWidget_Base::initBindingWidgets()
@@ -804,7 +804,7 @@ ControllerBindingWidget_DigitalController::~ControllerBindingWidget_DigitalContr
 
 QIcon ControllerBindingWidget_DigitalController::getIcon() const
 {
-  return QIcon::fromTheme(QStringLiteral("gamepad-line"));
+  return QIcon::fromTheme(QStringLiteral("controller-digital-line"));
 }
 
 ControllerBindingWidget_Base* ControllerBindingWidget_DigitalController::createInstance(ControllerBindingWidget* parent)
@@ -827,7 +827,7 @@ ControllerBindingWidget_AnalogController::~ControllerBindingWidget_AnalogControl
 
 QIcon ControllerBindingWidget_AnalogController::getIcon() const
 {
-  return QIcon::fromTheme(QStringLiteral("ControllerSettings"));
+  return QIcon::fromTheme(QStringLiteral("controller-line"));
 }
 
 ControllerBindingWidget_Base* ControllerBindingWidget_AnalogController::createInstance(ControllerBindingWidget* parent)
@@ -850,7 +850,7 @@ ControllerBindingWidget_AnalogJoystick::~ControllerBindingWidget_AnalogJoystick(
 
 QIcon ControllerBindingWidget_AnalogJoystick::getIcon() const
 {
-  return QIcon::fromTheme(QStringLiteral("ControllerSettings"));
+  return QIcon::fromTheme(QStringLiteral("joystick-line"));
 }
 
 ControllerBindingWidget_Base* ControllerBindingWidget_AnalogJoystick::createInstance(ControllerBindingWidget* parent)
@@ -890,7 +890,7 @@ ControllerBindingWidget_NeGcon::~ControllerBindingWidget_NeGcon()
 
 QIcon ControllerBindingWidget_NeGcon::getIcon() const
 {
-  return QIcon::fromTheme(QStringLiteral("steering-line"));
+  return QIcon::fromTheme(QStringLiteral("negcon-line"));
 }
 
 ControllerBindingWidget_Base* ControllerBindingWidget_NeGcon::createInstance(ControllerBindingWidget* parent)
@@ -913,7 +913,7 @@ ControllerBindingWidget_GunCon::~ControllerBindingWidget_GunCon()
 
 QIcon ControllerBindingWidget_GunCon::getIcon() const
 {
-  return QIcon::fromTheme(QStringLiteral("fire-line"));
+  return QIcon::fromTheme(QStringLiteral("guncon-line"));
 }
 
 ControllerBindingWidget_Base* ControllerBindingWidget_GunCon::createInstance(ControllerBindingWidget* parent)

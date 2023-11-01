@@ -26,6 +26,8 @@ OpenGLDevice::OpenGLDevice()
   std::memset(&m_last_rasterization_state, 0xFF, sizeof(m_last_rasterization_state));
   std::memset(&m_last_depth_state, 0xFF, sizeof(m_last_depth_state));
   std::memset(&m_last_blend_state, 0xFF, sizeof(m_last_blend_state));
+  m_last_blend_state.enable = false;
+  m_last_blend_state.constant = 0;
 }
 
 OpenGLDevice::~OpenGLDevice()
@@ -82,6 +84,8 @@ bool OpenGLDevice::DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width,
   }
   else
   {
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_read_fbo);
+
     if (T->GetLayers() > 1)
       glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, T->GetGLId(), level, layer);
     else
@@ -91,6 +95,7 @@ bool OpenGLDevice::DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width,
     glReadPixels(x, y, width, height, gl_format, gl_type, out_data);
 
     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
   }
 
   return true;
@@ -137,17 +142,24 @@ void OpenGLDevice::CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 
     else
       glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, D->GetGLTarget(), did, dst_level);
     if (S->IsTextureArray())
-      glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, sid, src_level, src_layer);
+      glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, sid, src_level, src_layer);
     else
-      glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, S->GetGLTarget(), sid, src_level);
+      glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, S->GetGLTarget(), sid, src_level);
 
     glDisable(GL_SCISSOR_TEST);
-    glBlitFramebuffer(src_x, src_y, src_x + width, src_y + width, dst_x, dst_y, dst_x + width, dst_y + height,
+    glBlitFramebuffer(src_x, src_y, src_x + width, src_y + height, dst_x, dst_y, dst_x + width, dst_y + height,
                       GL_COLOR_BUFFER_BIT, GL_NEAREST);
     glEnable(GL_SCISSOR_TEST);
 
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_current_framebuffer ? m_current_framebuffer->GetGLId() : 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    if (m_current_framebuffer)
+    {
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_current_framebuffer ? m_current_framebuffer->GetGLId() : 0);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    }
+    else
+    {
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
   }
 }
 
@@ -185,8 +197,15 @@ void OpenGLDevice::ResolveTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u
                     GL_COLOR_BUFFER_BIT, GL_LINEAR);
   glEnable(GL_SCISSOR_TEST);
 
-  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_current_framebuffer ? m_current_framebuffer->GetGLId() : 0);
-  glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+  if (m_current_framebuffer)
+  {
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_current_framebuffer ? m_current_framebuffer->GetGLId() : 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+  }
+  else
+  {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  }
 }
 
 void OpenGLDevice::ClearRenderTarget(GPUTexture* t, u32 c)
@@ -397,7 +416,9 @@ bool OpenGLDevice::CheckFeatures(bool* buggy_pbo)
   GLint max_texture_size = 1024;
   GLint max_samples = 1;
   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size);
+  Log_DevFmt("GL_MAX_TEXTURE_SIZE: {}", max_texture_size);
   glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
+  Log_DevFmt("GL_MAX_SAMPLES: {}", max_samples);
   m_max_texture_size = std::max(1024u, static_cast<u32>(max_texture_size));
   m_max_multisamples = std::max(1u, static_cast<u32>(max_samples));
 
@@ -406,6 +427,7 @@ bool OpenGLDevice::CheckFeatures(bool* buggy_pbo)
   m_features.dual_source_blend =
     (max_dual_source_draw_buffers > 0) &&
     (GLAD_GL_VERSION_3_3 || GLAD_GL_ARB_blend_func_extended || GLAD_GL_EXT_blend_func_extended);
+  m_features.dual_source_blend = false;
 
 #ifdef __APPLE__
   // Partial texture buffer uploads appear to be broken in macOS's OpenGL driver.
@@ -416,6 +438,19 @@ bool OpenGLDevice::CheckFeatures(bool* buggy_pbo)
   // And Samsung's ANGLE/GLES driver?
   if (std::strstr(reinterpret_cast<const char*>(glGetString(GL_RENDERER)), "ANGLE"))
     m_features.supports_texture_buffers = false;
+
+  if (m_features.supports_texture_buffers)
+  {
+    GLint max_texel_buffer_size = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_BUFFER_SIZE, reinterpret_cast<GLint*>(&max_texel_buffer_size));
+    Log_DevFmt("GL_MAX_TEXTURE_BUFFER_SIZE: {}", max_texel_buffer_size);
+    if (max_texel_buffer_size < static_cast<GLint>(MIN_TEXEL_BUFFER_ELEMENTS))
+    {
+      Log_WarningFmt("GL_MAX_TEXTURE_BUFFER_SIZE ({}) is below required minimum ({}), not using texture buffers.",
+                     max_texel_buffer_size, MIN_TEXEL_BUFFER_ELEMENTS);
+      m_features.supports_texture_buffers = false;
+    }
+  }
 #endif
 
   if (!m_features.supports_texture_buffers)
@@ -429,8 +464,8 @@ bool OpenGLDevice::CheckFeatures(bool* buggy_pbo)
       glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &max_ssbo_size);
     }
 
-    Log_InfoPrintf("Max fragment shader storage blocks: %d", max_fragment_storage_blocks);
-    Log_InfoPrintf("Max shader storage buffer size: %" PRId64, max_ssbo_size);
+    Log_DevFmt("GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS: {}", max_fragment_storage_blocks);
+    Log_DevFmt("GL_MAX_SHADER_STORAGE_BLOCK_SIZE: {}", max_ssbo_size);
     m_features.texture_buffers_emulated_with_ssbo =
       (max_fragment_storage_blocks > 0 && max_ssbo_size >= static_cast<GLint64>(1024 * 512 * sizeof(u16)));
     if (m_features.texture_buffers_emulated_with_ssbo)
@@ -469,7 +504,7 @@ bool OpenGLDevice::CheckFeatures(bool* buggy_pbo)
     // check that there's at least one format and the extension isn't being "faked"
     GLint num_formats = 0;
     glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &num_formats);
-    Log_InfoPrintf("%u program binary formats supported by driver", num_formats);
+    Log_DevFmt("{} program binary formats supported by driver", num_formats);
     m_features.pipeline_cache = (num_formats > 0);
   }
 
@@ -638,9 +673,6 @@ bool OpenGLDevice::CreateBuffers(bool buggy_pbo)
   m_read_fbo = fbos[0];
   m_write_fbo = fbos[1];
 
-  // Read FBO gets left bound.
-  glBindFramebuffer(GL_READ_FRAMEBUFFER, m_read_fbo);
-
   return true;
 }
 
@@ -665,7 +697,7 @@ bool OpenGLDevice::BeginPresent(bool skip_present)
     return false;
   }
 
-  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
   const Common::Rectangle<s32> window_rc =
     Common::Rectangle<s32>::FromExtents(0, 0, m_window_info.surface_width, m_window_info.surface_height);

@@ -20,15 +20,15 @@
     <ClInclude Include="http_downloader.h" />
     <ClInclude Include="http_downloader_winhttp.h" />
     <ClInclude Include="image.h" />
+    <ClInclude Include="intrin.h" />
     <ClInclude Include="layered_settings_interface.h" />
     <ClInclude Include="log.h" />
     <ClInclude Include="lru_cache.h" />
-    <ClInclude Include="make_array.h" />
     <ClInclude Include="memmap.h" />
     <ClInclude Include="memory_settings_interface.h" />
     <ClInclude Include="md5_digest.h" />
     <ClInclude Include="path.h" />
-    <ClInclude Include="platform.h" />
+    <ClInclude Include="perf_scope.h" />
     <ClInclude Include="progress_callback.h" />
     <ClInclude Include="rectangle.h" />
     <ClInclude Include="scoped_guard.h" />
@@ -60,6 +60,7 @@
     <ClCompile Include="memory_settings_interface.cpp" />
     <ClCompile Include="md5_digest.cpp" />
     <ClCompile Include="minizip_helpers.cpp" />
+    <ClCompile Include="perf_scope.cpp" />
     <ClCompile Include="progress_callback.cpp" />
     <ClCompile Include="sha1_digest.cpp" />
     <ClCompile Include="small_string.cpp" />
@@ -74,7 +75,7 @@
   <ItemGroup>
     <MARMASM Include="fastjmp_arm.asm">
       <FileType>Document</FileType>
-      <ExcludedFromBuild Condition="'$(Platform)'!='ARM64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Platform)'!='ARM64' Or $(Configuration.Contains(Clang))">true</ExcludedFromBuild>
     </MARMASM>
     <MASM Include="fastjmp_x86.asm">
       <FileType>Document</FileType>

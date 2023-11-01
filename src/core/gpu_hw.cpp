@@ -650,8 +650,8 @@ bool GPU_HW::CreateBuffers()
   GL_OBJECT_NAME(m_vram_readback_framebuffer, "VRAM Readback Framebuffer");
   GL_OBJECT_NAME(m_display_framebuffer, "Display Framebuffer");
 
-  if (!(m_vram_upload_buffer = g_gpu_device->CreateTextureBuffer(GPUTextureBuffer::Format::R16UI,
-                                                                 VRAM_UPDATE_TEXTURE_BUFFER_SIZE / sizeof(u16))))
+  if (!(m_vram_upload_buffer =
+          g_gpu_device->CreateTextureBuffer(GPUTextureBuffer::Format::R16UI, GPUDevice::MIN_TEXEL_BUFFER_ELEMENTS)))
   {
     return false;
   }
@@ -861,12 +861,18 @@ bool GPU_HW::CompilePipelines()
                 }
                 else
                 {
-                  const u32 factor = (static_cast<GPUTransparencyMode>(transparency_mode) ==
-                                      GPUTransparencyMode::HalfBackgroundPlusHalfForeground) ?
-                                       0xFF808080u :
-                                       0xFFFFFFFFu;
+                  // TODO: This isn't entirely accurate, 127.5 versus 128.
+                  // But if we use fbfetch on Mali, it doesn't matter.
                   plconfig.blend.src_blend = GPUPipeline::BlendFunc::One;
-                  plconfig.blend.dst_blend = GPUPipeline::BlendFunc::ConstantColor;
+                  plconfig.blend.dst_blend = GPUPipeline::BlendFunc::One;
+                  if (static_cast<GPUTransparencyMode>(transparency_mode) ==
+                        GPUTransparencyMode::HalfBackgroundPlusHalfForeground)
+                  {
+                    plconfig.blend.dst_blend = GPUPipeline::BlendFunc::ConstantColor;
+                    plconfig.blend.dst_alpha_blend = GPUPipeline::BlendFunc::ConstantColor;
+                    plconfig.blend.constant = 0x00808080u;
+                  }
+
                   plconfig.blend.blend_op =
                     (static_cast<GPUTransparencyMode>(transparency_mode) ==
                        GPUTransparencyMode::BackgroundMinusForeground &&
@@ -874,7 +880,6 @@ bool GPU_HW::CompilePipelines()
                      static_cast<BatchRenderMode>(render_mode) != BatchRenderMode::OnlyOpaque) ?
                       GPUPipeline::BlendOp::ReverseSubtract :
                       GPUPipeline::BlendOp::Add;
-                  plconfig.blend.constant = factor;
                 }
               }
 

@@ -23,7 +23,6 @@
 #include "common/log.h"
 #include "common/md5_digest.h"
 #include "common/path.h"
-#include "common/platform.h"
 #include "common/scoped_guard.h"
 #include "common/small_string.h"
 #include "common/string_util.h"
@@ -231,7 +230,7 @@ std::unique_lock<std::recursive_mutex> Achievements::GetLock()
 
 std::string Achievements::GetUserAgent()
 {
-  return fmt::format("DuckStation for {} ({}) {}", SYSTEM_STR, CPU_ARCH_STR, g_scm_tag_str);
+  return fmt::format("DuckStation for {} ({}) {}", TARGET_OS_STR, CPU_ARCH_STR, g_scm_tag_str);
 }
 
 void Achievements::ReportError(const std::string_view& sv)
@@ -3010,7 +3009,7 @@ unsigned int Achievements::RAIntegration::RACallbackReadMemoryBlock(unsigned int
     return 0;
 
   const u32 copy_size = std::min<u32>(Bus::g_ram_size - nAddress, nBytes);
-  std::memcpy(pBuffer, Bus::g_ram + nAddress, copy_size);
+  std::memcpy(pBuffer, Bus::g_unprotected_ram + nAddress, copy_size);
   return copy_size;
 }
 

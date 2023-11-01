@@ -6,6 +6,7 @@
 #include "common/fastjmp.h"
 #include "common/file_system.h"
 #include "common/log.h"
+#include "cpu_code_cache_private.h"
 #include "cpu_core_private.h"
 #include "cpu_disasm.h"
 #include "cpu_recompiler_thunks.h"
@@ -23,11 +24,60 @@
 Log_SetChannel(CPU::Core);
 
 namespace CPU {
-
 static void SetPC(u32 new_pc);
 static void UpdateLoadDelay();
 static void Branch(u32 target);
 static void FlushPipeline();
+
+static u32 GetExceptionVector(bool debug_exception = false);
+static void RaiseException(u32 CAUSE_bits, u32 EPC, u32 vector);
+
+static u32 ReadReg(Reg rs);
+static void WriteReg(Reg rd, u32 value);
+static void WriteRegDelayed(Reg rd, u32 value);
+
+static u32 ReadCop0Reg(Cop0Reg reg);
+static void WriteCop0Reg(Cop0Reg reg, u32 value);
+
+static void DispatchCop0Breakpoint();
+static void Cop0ExecutionBreakpointCheck();
+template<MemoryAccessType type>
+static void Cop0DataBreakpointCheck(VirtualMemoryAddress address);
+static bool BreakpointCheck();
+
+#ifdef _DEBUG
+static void TracePrintInstruction();
+#endif
+
+static void DisassembleAndPrint(u32 addr, const char* prefix);
+static void PrintInstruction(u32 bits, u32 pc, Registers* regs, const char* prefix);
+static void LogInstruction(u32 bits, u32 pc, Registers* regs);
+
+static void HandleWriteSyscall();
+static void HandlePutcSyscall();
+static void HandlePutsSyscall();
+static void ExecuteDebug();
+
+template<PGXPMode pgxp_mode, bool debug>
+static void ExecuteInstruction();
+
+template<PGXPMode pgxp_mode, bool debug>
+[[noreturn]] static void ExecuteImpl();
+
+static bool FetchInstruction();
+static bool FetchInstructionForInterpreterFallback();
+template<bool add_ticks, bool icache_read = false, u32 word_count = 1, bool raise_exceptions>
+static bool DoInstructionRead(PhysicalMemoryAddress address, void* data);
+template<MemoryAccessType type, MemoryAccessSize size>
+static bool DoSafeMemoryAccess(VirtualMemoryAddress address, u32& value);
+template<MemoryAccessType type, MemoryAccessSize size>
+static bool DoAlignmentCheck(VirtualMemoryAddress address);
+static bool ReadMemoryByte(VirtualMemoryAddress addr, u8* value);
+static bool ReadMemoryHalfWord(VirtualMemoryAddress addr, u16* value);
+static bool ReadMemoryWord(VirtualMemoryAddress addr, u32* value);
+static bool WriteMemoryByte(VirtualMemoryAddress addr, u32 value);
+static bool WriteMemoryHalfWord(VirtualMemoryAddress addr, u32 value);
+static bool WriteMemoryWord(VirtualMemoryAddress addr, u32 value);
 
 State g_state;
 bool TRACE_EXECUTION = false;
@@ -62,13 +112,14 @@ static u32 s_breakpoint_counter = 1;
 static u32 s_last_breakpoint_check_pc = INVALID_BREAKPOINT_PC;
 static bool s_single_step = false;
 static bool s_single_step_done = false;
+} // namespace CPU
 
-bool IsTraceEnabled()
+bool CPU::IsTraceEnabled()
 {
   return s_trace_to_log;
 }
 
-void StartTrace()
+void CPU::StartTrace()
 {
   if (s_trace_to_log)
     return;
@@ -77,7 +128,7 @@ void StartTrace()
   UpdateDebugDispatcherFlag();
 }
 
-void StopTrace()
+void CPU::StopTrace()
 {
   if (!s_trace_to_log)
     return;
@@ -90,7 +141,7 @@ void StopTrace()
   UpdateDebugDispatcherFlag();
 }
 
-void WriteToExecutionLog(const char* format, ...)
+void CPU::WriteToExecutionLog(const char* format, ...)
 {
   if (!s_log_file_opened)
   {
@@ -111,7 +162,7 @@ void WriteToExecutionLog(const char* format, ...)
   }
 }
 
-void Initialize()
+void CPU::Initialize()
 {
   // From nocash spec.
   g_state.cop0_regs.PRID = UINT32_C(0x00000002);
@@ -122,12 +173,12 @@ void Initialize()
   s_last_breakpoint_check_pc = INVALID_BREAKPOINT_PC;
   s_single_step = false;
 
-  UpdateFastmemBase();
+  UpdateMemoryPointers();
 
   GTE::Initialize();
 }
 
-void Shutdown()
+void CPU::Shutdown()
 {
   ClearBreakpoints();
   StopTrace();
@@ -208,10 +259,12 @@ void Shutdown()
 #endif
 }
 
-void Reset()
+void CPU::Reset()
 {
   g_state.pending_ticks = 0;
   g_state.downcount = 0;
+  g_state.exception_raised = false;
+  g_state.bus_error = false;
 
   g_state.regs = {};
 
@@ -226,7 +279,7 @@ void Reset()
   g_state.cop0_regs.cause.bits = 0;
 
   ClearICache();
-  UpdateFastmemBase();
+  UpdateMemoryPointers();
 
   GTE::Reset();
 
@@ -234,7 +287,7 @@ void Reset()
   SetPC(RESET_VECTOR);
 }
 
-bool DoState(StateWrapper& sw)
+bool CPU::DoState(StateWrapper& sw)
 {
   sw.Do(&g_state.pending_ticks);
   sw.Do(&g_state.downcount);
@@ -260,6 +313,7 @@ bool DoState(StateWrapper& sw)
   sw.Do(&g_state.next_instruction_is_branch_delay_slot);
   sw.Do(&g_state.branch_was_taken);
   sw.Do(&g_state.exception_raised);
+  sw.DoEx(&g_state.bus_error, 61, false);
   if (sw.GetVersion() < 59)
   {
     bool interrupt_delay;
@@ -273,8 +327,10 @@ bool DoState(StateWrapper& sw)
   // Compatibility with old states.
   if (sw.GetVersion() < 59)
   {
-    g_state.load_delay_reg = static_cast<Reg>(std::min(static_cast<u8>(g_state.load_delay_reg), static_cast<u8>(Reg::count)));
-    g_state.next_load_delay_reg = static_cast<Reg>(std::min(static_cast<u8>(g_state.load_delay_reg), static_cast<u8>(Reg::count)));
+    g_state.load_delay_reg =
+      static_cast<Reg>(std::min(static_cast<u8>(g_state.load_delay_reg), static_cast<u8>(Reg::count)));
+    g_state.next_load_delay_reg =
+      static_cast<Reg>(std::min(static_cast<u8>(g_state.load_delay_reg), static_cast<u8>(Reg::count)));
   }
 
   sw.Do(&g_state.cache_control.bits);
@@ -296,29 +352,21 @@ bool DoState(StateWrapper& sw)
 
   if (sw.IsReading())
   {
-    UpdateFastmemBase();
+    UpdateMemoryPointers();
     g_state.gte_completion_tick = 0;
   }
 
   return !sw.HasError();
 }
 
-void UpdateFastmemBase()
-{
-  if (g_state.cop0_regs.sr.Isc)
-    g_state.fastmem_base = nullptr;
-  else
-    g_state.fastmem_base = Bus::GetFastmemBase();
-}
-
-ALWAYS_INLINE_RELEASE void SetPC(u32 new_pc)
+ALWAYS_INLINE_RELEASE void CPU::SetPC(u32 new_pc)
 {
   DebugAssert(Common::IsAlignedPow2(new_pc, 4));
   g_state.npc = new_pc;
   FlushPipeline();
 }
 
-ALWAYS_INLINE_RELEASE void Branch(u32 target)
+ALWAYS_INLINE_RELEASE void CPU::Branch(u32 target)
 {
   if (!Common::IsAlignedPow2(target, 4))
   {
@@ -332,13 +380,13 @@ ALWAYS_INLINE_RELEASE void Branch(u32 target)
   g_state.branch_was_taken = true;
 }
 
-ALWAYS_INLINE static u32 GetExceptionVector(bool debug_exception = false)
+ALWAYS_INLINE_RELEASE u32 CPU::GetExceptionVector(bool debug_exception /* = false*/)
 {
   const u32 base = g_state.cop0_regs.sr.BEV ? UINT32_C(0xbfc00100) : UINT32_C(0x80000000);
   return base | (debug_exception ? UINT32_C(0x00000040) : UINT32_C(0x00000080));
 }
 
-ALWAYS_INLINE_RELEASE static void RaiseException(u32 CAUSE_bits, u32 EPC, u32 vector)
+ALWAYS_INLINE_RELEASE void CPU::RaiseException(u32 CAUSE_bits, u32 EPC, u32 vector)
 {
   g_state.cop0_regs.EPC = EPC;
   g_state.cop0_regs.cause.bits = (g_state.cop0_regs.cause.bits & ~Cop0Registers::CAUSE::EXCEPTION_WRITE_MASK) |
@@ -393,7 +441,7 @@ ALWAYS_INLINE_RELEASE static void RaiseException(u32 CAUSE_bits, u32 EPC, u32 ve
   FlushPipeline();
 }
 
-ALWAYS_INLINE_RELEASE static void DispatchCop0Breakpoint()
+ALWAYS_INLINE_RELEASE void CPU::DispatchCop0Breakpoint()
 {
   // When a breakpoint address match occurs the PSX jumps to 80000040h (ie. unlike normal exceptions, not to 80000080h).
   // The Excode value in the CAUSE register is set to 09h (same as BREAK opcode), and EPC contains the return address,
@@ -405,12 +453,12 @@ ALWAYS_INLINE_RELEASE static void DispatchCop0Breakpoint()
                  g_state.current_instruction_pc, GetExceptionVector(true));
 }
 
-void RaiseException(u32 CAUSE_bits, u32 EPC)
+void CPU::RaiseException(u32 CAUSE_bits, u32 EPC)
 {
   RaiseException(CAUSE_bits, EPC, GetExceptionVector());
 }
 
-void RaiseException(Exception excode)
+void CPU::RaiseException(Exception excode)
 {
   RaiseException(Cop0Registers::CAUSE::MakeValueForException(excode, g_state.current_instruction_in_branch_delay_slot,
                                                              g_state.current_instruction_was_branch_taken,
@@ -418,7 +466,7 @@ void RaiseException(Exception excode)
                  g_state.current_instruction_pc, GetExceptionVector());
 }
 
-void RaiseBreakException(u32 CAUSE_bits, u32 EPC, u32 instruction_bits)
+void CPU::RaiseBreakException(u32 CAUSE_bits, u32 EPC, u32 instruction_bits)
 {
   if (PCDrv::HandleSyscall(instruction_bits, g_state.regs))
   {
@@ -432,18 +480,18 @@ void RaiseBreakException(u32 CAUSE_bits, u32 EPC, u32 instruction_bits)
   RaiseException(CAUSE_bits, EPC, GetExceptionVector());
 }
 
-void SetExternalInterrupt(u8 bit)
+void CPU::SetExternalInterrupt(u8 bit)
 {
   g_state.cop0_regs.cause.Ip |= static_cast<u8>(1u << bit);
   CheckForPendingInterrupt();
 }
 
-void ClearExternalInterrupt(u8 bit)
+void CPU::ClearExternalInterrupt(u8 bit)
 {
   g_state.cop0_regs.cause.Ip &= static_cast<u8>(~(1u << bit));
 }
 
-ALWAYS_INLINE_RELEASE static void UpdateLoadDelay()
+ALWAYS_INLINE_RELEASE void CPU::UpdateLoadDelay()
 {
   // the old value is needed in case the delay slot instruction overwrites the same register
   g_state.regs.r[static_cast<u8>(g_state.load_delay_reg)] = g_state.load_delay_value;
@@ -452,7 +500,7 @@ ALWAYS_INLINE_RELEASE static void UpdateLoadDelay()
   g_state.next_load_delay_reg = Reg::count;
 }
 
-ALWAYS_INLINE_RELEASE static void FlushPipeline()
+ALWAYS_INLINE_RELEASE void CPU::FlushPipeline()
 {
   // loads are flushed
   g_state.next_load_delay_reg = Reg::count;
@@ -473,12 +521,12 @@ ALWAYS_INLINE_RELEASE static void FlushPipeline()
   g_state.current_instruction_was_branch_taken = false;
 }
 
-ALWAYS_INLINE static u32 ReadReg(Reg rs)
+ALWAYS_INLINE u32 CPU::ReadReg(Reg rs)
 {
   return g_state.regs.r[static_cast<u8>(rs)];
 }
 
-ALWAYS_INLINE static void WriteReg(Reg rd, u32 value)
+ALWAYS_INLINE void CPU::WriteReg(Reg rd, u32 value)
 {
   g_state.regs.r[static_cast<u8>(rd)] = value;
   g_state.load_delay_reg = (rd == g_state.load_delay_reg) ? Reg::count : g_state.load_delay_reg;
@@ -487,7 +535,7 @@ ALWAYS_INLINE static void WriteReg(Reg rd, u32 value)
   g_state.regs.zero = 0;
 }
 
-ALWAYS_INLINE_RELEASE static void WriteRegDelayed(Reg rd, u32 value)
+ALWAYS_INLINE_RELEASE void CPU::WriteRegDelayed(Reg rd, u32 value)
 {
   DebugAssert(g_state.next_load_delay_reg == Reg::count);
   if (rd == Reg::zero)
@@ -502,7 +550,7 @@ ALWAYS_INLINE_RELEASE static void WriteRegDelayed(Reg rd, u32 value)
   g_state.next_load_delay_value = value;
 }
 
-ALWAYS_INLINE_RELEASE static u32 ReadCop0Reg(Cop0Reg reg)
+ALWAYS_INLINE_RELEASE u32 CPU::ReadCop0Reg(Cop0Reg reg)
 {
   switch (reg)
   {
@@ -544,7 +592,7 @@ ALWAYS_INLINE_RELEASE static u32 ReadCop0Reg(Cop0Reg reg)
   }
 }
 
-ALWAYS_INLINE_RELEASE static void WriteCop0Reg(Cop0Reg reg, u32 value)
+ALWAYS_INLINE_RELEASE void CPU::WriteCop0Reg(Cop0Reg reg, u32 value)
 {
   switch (reg)
   {
@@ -596,6 +644,7 @@ ALWAYS_INLINE_RELEASE static void WriteCop0Reg(Cop0Reg reg, u32 value)
       g_state.cop0_regs.sr.bits =
         (g_state.cop0_regs.sr.bits & ~Cop0Registers::SR::WRITE_MASK) | (value & Cop0Registers::SR::WRITE_MASK);
       Log_DebugPrintf("COP0 SR <- %08X (now %08X)", value, g_state.cop0_regs.sr.bits);
+      UpdateMemoryPointers();
       CheckForPendingInterrupt();
     }
     break;
@@ -615,7 +664,7 @@ ALWAYS_INLINE_RELEASE static void WriteCop0Reg(Cop0Reg reg, u32 value)
   }
 }
 
-ALWAYS_INLINE_RELEASE void Cop0ExecutionBreakpointCheck()
+ALWAYS_INLINE_RELEASE void CPU::Cop0ExecutionBreakpointCheck()
 {
   if (!g_state.cop0_regs.dcic.ExecutionBreakpointsEnabled())
     return;
@@ -635,7 +684,7 @@ ALWAYS_INLINE_RELEASE void Cop0ExecutionBreakpointCheck()
 }
 
 template<MemoryAccessType type>
-ALWAYS_INLINE_RELEASE void Cop0DataBreakpointCheck(VirtualMemoryAddress address)
+ALWAYS_INLINE_RELEASE void CPU::Cop0DataBreakpointCheck(VirtualMemoryAddress address)
 {
   if constexpr (type == MemoryAccessType::Read)
   {
@@ -668,7 +717,7 @@ ALWAYS_INLINE_RELEASE void Cop0DataBreakpointCheck(VirtualMemoryAddress address)
 
 #ifdef _DEBUG
 
-static void TracePrintInstruction()
+void CPU::TracePrintInstruction()
 {
   const u32 pc = g_state.current_instruction_pc;
   const u32 bits = g_state.current_instruction.bits;
@@ -690,7 +739,7 @@ static void TracePrintInstruction()
 
 #endif
 
-static void PrintInstruction(u32 bits, u32 pc, Registers* regs, const char* prefix)
+void CPU::PrintInstruction(u32 bits, u32 pc, Registers* regs, const char* prefix)
 {
   TinyString instr;
   TinyString comment;
@@ -707,7 +756,7 @@ static void PrintInstruction(u32 bits, u32 pc, Registers* regs, const char* pref
   Log_DevPrintf("%s%08x: %08x %s", prefix, pc, bits, instr.c_str());
 }
 
-static void LogInstruction(u32 bits, u32 pc, Registers* regs)
+void CPU::LogInstruction(u32 bits, u32 pc, Registers* regs)
 {
   TinyString instr;
   TinyString comment;
@@ -724,7 +773,7 @@ static void LogInstruction(u32 bits, u32 pc, Registers* regs)
   WriteToExecutionLog("%08x: %08x %s\n", pc, bits, instr.c_str());
 }
 
-static void HandleWriteSyscall()
+void CPU::HandleWriteSyscall()
 {
   const auto& regs = g_state.regs;
   if (regs.a0 != 1) // stdout
@@ -742,14 +791,14 @@ static void HandleWriteSyscall()
   }
 }
 
-static void HandlePutcSyscall()
+void CPU::HandlePutcSyscall()
 {
   const auto& regs = g_state.regs;
   if (regs.a0 != 0)
     Bus::AddTTYCharacter(static_cast<char>(regs.a0));
 }
 
-static void HandlePutsSyscall()
+void CPU::HandlePutsSyscall()
 {
   const auto& regs = g_state.regs;
 
@@ -764,7 +813,7 @@ static void HandlePutsSyscall()
   }
 }
 
-void HandleA0Syscall()
+void CPU::HandleA0Syscall()
 {
   const auto& regs = g_state.regs;
   const u32 call = regs.t1;
@@ -776,7 +825,7 @@ void HandleA0Syscall()
     HandlePutsSyscall();
 }
 
-void HandleB0Syscall()
+void CPU::HandleB0Syscall()
 {
   const auto& regs = g_state.regs;
   const u32 call = regs.t1;
@@ -788,113 +837,113 @@ void HandleB0Syscall()
     HandlePutsSyscall();
 }
 
-const std::array<DebuggerRegisterListEntry, NUM_DEBUGGER_REGISTER_LIST_ENTRIES> g_debugger_register_list = {
-  {{"zero", &CPU::g_state.regs.zero},
-   {"at", &CPU::g_state.regs.at},
-   {"v0", &CPU::g_state.regs.v0},
-   {"v1", &CPU::g_state.regs.v1},
-   {"a0", &CPU::g_state.regs.a0},
-   {"a1", &CPU::g_state.regs.a1},
-   {"a2", &CPU::g_state.regs.a2},
-   {"a3", &CPU::g_state.regs.a3},
-   {"t0", &CPU::g_state.regs.t0},
-   {"t1", &CPU::g_state.regs.t1},
-   {"t2", &CPU::g_state.regs.t2},
-   {"t3", &CPU::g_state.regs.t3},
-   {"t4", &CPU::g_state.regs.t4},
-   {"t5", &CPU::g_state.regs.t5},
-   {"t6", &CPU::g_state.regs.t6},
-   {"t7", &CPU::g_state.regs.t7},
-   {"s0", &CPU::g_state.regs.s0},
-   {"s1", &CPU::g_state.regs.s1},
-   {"s2", &CPU::g_state.regs.s2},
-   {"s3", &CPU::g_state.regs.s3},
-   {"s4", &CPU::g_state.regs.s4},
-   {"s5", &CPU::g_state.regs.s5},
-   {"s6", &CPU::g_state.regs.s6},
-   {"s7", &CPU::g_state.regs.s7},
-   {"t8", &CPU::g_state.regs.t8},
-   {"t9", &CPU::g_state.regs.t9},
-   {"k0", &CPU::g_state.regs.k0},
-   {"k1", &CPU::g_state.regs.k1},
-   {"gp", &CPU::g_state.regs.gp},
-   {"sp", &CPU::g_state.regs.sp},
-   {"fp", &CPU::g_state.regs.fp},
-   {"ra", &CPU::g_state.regs.ra},
-   {"hi", &CPU::g_state.regs.hi},
-   {"lo", &CPU::g_state.regs.lo},
-   {"pc", &CPU::g_state.pc},
-   {"npc", &CPU::g_state.npc},
+const std::array<CPU::DebuggerRegisterListEntry, CPU::NUM_DEBUGGER_REGISTER_LIST_ENTRIES>
+  CPU::g_debugger_register_list = {{{"zero", &CPU::g_state.regs.zero},
+                                    {"at", &CPU::g_state.regs.at},
+                                    {"v0", &CPU::g_state.regs.v0},
+                                    {"v1", &CPU::g_state.regs.v1},
+                                    {"a0", &CPU::g_state.regs.a0},
+                                    {"a1", &CPU::g_state.regs.a1},
+                                    {"a2", &CPU::g_state.regs.a2},
+                                    {"a3", &CPU::g_state.regs.a3},
+                                    {"t0", &CPU::g_state.regs.t0},
+                                    {"t1", &CPU::g_state.regs.t1},
+                                    {"t2", &CPU::g_state.regs.t2},
+                                    {"t3", &CPU::g_state.regs.t3},
+                                    {"t4", &CPU::g_state.regs.t4},
+                                    {"t5", &CPU::g_state.regs.t5},
+                                    {"t6", &CPU::g_state.regs.t6},
+                                    {"t7", &CPU::g_state.regs.t7},
+                                    {"s0", &CPU::g_state.regs.s0},
+                                    {"s1", &CPU::g_state.regs.s1},
+                                    {"s2", &CPU::g_state.regs.s2},
+                                    {"s3", &CPU::g_state.regs.s3},
+                                    {"s4", &CPU::g_state.regs.s4},
+                                    {"s5", &CPU::g_state.regs.s5},
+                                    {"s6", &CPU::g_state.regs.s6},
+                                    {"s7", &CPU::g_state.regs.s7},
+                                    {"t8", &CPU::g_state.regs.t8},
+                                    {"t9", &CPU::g_state.regs.t9},
+                                    {"k0", &CPU::g_state.regs.k0},
+                                    {"k1", &CPU::g_state.regs.k1},
+                                    {"gp", &CPU::g_state.regs.gp},
+                                    {"sp", &CPU::g_state.regs.sp},
+                                    {"fp", &CPU::g_state.regs.fp},
+                                    {"ra", &CPU::g_state.regs.ra},
+                                    {"hi", &CPU::g_state.regs.hi},
+                                    {"lo", &CPU::g_state.regs.lo},
+                                    {"pc", &CPU::g_state.pc},
+                                    {"npc", &CPU::g_state.npc},
 
-   {"COP0_SR", &CPU::g_state.cop0_regs.sr.bits},
-   {"COP0_CAUSE", &CPU::g_state.cop0_regs.cause.bits},
-   {"COP0_EPC", &CPU::g_state.cop0_regs.EPC},
-   {"COP0_BadVAddr", &CPU::g_state.cop0_regs.BadVaddr},
+                                    {"COP0_SR", &CPU::g_state.cop0_regs.sr.bits},
+                                    {"COP0_CAUSE", &CPU::g_state.cop0_regs.cause.bits},
+                                    {"COP0_EPC", &CPU::g_state.cop0_regs.EPC},
+                                    {"COP0_BadVAddr", &CPU::g_state.cop0_regs.BadVaddr},
 
-   {"V0_XY", &CPU::g_state.gte_regs.r32[0]},
-   {"V0_Z", &CPU::g_state.gte_regs.r32[1]},
-   {"V1_XY", &CPU::g_state.gte_regs.r32[2]},
-   {"V1_Z", &CPU::g_state.gte_regs.r32[3]},
-   {"V2_XY", &CPU::g_state.gte_regs.r32[4]},
-   {"V2_Z", &CPU::g_state.gte_regs.r32[5]},
-   {"RGBC", &CPU::g_state.gte_regs.r32[6]},
-   {"OTZ", &CPU::g_state.gte_regs.r32[7]},
-   {"IR0", &CPU::g_state.gte_regs.r32[8]},
-   {"IR1", &CPU::g_state.gte_regs.r32[9]},
-   {"IR2", &CPU::g_state.gte_regs.r32[10]},
-   {"IR3", &CPU::g_state.gte_regs.r32[11]},
-   {"SXY0", &CPU::g_state.gte_regs.r32[12]},
-   {"SXY1", &CPU::g_state.gte_regs.r32[13]},
-   {"SXY2", &CPU::g_state.gte_regs.r32[14]},
-   {"SXYP", &CPU::g_state.gte_regs.r32[15]},
-   {"SZ0", &CPU::g_state.gte_regs.r32[16]},
-   {"SZ1", &CPU::g_state.gte_regs.r32[17]},
-   {"SZ2", &CPU::g_state.gte_regs.r32[18]},
-   {"SZ3", &CPU::g_state.gte_regs.r32[19]},
-   {"RGB0", &CPU::g_state.gte_regs.r32[20]},
-   {"RGB1", &CPU::g_state.gte_regs.r32[21]},
-   {"RGB2", &CPU::g_state.gte_regs.r32[22]},
-   {"RES1", &CPU::g_state.gte_regs.r32[23]},
-   {"MAC0", &CPU::g_state.gte_regs.r32[24]},
-   {"MAC1", &CPU::g_state.gte_regs.r32[25]},
-   {"MAC2", &CPU::g_state.gte_regs.r32[26]},
-   {"MAC3", &CPU::g_state.gte_regs.r32[27]},
-   {"IRGB", &CPU::g_state.gte_regs.r32[28]},
-   {"ORGB", &CPU::g_state.gte_regs.r32[29]},
-   {"LZCS", &CPU::g_state.gte_regs.r32[30]},
-   {"LZCR", &CPU::g_state.gte_regs.r32[31]},
-   {"RT_0", &CPU::g_state.gte_regs.r32[32]},
-   {"RT_1", &CPU::g_state.gte_regs.r32[33]},
-   {"RT_2", &CPU::g_state.gte_regs.r32[34]},
-   {"RT_3", &CPU::g_state.gte_regs.r32[35]},
-   {"RT_4", &CPU::g_state.gte_regs.r32[36]},
-   {"TRX", &CPU::g_state.gte_regs.r32[37]},
-   {"TRY", &CPU::g_state.gte_regs.r32[38]},
-   {"TRZ", &CPU::g_state.gte_regs.r32[39]},
-   {"LLM_0", &CPU::g_state.gte_regs.r32[40]},
-   {"LLM_1", &CPU::g_state.gte_regs.r32[41]},
-   {"LLM_2", &CPU::g_state.gte_regs.r32[42]},
-   {"LLM_3", &CPU::g_state.gte_regs.r32[43]},
-   {"LLM_4", &CPU::g_state.gte_regs.r32[44]},
-   {"RBK", &CPU::g_state.gte_regs.r32[45]},
-   {"GBK", &CPU::g_state.gte_regs.r32[46]},
-   {"BBK", &CPU::g_state.gte_regs.r32[47]},
-   {"LCM_0", &CPU::g_state.gte_regs.r32[48]},
-   {"LCM_1", &CPU::g_state.gte_regs.r32[49]},
-   {"LCM_2", &CPU::g_state.gte_regs.r32[50]},
-   {"LCM_3", &CPU::g_state.gte_regs.r32[51]},
-   {"LCM_4", &CPU::g_state.gte_regs.r32[52]},
-   {"RFC", &CPU::g_state.gte_regs.r32[53]},
-   {"GFC", &CPU::g_state.gte_regs.r32[54]},
-   {"BFC", &CPU::g_state.gte_regs.r32[55]},
-   {"OFX", &CPU::g_state.gte_regs.r32[56]},
-   {"OFY", &CPU::g_state.gte_regs.r32[57]},
-   {"H", &CPU::g_state.gte_regs.r32[58]},
-   {"DQA", &CPU::g_state.gte_regs.r32[59]},
-   {"DQB", &CPU::g_state.gte_regs.r32[60]},
-   {"ZSF3", &CPU::g_state.gte_regs.r32[61]},
-   {"ZSF4", &CPU::g_state.gte_regs.r32[62]},
-   {"FLAG", &CPU::g_state.gte_regs.r32[63]}}};
+                                    {"V0_XY", &CPU::g_state.gte_regs.r32[0]},
+                                    {"V0_Z", &CPU::g_state.gte_regs.r32[1]},
+                                    {"V1_XY", &CPU::g_state.gte_regs.r32[2]},
+                                    {"V1_Z", &CPU::g_state.gte_regs.r32[3]},
+                                    {"V2_XY", &CPU::g_state.gte_regs.r32[4]},
+                                    {"V2_Z", &CPU::g_state.gte_regs.r32[5]},
+                                    {"RGBC", &CPU::g_state.gte_regs.r32[6]},
+                                    {"OTZ", &CPU::g_state.gte_regs.r32[7]},
+                                    {"IR0", &CPU::g_state.gte_regs.r32[8]},
+                                    {"IR1", &CPU::g_state.gte_regs.r32[9]},
+                                    {"IR2", &CPU::g_state.gte_regs.r32[10]},
+                                    {"IR3", &CPU::g_state.gte_regs.r32[11]},
+                                    {"SXY0", &CPU::g_state.gte_regs.r32[12]},
+                                    {"SXY1", &CPU::g_state.gte_regs.r32[13]},
+                                    {"SXY2", &CPU::g_state.gte_regs.r32[14]},
+                                    {"SXYP", &CPU::g_state.gte_regs.r32[15]},
+                                    {"SZ0", &CPU::g_state.gte_regs.r32[16]},
+                                    {"SZ1", &CPU::g_state.gte_regs.r32[17]},
+                                    {"SZ2", &CPU::g_state.gte_regs.r32[18]},
+                                    {"SZ3", &CPU::g_state.gte_regs.r32[19]},
+                                    {"RGB0", &CPU::g_state.gte_regs.r32[20]},
+                                    {"RGB1", &CPU::g_state.gte_regs.r32[21]},
+                                    {"RGB2", &CPU::g_state.gte_regs.r32[22]},
+                                    {"RES1", &CPU::g_state.gte_regs.r32[23]},
+                                    {"MAC0", &CPU::g_state.gte_regs.r32[24]},
+                                    {"MAC1", &CPU::g_state.gte_regs.r32[25]},
+                                    {"MAC2", &CPU::g_state.gte_regs.r32[26]},
+                                    {"MAC3", &CPU::g_state.gte_regs.r32[27]},
+                                    {"IRGB", &CPU::g_state.gte_regs.r32[28]},
+                                    {"ORGB", &CPU::g_state.gte_regs.r32[29]},
+                                    {"LZCS", &CPU::g_state.gte_regs.r32[30]},
+                                    {"LZCR", &CPU::g_state.gte_regs.r32[31]},
+                                    {"RT_0", &CPU::g_state.gte_regs.r32[32]},
+                                    {"RT_1", &CPU::g_state.gte_regs.r32[33]},
+                                    {"RT_2", &CPU::g_state.gte_regs.r32[34]},
+                                    {"RT_3", &CPU::g_state.gte_regs.r32[35]},
+                                    {"RT_4", &CPU::g_state.gte_regs.r32[36]},
+                                    {"TRX", &CPU::g_state.gte_regs.r32[37]},
+                                    {"TRY", &CPU::g_state.gte_regs.r32[38]},
+                                    {"TRZ", &CPU::g_state.gte_regs.r32[39]},
+                                    {"LLM_0", &CPU::g_state.gte_regs.r32[40]},
+                                    {"LLM_1", &CPU::g_state.gte_regs.r32[41]},
+                                    {"LLM_2", &CPU::g_state.gte_regs.r32[42]},
+                                    {"LLM_3", &CPU::g_state.gte_regs.r32[43]},
+                                    {"LLM_4", &CPU::g_state.gte_regs.r32[44]},
+                                    {"RBK", &CPU::g_state.gte_regs.r32[45]},
+                                    {"GBK", &CPU::g_state.gte_regs.r32[46]},
+                                    {"BBK", &CPU::g_state.gte_regs.r32[47]},
+                                    {"LCM_0", &CPU::g_state.gte_regs.r32[48]},
+                                    {"LCM_1", &CPU::g_state.gte_regs.r32[49]},
+                                    {"LCM_2", &CPU::g_state.gte_regs.r32[50]},
+                                    {"LCM_3", &CPU::g_state.gte_regs.r32[51]},
+                                    {"LCM_4", &CPU::g_state.gte_regs.r32[52]},
+                                    {"RFC", &CPU::g_state.gte_regs.r32[53]},
+                                    {"GFC", &CPU::g_state.gte_regs.r32[54]},
+                                    {"BFC", &CPU::g_state.gte_regs.r32[55]},
+                                    {"OFX", &CPU::g_state.gte_regs.r32[56]},
+                                    {"OFY", &CPU::g_state.gte_regs.r32[57]},
+                                    {"H", &CPU::g_state.gte_regs.r32[58]},
+                                    {"DQA", &CPU::g_state.gte_regs.r32[59]},
+                                    {"DQB", &CPU::g_state.gte_regs.r32[60]},
+                                    {"ZSF3", &CPU::g_state.gte_regs.r32[61]},
+                                    {"ZSF4", &CPU::g_state.gte_regs.r32[62]},
+                                    {"FLAG", &CPU::g_state.gte_regs.r32[63]}}};
 
 ALWAYS_INLINE static constexpr bool AddOverflow(u32 old_value, u32 add_value, u32 new_value)
 {
@@ -906,14 +955,14 @@ ALWAYS_INLINE static constexpr bool SubOverflow(u32 old_value, u32 sub_value, u3
   return (((new_value ^ old_value) & (old_value ^ sub_value)) & UINT32_C(0x80000000)) != 0;
 }
 
-void DisassembleAndPrint(u32 addr, const char* prefix)
+void CPU::DisassembleAndPrint(u32 addr, const char* prefix)
 {
   u32 bits = 0;
   SafeReadMemoryWord(addr, &bits);
   PrintInstruction(bits, addr, &g_state.regs, prefix);
 }
 
-void DisassembleAndPrint(u32 addr, u32 instructions_before /* = 0 */, u32 instructions_after /* = 0 */)
+void CPU::DisassembleAndPrint(u32 addr, u32 instructions_before /* = 0 */, u32 instructions_after /* = 0 */)
 {
   u32 disasm_addr = addr - (instructions_before * sizeof(u32));
   for (u32 i = 0; i < instructions_before; i++)
@@ -931,7 +980,7 @@ void DisassembleAndPrint(u32 addr, u32 instructions_before /* = 0 */, u32 instru
 }
 
 template<PGXPMode pgxp_mode, bool debug>
-ALWAYS_INLINE_RELEASE static void ExecuteInstruction()
+ALWAYS_INLINE_RELEASE void CPU::ExecuteInstruction()
 {
 restart_instruction:
   const Instruction inst = g_state.current_instruction;
@@ -1969,7 +2018,7 @@ restart_instruction:
   }
 }
 
-void DispatchInterrupt()
+void CPU::DispatchInterrupt()
 {
   // If the instruction we're about to execute is a GTE instruction, delay dispatching the interrupt until the next
   // instruction. For some reason, if we don't do this, we end up with incorrectly sorted polygons and flickering..
@@ -1990,7 +2039,7 @@ void DispatchInterrupt()
   TimingEvents::UpdateCPUDowncount();
 }
 
-void UpdateDebugDispatcherFlag()
+void CPU::UpdateDebugDispatcherFlag()
 {
   const bool has_any_breakpoints = !s_breakpoints.empty();
 
@@ -2011,7 +2060,7 @@ void UpdateDebugDispatcherFlag()
     ExitExecution();
 }
 
-void ExitExecution()
+void CPU::ExitExecution()
 {
   // can't exit while running events without messing things up
   if (TimingEvents::IsRunningEvents())
@@ -2020,12 +2069,12 @@ void ExitExecution()
     fastjmp_jmp(&s_jmp_buf, 1);
 }
 
-bool HasAnyBreakpoints()
+bool CPU::HasAnyBreakpoints()
 {
   return !s_breakpoints.empty();
 }
 
-bool HasBreakpointAtAddress(VirtualMemoryAddress address)
+bool CPU::HasBreakpointAtAddress(VirtualMemoryAddress address)
 {
   for (const Breakpoint& bp : s_breakpoints)
   {
@@ -2036,7 +2085,7 @@ bool HasBreakpointAtAddress(VirtualMemoryAddress address)
   return false;
 }
 
-BreakpointList GetBreakpointList(bool include_auto_clear, bool include_callbacks)
+CPU::BreakpointList CPU::GetBreakpointList(bool include_auto_clear, bool include_callbacks)
 {
   BreakpointList bps;
   bps.reserve(s_breakpoints.size());
@@ -2054,7 +2103,7 @@ BreakpointList GetBreakpointList(bool include_auto_clear, bool include_callbacks
   return bps;
 }
 
-bool AddBreakpoint(VirtualMemoryAddress address, bool auto_clear, bool enabled)
+bool CPU::AddBreakpoint(VirtualMemoryAddress address, bool auto_clear, bool enabled)
 {
   if (HasBreakpointAtAddress(address))
     return false;
@@ -2067,14 +2116,13 @@ bool AddBreakpoint(VirtualMemoryAddress address, bool auto_clear, bool enabled)
 
   if (!auto_clear)
   {
-    Host::ReportFormattedDebuggerMessage(TRANSLATE("DebuggerMessage", "Added breakpoint at 0x%08X."),
-                                         address);
+    Host::ReportFormattedDebuggerMessage(TRANSLATE("DebuggerMessage", "Added breakpoint at 0x%08X."), address);
   }
 
   return true;
 }
 
-bool AddBreakpointWithCallback(VirtualMemoryAddress address, BreakpointCallback callback)
+bool CPU::AddBreakpointWithCallback(VirtualMemoryAddress address, BreakpointCallback callback)
 {
   if (HasBreakpointAtAddress(address))
     return false;
@@ -2087,15 +2135,14 @@ bool AddBreakpointWithCallback(VirtualMemoryAddress address, BreakpointCallback 
   return true;
 }
 
-bool RemoveBreakpoint(VirtualMemoryAddress address)
+bool CPU::RemoveBreakpoint(VirtualMemoryAddress address)
 {
   auto it = std::find_if(s_breakpoints.begin(), s_breakpoints.end(),
                          [address](const Breakpoint& bp) { return bp.address == address; });
   if (it == s_breakpoints.end())
     return false;
 
-  Host::ReportFormattedDebuggerMessage(TRANSLATE("DebuggerMessage", "Removed breakpoint at 0x%08X."),
-                                       address);
+  Host::ReportFormattedDebuggerMessage(TRANSLATE("DebuggerMessage", "Removed breakpoint at 0x%08X."), address);
 
   s_breakpoints.erase(it);
   UpdateDebugDispatcherFlag();
@@ -2106,7 +2153,7 @@ bool RemoveBreakpoint(VirtualMemoryAddress address)
   return true;
 }
 
-void ClearBreakpoints()
+void CPU::ClearBreakpoints()
 {
   s_breakpoints.clear();
   s_breakpoint_counter = 0;
@@ -2114,7 +2161,7 @@ void ClearBreakpoints()
   UpdateDebugDispatcherFlag();
 }
 
-bool AddStepOverBreakpoint()
+bool CPU::AddStepOverBreakpoint()
 {
   u32 bp_pc = g_state.pc;
 
@@ -2126,8 +2173,7 @@ bool AddStepOverBreakpoint()
 
   if (!IsCallInstruction(inst))
   {
-    Host::ReportFormattedDebuggerMessage(TRANSLATE("DebuggerMessage", "0x%08X is not a call instruction."),
-                                         g_state.pc);
+    Host::ReportFormattedDebuggerMessage(TRANSLATE("DebuggerMessage", "0x%08X is not a call instruction."), g_state.pc);
     return false;
   }
 
@@ -2136,8 +2182,8 @@ bool AddStepOverBreakpoint()
 
   if (IsBranchInstruction(inst))
   {
-    Host::ReportFormattedDebuggerMessage(
-      TRANSLATE("DebuggerMessage", "Can't step over double branch at 0x%08X"), g_state.pc);
+    Host::ReportFormattedDebuggerMessage(TRANSLATE("DebuggerMessage", "Can't step over double branch at 0x%08X"),
+                                         g_state.pc);
     return false;
   }
 
@@ -2149,7 +2195,7 @@ bool AddStepOverBreakpoint()
   return AddBreakpoint(bp_pc, true);
 }
 
-bool AddStepOutBreakpoint(u32 max_instructions_to_search)
+bool CPU::AddStepOutBreakpoint(u32 max_instructions_to_search)
 {
   // find the branch-to-ra instruction.
   u32 ret_pc = g_state.pc;
@@ -2161,8 +2207,7 @@ bool AddStepOutBreakpoint(u32 max_instructions_to_search)
     if (!SafeReadInstruction(ret_pc, &inst.bits))
     {
       Host::ReportFormattedDebuggerMessage(
-        TRANSLATE("DebuggerMessage", "Instruction read failed at %08X while searching for function end."),
-        ret_pc);
+        TRANSLATE("DebuggerMessage", "Instruction read failed at %08X while searching for function end."), ret_pc);
       return false;
     }
 
@@ -2181,7 +2226,7 @@ bool AddStepOutBreakpoint(u32 max_instructions_to_search)
   return false;
 }
 
-ALWAYS_INLINE_RELEASE static bool BreakpointCheck()
+bool CPU::BreakpointCheck()
 {
   const u32 pc = g_state.pc;
 
@@ -2256,7 +2301,7 @@ ALWAYS_INLINE_RELEASE static bool BreakpointCheck()
 }
 
 template<PGXPMode pgxp_mode, bool debug>
-[[noreturn]] static void ExecuteImpl()
+[[noreturn]] void CPU::ExecuteImpl()
 {
   for (;;)
   {
@@ -2337,7 +2382,7 @@ template<PGXPMode pgxp_mode, bool debug>
   }
 }
 
-static void ExecuteDebug()
+void CPU::ExecuteDebug()
 {
   if (g_settings.gpu_pgxp_enable)
   {
@@ -2352,7 +2397,7 @@ static void ExecuteDebug()
   }
 }
 
-void Execute()
+void CPU::Execute()
 {
   const CPUExecutionMode exec_mode = g_settings.cpu_execution_mode;
   const bool use_debug_dispatcher = g_state.use_debug_dispatcher;
@@ -2375,6 +2420,7 @@ void Execute()
   {
     case CPUExecutionMode::Recompiler:
     case CPUExecutionMode::CachedInterpreter:
+    case CPUExecutionMode::NewRec:
       CodeCache::Execute();
       break;
 
@@ -2397,7 +2443,7 @@ void Execute()
   }
 }
 
-void SingleStep()
+void CPU::SingleStep()
 {
   s_single_step = true;
   s_single_step_done = false;
@@ -2406,23 +2452,25 @@ void SingleStep()
   Host::ReportFormattedDebuggerMessage("Stepped to 0x%08X.", g_state.pc);
 }
 
-namespace CodeCache {
-
 template<PGXPMode pgxp_mode>
-void InterpretCachedBlock(const CodeBlock& block)
+void CPU::CodeCache::InterpretCachedBlock(const Block* block)
 {
   // set up the state so we've already fetched the instruction
-  DebugAssert(g_state.pc == block.GetPC());
-  g_state.npc = block.GetPC() + 4;
+  DebugAssert(g_state.pc == block->pc);
+  g_state.npc = block->pc + 4;
 
-  for (const CodeBlockInstruction& cbi : block.instructions)
+  const Instruction* instruction = block->Instructions();
+  const Instruction* end_instruction = instruction + block->size;
+  const CodeCache::InstructionInfo* info = block->InstructionsInfo();
+
+  do
   {
     g_state.pending_ticks++;
 
     // now executing the instruction we previously fetched
-    g_state.current_instruction.bits = cbi.instruction.bits;
-    g_state.current_instruction_pc = cbi.pc;
-    g_state.current_instruction_in_branch_delay_slot = cbi.is_branch_delay_slot;
+    g_state.current_instruction.bits = instruction->bits;
+    g_state.current_instruction_pc = info->pc;
+    g_state.current_instruction_in_branch_delay_slot = info->is_branch_delay_slot; // TODO: let int set it instead
     g_state.current_instruction_was_branch_taken = g_state.branch_was_taken;
     g_state.branch_was_taken = false;
     g_state.exception_raised = false;
@@ -2439,18 +2487,21 @@ void InterpretCachedBlock(const CodeBlock& block)
 
     if (g_state.exception_raised)
       break;
-  }
+
+    instruction++;
+    info++;
+  } while (instruction != end_instruction);
 
   // cleanup so the interpreter can kick in if needed
   g_state.next_instruction_is_branch_delay_slot = false;
 }
 
-template void InterpretCachedBlock<PGXPMode::Disabled>(const CodeBlock& block);
-template void InterpretCachedBlock<PGXPMode::Memory>(const CodeBlock& block);
-template void InterpretCachedBlock<PGXPMode::CPU>(const CodeBlock& block);
+template void CPU::CodeCache::InterpretCachedBlock<PGXPMode::Disabled>(const Block* block);
+template void CPU::CodeCache::InterpretCachedBlock<PGXPMode::Memory>(const Block* block);
+template void CPU::CodeCache::InterpretCachedBlock<PGXPMode::CPU>(const Block* block);
 
 template<PGXPMode pgxp_mode>
-void InterpretUncachedBlock()
+void CPU::CodeCache::InterpretUncachedBlock()
 {
   g_state.npc = g_state.pc;
   if (!FetchInstructionForInterpreterFallback())
@@ -2500,26 +2551,973 @@ void InterpretUncachedBlock()
   }
 }
 
-template void InterpretUncachedBlock<PGXPMode::Disabled>();
-template void InterpretUncachedBlock<PGXPMode::Memory>();
-template void InterpretUncachedBlock<PGXPMode::CPU>();
+template void CPU::CodeCache::InterpretUncachedBlock<PGXPMode::Disabled>();
+template void CPU::CodeCache::InterpretUncachedBlock<PGXPMode::Memory>();
+template void CPU::CodeCache::InterpretUncachedBlock<PGXPMode::CPU>();
 
-} // namespace CodeCache
-
-namespace Recompiler::Thunks {
-
-bool InterpretInstruction()
+bool CPU::Recompiler::Thunks::InterpretInstruction()
 {
   ExecuteInstruction<PGXPMode::Disabled, false>();
   return g_state.exception_raised;
 }
 
-bool InterpretInstructionPGXP()
+bool CPU::Recompiler::Thunks::InterpretInstructionPGXP()
 {
   ExecuteInstruction<PGXPMode::Memory, false>();
   return g_state.exception_raised;
 }
 
-} // namespace Recompiler::Thunks
+ALWAYS_INLINE_RELEASE Bus::MemoryReadHandler CPU::GetMemoryReadHandler(VirtualMemoryAddress address,
+                                                                       MemoryAccessSize size)
+{
+  Bus::MemoryReadHandler* base =
+    Bus::OffsetHandlerArray<Bus::MemoryReadHandler>(g_state.memory_handlers, size, MemoryAccessType::Read);
+  return base[address >> Bus::MEMORY_LUT_PAGE_SHIFT];
+}
 
+ALWAYS_INLINE_RELEASE Bus::MemoryWriteHandler CPU::GetMemoryWriteHandler(VirtualMemoryAddress address,
+                                                                         MemoryAccessSize size)
+{
+  Bus::MemoryWriteHandler* base =
+    Bus::OffsetHandlerArray<Bus::MemoryWriteHandler>(g_state.memory_handlers, size, MemoryAccessType::Write);
+  return base[address >> Bus::MEMORY_LUT_PAGE_SHIFT];
+}
+
+void CPU::UpdateMemoryPointers()
+{
+  g_state.memory_handlers = Bus::GetMemoryHandlers(g_state.cop0_regs.sr.Isc, g_state.cop0_regs.sr.Swc);
+  g_state.fastmem_base = Bus::GetFastmemBase(g_state.cop0_regs.sr.Isc);
+}
+
+void CPU::ExecutionModeChanged()
+{
+  g_state.bus_error = false;
+}
+
+template<bool add_ticks, bool icache_read, u32 word_count, bool raise_exceptions>
+ALWAYS_INLINE_RELEASE bool CPU::DoInstructionRead(PhysicalMemoryAddress address, void* data)
+{
+  using namespace Bus;
+
+  address &= PHYSICAL_MEMORY_ADDRESS_MASK;
+
+#ifdef CPU_PROFILER
+  g_profiler_summary.InstructionFetch++;
+  GetProfilerCounts(address).InstructionFetch++;
+  
+  if constexpr (!icache_read) {
+    g_profiler_summary.InstrFetchMiss++;
+    GetProfilerCounts(g_state.npc).InstrFetchMiss++;
+  }
+#endif
+
+  if (address < RAM_MIRROR_END)
+  {
+    std::memcpy(data, &g_ram[address & g_ram_mask], sizeof(u32) * word_count);
+    if constexpr (add_ticks)
+      g_state.pending_ticks += (icache_read ? 1 : RAM_READ_TICKS) * word_count;
+
+    return true;
+  }
+  else if (address >= BIOS_BASE && address < (BIOS_BASE + BIOS_SIZE))
+  {
+    std::memcpy(data, &g_bios[(address - BIOS_BASE) & BIOS_MASK], sizeof(u32) * word_count);
+    if constexpr (add_ticks)
+      g_state.pending_ticks += g_bios_access_time[static_cast<u32>(MemoryAccessSize::Word)] * word_count;
+
+    return true;
+  }
+  else
+  {
+    if (raise_exceptions)
+      CPU::RaiseException(address, Cop0Registers::CAUSE::MakeValueForException(Exception::IBE, false, false, 0));
+
+    std::memset(data, 0, sizeof(u32) * word_count);
+    return false;
+  }
+}
+
+TickCount CPU::GetInstructionReadTicks(VirtualMemoryAddress address)
+{
+  using namespace Bus;
+
+  address &= PHYSICAL_MEMORY_ADDRESS_MASK;
+
+  if (address < RAM_MIRROR_END)
+  {
+    return RAM_READ_TICKS;
+  }
+  else if (address >= BIOS_BASE && address < (BIOS_BASE + BIOS_SIZE))
+  {
+    return g_bios_access_time[static_cast<u32>(MemoryAccessSize::Word)];
+  }
+  else
+  {
+    return 0;
+  }
+}
+
+TickCount CPU::GetICacheFillTicks(VirtualMemoryAddress address)
+{
+  using namespace Bus;
+
+  address &= PHYSICAL_MEMORY_ADDRESS_MASK;
+
+  if (address < RAM_MIRROR_END)
+  {
+    return 1 * ((ICACHE_LINE_SIZE - (address & (ICACHE_LINE_SIZE - 1))) / sizeof(u32));
+  }
+  else if (address >= BIOS_BASE && address < (BIOS_BASE + BIOS_SIZE))
+  {
+    return g_bios_access_time[static_cast<u32>(MemoryAccessSize::Word)] *
+           ((ICACHE_LINE_SIZE - (address & (ICACHE_LINE_SIZE - 1))) / sizeof(u32));
+  }
+  else
+  {
+    return 0;
+  }
+}
+
+void CPU::CheckAndUpdateICacheTags(u32 line_count, TickCount uncached_ticks)
+{
+  VirtualMemoryAddress current_pc = g_state.pc & ICACHE_TAG_ADDRESS_MASK;
+  if (IsCachedAddress(current_pc))
+  {
+    TickCount ticks = 0;
+    TickCount cached_ticks_per_line = GetICacheFillTicks(current_pc);
+    for (u32 i = 0; i < line_count; i++, current_pc += ICACHE_LINE_SIZE)
+    {
+      const u32 line = GetICacheLine(current_pc);
+      if (g_state.icache_tags[line] != current_pc)
+      {
+        g_state.icache_tags[line] = current_pc;
+        ticks += cached_ticks_per_line;
+      }
+    }
+
+    g_state.pending_ticks += ticks;
+  }
+  else
+  {
+    g_state.pending_ticks += uncached_ticks;
+  }
+}
+
+u32 CPU::FillICache(VirtualMemoryAddress address)
+{
+  const u32 line = GetICacheLine(address);
+  u8* line_data = &g_state.icache_data[line * ICACHE_LINE_SIZE];
+  u32 line_tag;
+  switch ((address >> 2) & 0x03u)
+  {
+    case 0:
+      DoInstructionRead<true, true, 4, false>(address & ~(ICACHE_LINE_SIZE - 1u), line_data);
+      line_tag = GetICacheTagForAddress(address);
+      break;
+    case 1:
+      DoInstructionRead<true, true, 3, false>(address & (~(ICACHE_LINE_SIZE - 1u) | 0x4), line_data + 0x4);
+      line_tag = GetICacheTagForAddress(address) | 0x1;
+      break;
+    case 2:
+      DoInstructionRead<true, true, 2, false>(address & (~(ICACHE_LINE_SIZE - 1u) | 0x8), line_data + 0x8);
+      line_tag = GetICacheTagForAddress(address) | 0x3;
+      break;
+    case 3:
+    default:
+      DoInstructionRead<true, true, 1, false>(address & (~(ICACHE_LINE_SIZE - 1u) | 0xC), line_data + 0xC);
+      line_tag = GetICacheTagForAddress(address) | 0x7;
+      break;
+  }
+  g_state.icache_tags[line] = line_tag;
+
+  const u32 offset = GetICacheLineOffset(address);
+  u32 result;
+  std::memcpy(&result, &line_data[offset], sizeof(result));
+  return result;
+}
+
+void CPU::ClearICache()
+{
+  std::memset(g_state.icache_data.data(), 0, ICACHE_SIZE);
+  g_state.icache_tags.fill(ICACHE_INVALID_BITS);
+}
+
+namespace CPU {
+ALWAYS_INLINE_RELEASE static u32 ReadICache(VirtualMemoryAddress address)
+{
+  const u32 line = GetICacheLine(address);
+  const u8* line_data = &g_state.icache_data[line * ICACHE_LINE_SIZE];
+  const u32 offset = GetICacheLineOffset(address);
+  u32 result;
+  std::memcpy(&result, &line_data[offset], sizeof(result));
+  return result;
+}
 } // namespace CPU
+
+ALWAYS_INLINE_RELEASE bool CPU::FetchInstruction()
+{
+  DebugAssert(Common::IsAlignedPow2(g_state.npc, 4));
+
+  const PhysicalMemoryAddress address = g_state.npc;
+  switch (address >> 29)
+  {
+    case 0x00: // KUSEG 0M-512M
+    case 0x04: // KSEG0 - physical memory cached
+    {
+#if 0
+      DoInstructionRead<true, false, 1, false>(address, &g_state.next_instruction.bits);
+#else
+      if (CompareICacheTag(address))
+        g_state.next_instruction.bits = ReadICache(address);
+      else
+        g_state.next_instruction.bits = FillICache(address);
+#endif
+    }
+    break;
+
+    case 0x05: // KSEG1 - physical memory uncached
+    {
+      if (!DoInstructionRead<true, false, 1, true>(address, &g_state.next_instruction.bits))
+        return false;
+    }
+    break;
+
+    case 0x01: // KUSEG 512M-1024M
+    case 0x02: // KUSEG 1024M-1536M
+    case 0x03: // KUSEG 1536M-2048M
+    case 0x06: // KSEG2
+    case 0x07: // KSEG2
+    default:
+    {
+      CPU::RaiseException(Cop0Registers::CAUSE::MakeValueForException(Exception::IBE,
+                                                                      g_state.current_instruction_in_branch_delay_slot,
+                                                                      g_state.current_instruction_was_branch_taken, 0),
+                          address);
+      return false;
+    }
+  }
+
+  g_state.pc = g_state.npc;
+  g_state.npc += sizeof(g_state.next_instruction.bits);
+  return true;
+}
+
+bool CPU::FetchInstructionForInterpreterFallback()
+{
+  DebugAssert(Common::IsAlignedPow2(g_state.npc, 4));
+
+  const PhysicalMemoryAddress address = g_state.npc;
+  switch (address >> 29)
+  {
+    case 0x00: // KUSEG 0M-512M
+    case 0x04: // KSEG0 - physical memory cached
+    case 0x05: // KSEG1 - physical memory uncached
+    {
+      // We don't use the icache when doing interpreter fallbacks, because it's probably stale.
+      if (!DoInstructionRead<false, false, 1, true>(address, &g_state.next_instruction.bits))
+        return false;
+    }
+    break;
+
+    case 0x01: // KUSEG 512M-1024M
+    case 0x02: // KUSEG 1024M-1536M
+    case 0x03: // KUSEG 1536M-2048M
+    case 0x06: // KSEG2
+    case 0x07: // KSEG2
+    default:
+    {
+      CPU::RaiseException(Cop0Registers::CAUSE::MakeValueForException(Exception::IBE,
+                                                                      g_state.current_instruction_in_branch_delay_slot,
+                                                                      g_state.current_instruction_was_branch_taken, 0),
+                          address);
+      return false;
+    }
+  }
+
+  g_state.pc = g_state.npc;
+  g_state.npc += sizeof(g_state.next_instruction.bits);
+  return true;
+}
+
+bool CPU::SafeReadInstruction(VirtualMemoryAddress addr, u32* value)
+{
+  switch (addr >> 29)
+  {
+    case 0x00: // KUSEG 0M-512M
+    case 0x04: // KSEG0 - physical memory cached
+    case 0x05: // KSEG1 - physical memory uncached
+    {
+      // TODO: Check icache.
+      return DoInstructionRead<false, false, 1, false>(addr, value);
+    }
+
+    case 0x01: // KUSEG 512M-1024M
+    case 0x02: // KUSEG 1024M-1536M
+    case 0x03: // KUSEG 1536M-2048M
+    case 0x06: // KSEG2
+    case 0x07: // KSEG2
+    default:
+    {
+      return false;
+    }
+  }
+}
+
+template<MemoryAccessType type, MemoryAccessSize size>
+ALWAYS_INLINE bool CPU::DoSafeMemoryAccess(VirtualMemoryAddress address, u32& value)
+{
+  using namespace Bus;
+
+  switch (address >> 29)
+  {
+    case 0x00: // KUSEG 0M-512M
+    case 0x04: // KSEG0 - physical memory cached
+    {
+      address &= PHYSICAL_MEMORY_ADDRESS_MASK;
+      if ((address & DCACHE_LOCATION_MASK) == DCACHE_LOCATION)
+      {
+        const u32 offset = address & DCACHE_OFFSET_MASK;
+
+        if constexpr (type == MemoryAccessType::Read)
+        {
+          if constexpr (size == MemoryAccessSize::Byte)
+          {
+            value = CPU::g_state.dcache[offset];
+          }
+          else if constexpr (size == MemoryAccessSize::HalfWord)
+          {
+            u16 temp;
+            std::memcpy(&temp, &CPU::g_state.dcache[offset], sizeof(u16));
+            value = ZeroExtend32(temp);
+          }
+          else if constexpr (size == MemoryAccessSize::Word)
+          {
+            std::memcpy(&value, &CPU::g_state.dcache[offset], sizeof(u32));
+          }
+        }
+        else
+        {
+          if constexpr (size == MemoryAccessSize::Byte)
+          {
+            CPU::g_state.dcache[offset] = Truncate8(value);
+          }
+          else if constexpr (size == MemoryAccessSize::HalfWord)
+          {
+            std::memcpy(&CPU::g_state.dcache[offset], &value, sizeof(u16));
+          }
+          else if constexpr (size == MemoryAccessSize::Word)
+          {
+            std::memcpy(&CPU::g_state.dcache[offset], &value, sizeof(u32));
+          }
+        }
+
+        return true;
+      }
+    }
+    break;
+
+    case 0x01: // KUSEG 512M-1024M
+    case 0x02: // KUSEG 1024M-1536M
+    case 0x03: // KUSEG 1536M-2048M
+    case 0x06: // KSEG2
+    case 0x07: // KSEG2
+    {
+      // Above 512mb raises an exception.
+      return false;
+    }
+
+    case 0x05: // KSEG1 - physical memory uncached
+    {
+      address &= PHYSICAL_MEMORY_ADDRESS_MASK;
+    }
+    break;
+  }
+
+  if (address < RAM_MIRROR_END)
+  {
+    const u32 offset = address & g_ram_mask;
+    if constexpr (type == MemoryAccessType::Read)
+    {
+      if constexpr (size == MemoryAccessSize::Byte)
+      {
+        value = g_unprotected_ram[offset];
+      }
+      else if constexpr (size == MemoryAccessSize::HalfWord)
+      {
+        u16 temp;
+        std::memcpy(&temp, &g_unprotected_ram[offset], sizeof(temp));
+        value = ZeroExtend32(temp);
+      }
+      else if constexpr (size == MemoryAccessSize::Word)
+      {
+        std::memcpy(&value, &g_unprotected_ram[offset], sizeof(u32));
+      }
+    }
+    else
+    {
+      const u32 page_index = offset / HOST_PAGE_SIZE;
+
+      if constexpr (size == MemoryAccessSize::Byte)
+      {
+        if (g_unprotected_ram[offset] != Truncate8(value))
+        {
+          g_unprotected_ram[offset] = Truncate8(value);
+          if (g_ram_code_bits[page_index])
+            CPU::CodeCache::InvalidateBlocksWithPageIndex(page_index);
+        }
+      }
+      else if constexpr (size == MemoryAccessSize::HalfWord)
+      {
+        const u16 new_value = Truncate16(value);
+        u16 old_value;
+        std::memcpy(&old_value, &g_unprotected_ram[offset], sizeof(old_value));
+        if (old_value != new_value)
+        {
+          std::memcpy(&g_unprotected_ram[offset], &new_value, sizeof(u16));
+          if (g_ram_code_bits[page_index])
+            CPU::CodeCache::InvalidateBlocksWithPageIndex(page_index);
+        }
+      }
+      else if constexpr (size == MemoryAccessSize::Word)
+      {
+        u32 old_value;
+        std::memcpy(&old_value, &g_unprotected_ram[offset], sizeof(u32));
+        if (old_value != value)
+        {
+          std::memcpy(&g_unprotected_ram[offset], &value, sizeof(u32));
+          if (g_ram_code_bits[page_index])
+            CPU::CodeCache::InvalidateBlocksWithPageIndex(page_index);
+        }
+      }
+    }
+
+    return true;
+  }
+  if constexpr (type == MemoryAccessType::Read)
+  {
+    if (address >= BIOS_BASE && address < (BIOS_BASE + BIOS_SIZE))
+    {
+      const u32 offset = (address & BIOS_MASK);
+      if constexpr (size == MemoryAccessSize::Byte)
+      {
+        value = ZeroExtend32(g_bios[offset]);
+      }
+      else if constexpr (size == MemoryAccessSize::HalfWord)
+      {
+        u16 halfword;
+        std::memcpy(&halfword, &g_bios[offset], sizeof(u16));
+        value = ZeroExtend32(halfword);
+      }
+      else
+      {
+        std::memcpy(&value, &g_bios[offset], sizeof(u32));
+      }
+
+      return true;
+    }
+  }
+  return false;
+}
+
+bool CPU::SafeReadMemoryByte(VirtualMemoryAddress addr, u8* value)
+{
+  u32 temp = 0;
+  if (!DoSafeMemoryAccess<MemoryAccessType::Read, MemoryAccessSize::Byte>(addr, temp))
+    return false;
+
+  *value = Truncate8(temp);
+  return true;
+}
+
+bool CPU::SafeReadMemoryHalfWord(VirtualMemoryAddress addr, u16* value)
+{
+  if ((addr & 1) == 0)
+  {
+    u32 temp = 0;
+    if (!DoSafeMemoryAccess<MemoryAccessType::Read, MemoryAccessSize::HalfWord>(addr, temp))
+      return false;
+
+    *value = Truncate16(temp);
+    return true;
+  }
+
+  u8 low, high;
+  if (!SafeReadMemoryByte(addr, &low) || !SafeReadMemoryByte(addr + 1, &high))
+    return false;
+
+  *value = (ZeroExtend16(high) << 8) | ZeroExtend16(low);
+  return true;
+}
+
+bool CPU::SafeReadMemoryWord(VirtualMemoryAddress addr, u32* value)
+{
+  if ((addr & 3) == 0)
+    return DoSafeMemoryAccess<MemoryAccessType::Read, MemoryAccessSize::Word>(addr, *value);
+
+  u16 low, high;
+  if (!SafeReadMemoryHalfWord(addr, &low) || !SafeReadMemoryHalfWord(addr + 2, &high))
+    return false;
+
+  *value = (ZeroExtend32(high) << 16) | ZeroExtend32(low);
+  return true;
+}
+
+bool CPU::SafeReadMemoryCString(VirtualMemoryAddress addr, std::string* value, u32 max_length /*= 1024*/)
+{
+  value->clear();
+
+  u8 ch;
+  while (SafeReadMemoryByte(addr, &ch))
+  {
+    if (ch == 0)
+      return true;
+
+    value->push_back(ch);
+    if (value->size() >= max_length)
+      return true;
+
+    addr++;
+  }
+
+  value->clear();
+  return false;
+}
+
+bool CPU::SafeWriteMemoryByte(VirtualMemoryAddress addr, u8 value)
+{
+  u32 temp = ZeroExtend32(value);
+  return DoSafeMemoryAccess<MemoryAccessType::Write, MemoryAccessSize::Byte>(addr, temp);
+}
+
+bool CPU::SafeWriteMemoryHalfWord(VirtualMemoryAddress addr, u16 value)
+{
+  if ((addr & 1) == 0)
+  {
+    u32 temp = ZeroExtend32(value);
+    return DoSafeMemoryAccess<MemoryAccessType::Write, MemoryAccessSize::HalfWord>(addr, temp);
+  }
+
+  return SafeWriteMemoryByte(addr, Truncate8(value)) && SafeWriteMemoryByte(addr + 1, Truncate8(value >> 8));
+}
+
+bool CPU::SafeWriteMemoryWord(VirtualMemoryAddress addr, u32 value)
+{
+  if ((addr & 3) == 0)
+    return DoSafeMemoryAccess<MemoryAccessType::Write, MemoryAccessSize::Word>(addr, value);
+
+  return SafeWriteMemoryHalfWord(addr, Truncate16(value)) &&
+         SafeWriteMemoryHalfWord(addr + 2, Truncate16(value >> 16));
+}
+
+void* CPU::GetDirectReadMemoryPointer(VirtualMemoryAddress address, MemoryAccessSize size, TickCount* read_ticks)
+{
+  using namespace Bus;
+
+  const u32 seg = (address >> 29);
+  if (seg != 0 && seg != 4 && seg != 5)
+    return nullptr;
+
+  const PhysicalMemoryAddress paddr = address & PHYSICAL_MEMORY_ADDRESS_MASK;
+  if (paddr < RAM_MIRROR_END)
+  {
+    if (read_ticks)
+      *read_ticks = RAM_READ_TICKS;
+
+    return &g_ram[paddr & g_ram_mask];
+  }
+
+  if ((paddr & DCACHE_LOCATION_MASK) == DCACHE_LOCATION)
+  {
+    if (read_ticks)
+      *read_ticks = 0;
+
+    return &g_state.dcache[paddr & DCACHE_OFFSET_MASK];
+  }
+
+  if (paddr >= BIOS_BASE && paddr < (BIOS_BASE + BIOS_SIZE))
+  {
+    if (read_ticks)
+      *read_ticks = g_bios_access_time[static_cast<u32>(size)];
+
+    return &g_bios[paddr & BIOS_MASK];
+  }
+
+  return nullptr;
+}
+
+void* CPU::GetDirectWriteMemoryPointer(VirtualMemoryAddress address, MemoryAccessSize size)
+{
+  using namespace Bus;
+
+  const u32 seg = (address >> 29);
+  if (seg != 0 && seg != 4 && seg != 5)
+    return nullptr;
+
+  const PhysicalMemoryAddress paddr = address & PHYSICAL_MEMORY_ADDRESS_MASK;
+
+  if (paddr < RAM_MIRROR_END)
+    return &g_ram[paddr & g_ram_mask];
+
+  if ((paddr & DCACHE_LOCATION_MASK) == DCACHE_LOCATION)
+    return &g_state.dcache[paddr & DCACHE_OFFSET_MASK];
+
+  return nullptr;
+}
+
+template<MemoryAccessType type, MemoryAccessSize size>
+ALWAYS_INLINE_RELEASE bool CPU::DoAlignmentCheck(VirtualMemoryAddress address)
+{
+  if constexpr (size == MemoryAccessSize::HalfWord)
+  {
+    if (Common::IsAlignedPow2(address, 2))
+      return true;
+  }
+  else if constexpr (size == MemoryAccessSize::Word)
+  {
+    if (Common::IsAlignedPow2(address, 4))
+      return true;
+  }
+  else
+  {
+    return true;
+  }
+
+  g_state.cop0_regs.BadVaddr = address;
+  RaiseException(type == MemoryAccessType::Read ? Exception::AdEL : Exception::AdES);
+  return false;
+}
+
+#if 0
+static void MemoryBreakpoint(MemoryAccessType type, MemoryAccessSize size, VirtualMemoryAddress addr, u32 value)
+{
+  static constexpr const char* sizes[3] = { "byte", "halfword", "word" };
+  static constexpr const char* types[2] = { "read", "write" };
+
+  const u32 cycle = TimingEvents::GetGlobalTickCounter() + CPU::g_state.pending_ticks;
+  if (cycle == 3301006373)
+    __debugbreak();
+
+#if 0
+  static std::FILE* fp = nullptr;
+  if (!fp)
+    fp = std::fopen("D:\\memory.txt", "wb");
+  if (fp)
+  {
+    std::fprintf(fp, "%u %s %s %08X %08X\n", cycle, types[static_cast<u32>(type)], sizes[static_cast<u32>(size)], addr, value);
+    std::fflush(fp);
+  }
+#endif
+
+#if 0
+  if (type == MemoryAccessType::Read && addr == 0x1F000084)
+    __debugbreak();
+#endif
+#if 0
+  if (type == MemoryAccessType::Write && addr == 0x000000B0 /*&& value == 0x3C080000*/)
+    __debugbreak();
+#endif
+
+#if 0 // TODO: MEMBP
+  if (type == MemoryAccessType::Write && address == 0x80113028)
+  {
+    if ((TimingEvents::GetGlobalTickCounter() + CPU::g_state.pending_ticks) == 5051485)
+      __debugbreak();
+
+    Log_WarningPrintf("VAL %08X @ %u", value, (TimingEvents::GetGlobalTickCounter() + CPU::g_state.pending_ticks));
+  }
+#endif
+}
+#define MEMORY_BREAKPOINT(type, size, addr, value) MemoryBreakpoint((type), (size), (addr), (value))
+#else
+#define MEMORY_BREAKPOINT(type, size, addr, value)
+#endif
+
+bool CPU::ReadMemoryByte(VirtualMemoryAddress addr, u8* value)
+{
+  *value = Truncate8(GetMemoryReadHandler(addr, MemoryAccessSize::Byte)(addr));
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    RaiseException(Exception::DBE);
+    return false;
+  }
+
+  #ifdef CPU_PROFILER
+    g_profiler_summary.DataReadAccess++;
+    GetProfilerCounts(g_state.current_instruction_pc).DataReadAccess++;
+    if (addr&0x7FFFFC00 != 0x1F800000)
+    {
+      g_profiler_summary.DataReadMiss++;
+      GetProfilerCounts(g_state.current_instruction_pc).DataReadMiss++;
+    }
+  #endif
+
+  MEMORY_BREAKPOINT(MemoryAccessType::Read, MemoryAccessSize::Byte, addr, *value);
+  return true;
+}
+
+bool CPU::ReadMemoryHalfWord(VirtualMemoryAddress addr, u16* value)
+{
+  if (!DoAlignmentCheck<MemoryAccessType::Read, MemoryAccessSize::HalfWord>(addr))
+    return false;
+
+  *value = Truncate16(GetMemoryReadHandler(addr, MemoryAccessSize::HalfWord)(addr));
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    RaiseException(Exception::DBE);
+    return false;
+  }
+
+  #ifdef CPU_PROFILER
+    g_profiler_summary.DataReadAccess++;
+    GetProfilerCounts(g_state.current_instruction_pc).DataReadAccess++;
+    if (addr&0x7FFFFC00 != 0x1F800000)
+    {
+      g_profiler_summary.DataReadMiss++;
+      GetProfilerCounts(g_state.current_instruction_pc).DataReadMiss++;
+    }
+  #endif
+
+  MEMORY_BREAKPOINT(MemoryAccessType::Read, MemoryAccessSize::HalfWord, addr, *value);
+  return true;
+}
+
+bool CPU::ReadMemoryWord(VirtualMemoryAddress addr, u32* value)
+{
+  if (!DoAlignmentCheck<MemoryAccessType::Read, MemoryAccessSize::Word>(addr))
+    return false;
+
+  *value = GetMemoryReadHandler(addr, MemoryAccessSize::Word)(addr);
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    RaiseException(Exception::DBE);
+    return false;
+  }
+
+  #ifdef CPU_PROFILER
+    g_profiler_summary.DataReadAccess++;
+    GetProfilerCounts(g_state.current_instruction_pc).DataReadAccess++;
+    if (addr&0x7FFFFC00 != 0x1F800000)
+    {
+      g_profiler_summary.DataReadMiss++;
+      GetProfilerCounts(g_state.current_instruction_pc).DataReadMiss++;
+    }
+  #endif
+
+  MEMORY_BREAKPOINT(MemoryAccessType::Read, MemoryAccessSize::Word, addr, *value);
+  return true;
+}
+
+bool CPU::WriteMemoryByte(VirtualMemoryAddress addr, u32 value)
+{
+  MEMORY_BREAKPOINT(MemoryAccessType::Write, MemoryAccessSize::Byte, addr, value);
+
+  GetMemoryWriteHandler(addr, MemoryAccessSize::Byte)(addr, value);
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    RaiseException(Exception::DBE);
+    return false;
+  }
+
+  #ifdef CPU_PROFILER
+    g_profiler_summary.DataWriteAccess++;
+    GetProfilerCounts(g_state.current_instruction_pc).DataWriteAccess++;
+  #endif
+
+  return true;
+}
+
+bool CPU::WriteMemoryHalfWord(VirtualMemoryAddress addr, u32 value)
+{
+  MEMORY_BREAKPOINT(MemoryAccessType::Write, MemoryAccessSize::HalfWord, addr, value);
+
+  if (!DoAlignmentCheck<MemoryAccessType::Write, MemoryAccessSize::HalfWord>(addr))
+    return false;
+
+  GetMemoryWriteHandler(addr, MemoryAccessSize::HalfWord)(addr, value);
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    RaiseException(Exception::DBE);
+    return false;
+  }
+
+  #ifdef CPU_PROFILER
+    g_profiler_summary.DataWriteAccess++;
+    GetProfilerCounts(g_state.current_instruction_pc).DataWriteAccess++;
+  #endif
+
+  return true;
+}
+
+bool CPU::WriteMemoryWord(VirtualMemoryAddress addr, u32 value)
+{
+  MEMORY_BREAKPOINT(MemoryAccessType::Write, MemoryAccessSize::Word, addr, value);
+
+  if (!DoAlignmentCheck<MemoryAccessType::Write, MemoryAccessSize::Word>(addr))
+    return false;
+
+  GetMemoryWriteHandler(addr, MemoryAccessSize::Word)(addr, value);
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    RaiseException(Exception::DBE);
+    return false;
+  }
+
+  #ifdef CPU_PROFILER
+    g_profiler_summary.DataWriteAccess++;
+    GetProfilerCounts(g_state.current_instruction_pc).DataWriteAccess++;
+  #endif
+
+  return true;
+}
+
+u64 CPU::Recompiler::Thunks::ReadMemoryByte(u32 address)
+{
+  const u32 value = GetMemoryReadHandler(address, MemoryAccessSize::Byte)(address);
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    return static_cast<u64>(-static_cast<s64>(Exception::DBE));
+  }
+
+  MEMORY_BREAKPOINT(MemoryAccessType::Read, MemoryAccessSize::Byte, address, value);
+  return ZeroExtend64(value);
+}
+
+u64 CPU::Recompiler::Thunks::ReadMemoryHalfWord(u32 address)
+{
+  if (!Common::IsAlignedPow2(address, 2)) [[unlikely]]
+  {
+    g_state.cop0_regs.BadVaddr = address;
+    return static_cast<u64>(-static_cast<s64>(Exception::AdEL));
+  }
+
+  const u32 value = GetMemoryReadHandler(address, MemoryAccessSize::HalfWord)(address);
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    return static_cast<u64>(-static_cast<s64>(Exception::DBE));
+  }
+
+  MEMORY_BREAKPOINT(MemoryAccessType::Read, MemoryAccessSize::HalfWord, address, value);
+  return ZeroExtend64(value);
+}
+
+u64 CPU::Recompiler::Thunks::ReadMemoryWord(u32 address)
+{
+  if (!Common::IsAlignedPow2(address, 4)) [[unlikely]]
+  {
+    g_state.cop0_regs.BadVaddr = address;
+    return static_cast<u64>(-static_cast<s64>(Exception::AdEL));
+  }
+
+  const u32 value = GetMemoryReadHandler(address, MemoryAccessSize::Word)(address);
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    return static_cast<u64>(-static_cast<s64>(Exception::DBE));
+  }
+
+  MEMORY_BREAKPOINT(MemoryAccessType::Read, MemoryAccessSize::Word, address, value);
+  return ZeroExtend64(value);
+}
+
+u32 CPU::Recompiler::Thunks::WriteMemoryByte(u32 address, u32 value)
+{
+  MEMORY_BREAKPOINT(MemoryAccessType::Write, MemoryAccessSize::Byte, address, value);
+
+  GetMemoryWriteHandler(address, MemoryAccessSize::Byte)(address, value);
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    return static_cast<u32>(Exception::DBE);
+  }
+
+  return 0;
+}
+
+u32 CPU::Recompiler::Thunks::WriteMemoryHalfWord(u32 address, u32 value)
+{
+  MEMORY_BREAKPOINT(MemoryAccessType::Write, MemoryAccessSize::HalfWord, address, value);
+
+  if (!Common::IsAlignedPow2(address, 2)) [[unlikely]]
+  {
+    g_state.cop0_regs.BadVaddr = address;
+    return static_cast<u32>(Exception::AdES);
+  }
+
+  GetMemoryWriteHandler(address, MemoryAccessSize::HalfWord)(address, value);
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    return static_cast<u32>(Exception::DBE);
+  }
+
+  return 0;
+}
+
+u32 CPU::Recompiler::Thunks::WriteMemoryWord(u32 address, u32 value)
+{
+  MEMORY_BREAKPOINT(MemoryAccessType::Write, MemoryAccessSize::Word, address, value);
+
+  if (!Common::IsAlignedPow2(address, 4)) [[unlikely]]
+  {
+    g_state.cop0_regs.BadVaddr = address;
+    return static_cast<u32>(Exception::AdES);
+  }
+
+  GetMemoryWriteHandler(address, MemoryAccessSize::Word)(address, value);
+  if (g_state.bus_error) [[unlikely]]
+  {
+    g_state.bus_error = false;
+    return static_cast<u32>(Exception::DBE);
+  }
+
+  return 0;
+}
+
+u32 CPU::Recompiler::Thunks::UncheckedReadMemoryByte(u32 address)
+{
+  const u32 value = GetMemoryReadHandler(address, MemoryAccessSize::Byte)(address);
+  MEMORY_BREAKPOINT(MemoryAccessType::Read, MemoryAccessSize::Byte, address, value);
+  return value;
+}
+
+u32 CPU::Recompiler::Thunks::UncheckedReadMemoryHalfWord(u32 address)
+{
+  const u32 value = GetMemoryReadHandler(address, MemoryAccessSize::HalfWord)(address);
+  MEMORY_BREAKPOINT(MemoryAccessType::Read, MemoryAccessSize::HalfWord, address, value);
+  return value;
+}
+
+u32 CPU::Recompiler::Thunks::UncheckedReadMemoryWord(u32 address)
+{
+  const u32 value = GetMemoryReadHandler(address, MemoryAccessSize::Word)(address);
+  MEMORY_BREAKPOINT(MemoryAccessType::Read, MemoryAccessSize::Word, address, value);
+  return value;
+}
+
+void CPU::Recompiler::Thunks::UncheckedWriteMemoryByte(u32 address, u32 value)
+{
+  MEMORY_BREAKPOINT(MemoryAccessType::Write, MemoryAccessSize::Byte, address, value);
+  GetMemoryWriteHandler(address, MemoryAccessSize::Byte)(address, value);
+}
+
+void CPU::Recompiler::Thunks::UncheckedWriteMemoryHalfWord(u32 address, u32 value)
+{
+  MEMORY_BREAKPOINT(MemoryAccessType::Write, MemoryAccessSize::HalfWord, address, value);
+  GetMemoryWriteHandler(address, MemoryAccessSize::HalfWord)(address, value);
+}
+
+void CPU::Recompiler::Thunks::UncheckedWriteMemoryWord(u32 address, u32 value)
+{
+  MEMORY_BREAKPOINT(MemoryAccessType::Write, MemoryAccessSize::Word, address, value);
+  GetMemoryWriteHandler(address, MemoryAccessSize::Word)(address, value);
+}
+
+#undef MEMORY_BREAKPOINT

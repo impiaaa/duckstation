@@ -254,8 +254,6 @@ struct Settings
   bool log_to_window = false;
   bool log_to_file = false;
 
-  ALWAYS_INLINE bool IsUsingCodeCache() const { return (cpu_execution_mode != CPUExecutionMode::Interpreter); }
-  ALWAYS_INLINE bool IsUsingRecompiler() const { return (cpu_execution_mode == CPUExecutionMode::Recompiler); }
   ALWAYS_INLINE bool IsUsingSoftwareRenderer() const { return (gpu_renderer == GPURenderer::Software); }
   ALWAYS_INLINE bool IsRunaheadEnabled() const { return (runahead_frames > 0); }
 
@@ -273,12 +271,6 @@ struct Settings
   ALWAYS_INLINE void SetPGXPDepthClearThreshold(float value)
   {
     gpu_pgxp_depth_clear_threshold = value / GPU_PGXP_DEPTH_THRESHOLD_SCALE;
-  }
-
-  ALWAYS_INLINE bool IsUsingFastmem() const
-  {
-    return (cpu_fastmem_mode != CPUFastmemMode::Disabled && cpu_execution_mode == CPUExecutionMode::Recompiler &&
-            !cpu_recompiler_memory_exceptions);
   }
 
   ALWAYS_INLINE s32 GetAudioOutputVolume(bool fast_forwarding) const
@@ -422,7 +414,7 @@ struct Settings
   static constexpr float DEFAULT_GPU_PGXP_DEPTH_THRESHOLD = 300.0f;
   static constexpr float GPU_PGXP_DEPTH_THRESHOLD_SCALE = 4096.0f;
 
-#ifdef ENABLE_RECOMPILER
+#if defined(ENABLE_RECOMPILER)
   static constexpr CPUExecutionMode DEFAULT_CPU_EXECUTION_MODE = CPUExecutionMode::Recompiler;
 
   // LUT still ends up faster on Apple Silicon for now, because of 16K pages.
@@ -431,6 +423,9 @@ struct Settings
 #else
   static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::LUT;
 #endif
+#elif defined(ENABLE_NEWREC)
+  static constexpr CPUExecutionMode DEFAULT_CPU_EXECUTION_MODE = CPUExecutionMode::NewRec;
+  static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::MMap;
 #else
   static constexpr CPUExecutionMode DEFAULT_CPU_EXECUTION_MODE = CPUExecutionMode::CachedInterpreter;
   static constexpr CPUFastmemMode DEFAULT_CPU_FASTMEM_MODE = CPUFastmemMode::Disabled;

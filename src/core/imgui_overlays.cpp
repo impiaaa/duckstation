@@ -23,6 +23,7 @@
 #include "common/align.h"
 #include "common/assert.h"
 #include "common/file_system.h"
+#include "common/intrin.h"
 #include "common/log.h"
 #include "common/string_util.h"
 #include "common/timer.h"
@@ -41,16 +42,6 @@
 #include <span>
 #include <unordered_map>
 
-#if defined(CPU_X64)
-#include <emmintrin.h>
-#elif defined(CPU_AARCH64)
-#ifdef _MSC_VER
-#include <arm64_neon.h>
-#else
-#include <arm_neon.h>
-#endif
-#endif
-
 Log_SetChannel(ImGuiManager);
 
 namespace ImGuiManager {
@@ -66,7 +57,7 @@ static void Draw();
 
 static std::tuple<float, float> GetMinMax(std::span<const float> values)
 {
-#if defined(CPU_X64)
+#if defined(CPU_ARCH_SSE)
   __m128 vmin(_mm_loadu_ps(values.data()));
   __m128 vmax(vmin);
 
@@ -76,11 +67,11 @@ static std::tuple<float, float> GetMinMax(std::span<const float> values)
   for (; i < aligned_count; i += 4)
   {
     const __m128 v(_mm_loadu_ps(&values[i]));
-    vmin = _mm_min_ps(v);
-    vmax = _mm_max_ps(v);
+    vmin = _mm_min_ps(vmin, v);
+    vmax = _mm_max_ps(vmax, v);
   }
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && !defined(__clang__)
   float min = std::min(vmin.m128_f32[0], std::min(vmin.m128_f32[1], std::min(vmin.m128_f32[2], vmin.m128_f32[3])));
   float max = std::max(vmax.m128_f32[0], std::max(vmax.m128_f32[1], std::max(vmax.m128_f32[2], vmax.m128_f32[3])));
 #else
@@ -94,7 +85,7 @@ static std::tuple<float, float> GetMinMax(std::span<const float> values)
   }
 
   return std::tie(min, max);
-#elif defined(CPU_AARCH64)
+#elif defined(CPU_ARCH_NEON)
   float32x4_t vmin(vld1q_f32(values.data()));
   float32x4_t vmax(vmin);
 
@@ -104,8 +95,8 @@ static std::tuple<float, float> GetMinMax(std::span<const float> values)
   for (; i < aligned_count; i += 4)
   {
     const float32x4_t v(vld1q_f32(&values[i]));
-    vmin = vminq_f32(v);
-    vmax = vmaxq_f32(v);
+    vmin = vminq_f32(vmin, v);
+    vmax = vmaxq_f32(vmax, v);
   }
 
   float min = vminvq_f32(vmin);
@@ -358,8 +349,9 @@ void ImGuiManager::DrawPerformanceOverlay()
                System::GetMaximumFrameTime());
       DRAW_LINE(fixed_font, text, IM_COL32(255, 255, 255, 255));
 
-      if (g_settings.cpu_overclock_active || (!g_settings.IsUsingRecompiler() || g_settings.cpu_recompiler_icache ||
-                                              g_settings.cpu_recompiler_memory_exceptions))
+      if (g_settings.cpu_overclock_active ||
+          (g_settings.cpu_execution_mode != CPUExecutionMode::Recompiler || g_settings.cpu_recompiler_icache ||
+           g_settings.cpu_recompiler_memory_exceptions))
       {
         first = true;
         text.assign("CPU[");
@@ -376,6 +368,11 @@ void ImGuiManager::DrawPerformanceOverlay()
         else if (g_settings.cpu_execution_mode == CPUExecutionMode::CachedInterpreter)
         {
           text.append_fmt("{}{}", first ? "" : "/", "CI");
+          first = false;
+        }
+        else if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
+        {
+          text.append_fmt("{}{}", first ? "" : "/", "NR");
           first = false;
         }
         else

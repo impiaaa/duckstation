@@ -21,7 +21,6 @@
     <ClInclude Include="dimensional_array.h" />
     <ClInclude Include="image.h" />
     <ClInclude Include="minizip_helpers.h" />
-    <ClInclude Include="make_array.h" />
     <ClInclude Include="thirdparty\StackWalker.h">
       <Filter>thirdparty</Filter>
     </ClInclude>
@@ -29,7 +28,6 @@
     <ClInclude Include="lru_cache.h" />
     <ClInclude Include="easing.h" />
     <ClInclude Include="error.h" />
-    <ClInclude Include="platform.h" />
     <ClInclude Include="http_downloader_winhttp.h" />
     <ClInclude Include="http_downloader.h" />
     <ClInclude Include="path.h" />
@@ -44,6 +42,8 @@
     <ClInclude Include="sha1_digest.h" />
     <ClInclude Include="fastjmp.h" />
     <ClInclude Include="memmap.h" />
+    <ClInclude Include="intrin.h" />
+    <ClInclude Include="perf_scope.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="small_string.cpp" />
@@ -70,6 +70,7 @@
     <ClCompile Include="sha1_digest.cpp" />
     <ClCompile Include="fastjmp.cpp" />
     <ClCompile Include="memmap.cpp" />
+    <ClCompile Include="perf_scope.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="bitfield.natvis" />

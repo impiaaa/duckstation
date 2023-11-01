@@ -7,7 +7,6 @@
 #include "core/system.h"
 
 #include "common/byte_stream.h"
-#include "common/make_array.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QMetaObject>
@@ -862,14 +861,14 @@ QIcon GetIconForEntryType(GameList::EntryType type)
   switch (type)
   {
     case GameList::EntryType::Disc:
-      return QIcon::fromTheme(QStringLiteral("dvd-line"));
+      return QIcon::fromTheme(QStringLiteral("disc-line"));
     case GameList::EntryType::Playlist:
       return QIcon::fromTheme(QStringLiteral("play-list-2-line"));
     case GameList::EntryType::PSF:
       return QIcon::fromTheme(QStringLiteral("file-music-line"));
     case GameList::EntryType::PSExe:
     default:
-      return QIcon::fromTheme(QStringLiteral("settings-5-line"));
+      return QIcon::fromTheme(QStringLiteral("settings-3-line"));
   }
 }
 

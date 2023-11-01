@@ -30,7 +30,6 @@
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
-#include "common/make_array.h"
 #include "common/path.h"
 #include "common/small_string.h"
 #include "common/string_util.h"
@@ -1345,6 +1344,9 @@ std::string FullscreenUI::GetEffectiveStringSetting(SettingsInterface* bsi, cons
 void FullscreenUI::DrawInputBindingButton(SettingsInterface* bsi, InputBindingInfo::Type type, const char* section,
                                           const char* name, const char* display_name, bool show_type)
 {
+  if (type == InputBindingInfo::Type::Pointer)
+    return;
+
   TinyString title;
   title.fmt("{}/{}", section, name);
 
@@ -2809,7 +2811,7 @@ void FullscreenUI::DrawInterfaceSettingsPage()
 
 void FullscreenUI::DrawBIOSSettingsPage()
 {
-  static constexpr auto config_keys = make_array("", "PathNTSCJ", "PathNTSCU", "PathPAL");
+  static constexpr const std::array config_keys = {"", "PathNTSCJ", "PathNTSCU", "PathPAL"};
 
   SettingsInterface* bsi = GetEditingSettingsInterface();
   const bool game_settings = IsEditingGameSettings(bsi);
@@ -2881,15 +2883,26 @@ void FullscreenUI::DrawBIOSSettingsPage()
 
 void FullscreenUI::DrawConsoleSettingsPage()
 {
-  static constexpr auto cdrom_read_speeds = make_array(
+  static constexpr const std::array cdrom_read_speeds = {
     FSUI_NSTR("None (Double Speed)"), FSUI_NSTR("2x (Quad Speed)"), FSUI_NSTR("3x (6x Speed)"),
-    FSUI_NSTR("4x (8x Speed)"), FSUI_NSTR("5x (10x Speed)"), FSUI_NSTR("6x (12x Speed)"), FSUI_NSTR("7x (14x Speed)"),
-    FSUI_NSTR("8x (16x Speed)"), FSUI_NSTR("9x (18x Speed)"), FSUI_NSTR("10x (20x Speed)"));
+    FSUI_NSTR("4x (8x Speed)"),       FSUI_NSTR("5x (10x Speed)"),  FSUI_NSTR("6x (12x Speed)"),
+    FSUI_NSTR("7x (14x Speed)"),      FSUI_NSTR("8x (16x Speed)"),  FSUI_NSTR("9x (18x Speed)"),
+    FSUI_NSTR("10x (20x Speed)"),
+  };
 
-  static constexpr auto cdrom_seek_speeds =
-    make_array(FSUI_NSTR("Infinite/Instantaneous"), FSUI_NSTR("None (Normal Speed)"), FSUI_NSTR("2x"), FSUI_NSTR("3x"),
-               FSUI_NSTR("4x"), FSUI_NSTR("5x"), FSUI_NSTR("6x"), FSUI_NSTR("7x"), FSUI_NSTR("8x"), FSUI_NSTR("9x"),
-               FSUI_NSTR("10x"));
+  static constexpr const std::array cdrom_seek_speeds = {
+    FSUI_NSTR("Infinite/Instantaneous"),
+    FSUI_NSTR("None (Normal Speed)"),
+    FSUI_NSTR("2x"),
+    FSUI_NSTR("3x"),
+    FSUI_NSTR("4x"),
+    FSUI_NSTR("5x"),
+    FSUI_NSTR("6x"),
+    FSUI_NSTR("7x"),
+    FSUI_NSTR("8x"),
+    FSUI_NSTR("9x"),
+    FSUI_NSTR("10x"),
+  };
 
   SettingsInterface* bsi = GetEditingSettingsInterface();
 
@@ -2972,23 +2985,38 @@ void FullscreenUI::DrawConsoleSettingsPage()
 
 void FullscreenUI::DrawEmulationSettingsPage()
 {
-  static constexpr auto emulation_speed_values =
-    make_array(0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f,
-               3.5f, 4.0f, 4.5f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 10.0f);
-  static constexpr auto emulation_speed_titles =
-    make_array(FSUI_NSTR("Unlimited"), "10% [6 FPS (NTSC) / 5 FPS (PAL)]",
-               FSUI_NSTR("20% [12 FPS (NTSC) / 10 FPS (PAL)]"), FSUI_NSTR("30% [18 FPS (NTSC) / 15 FPS (PAL)]"),
-               FSUI_NSTR("40% [24 FPS (NTSC) / 20 FPS (PAL)]"), FSUI_NSTR("50% [30 FPS (NTSC) / 25 FPS (PAL)]"),
-               FSUI_NSTR("60% [36 FPS (NTSC) / 30 FPS (PAL)]"), FSUI_NSTR("70% [42 FPS (NTSC) / 35 FPS (PAL)]"),
-               FSUI_NSTR("80% [48 FPS (NTSC) / 40 FPS (PAL)]"), FSUI_NSTR("90% [54 FPS (NTSC) / 45 FPS (PAL)]"),
-               FSUI_NSTR("100% [60 FPS (NTSC) / 50 FPS (PAL)]"), FSUI_NSTR("125% [75 FPS (NTSC) / 62 FPS (PAL)]"),
-               FSUI_NSTR("150% [90 FPS (NTSC) / 75 FPS (PAL)]"), FSUI_NSTR("175% [105 FPS (NTSC) / 87 FPS (PAL)]"),
-               FSUI_NSTR("200% [120 FPS (NTSC) / 100 FPS (PAL)]"), FSUI_NSTR("250% [150 FPS (NTSC) / 125 FPS (PAL)]"),
-               FSUI_NSTR("300% [180 FPS (NTSC) / 150 FPS (PAL)]"), FSUI_NSTR("350% [210 FPS (NTSC) / 175 FPS (PAL)]"),
-               FSUI_NSTR("400% [240 FPS (NTSC) / 200 FPS (PAL)]"), FSUI_NSTR("450% [270 FPS (NTSC) / 225 FPS (PAL)]"),
-               FSUI_NSTR("500% [300 FPS (NTSC) / 250 FPS (PAL)]"), FSUI_NSTR("600% [360 FPS (NTSC) / 300 FPS (PAL)]"),
-               FSUI_NSTR("700% [420 FPS (NTSC) / 350 FPS (PAL)]"), FSUI_NSTR("800% [480 FPS (NTSC) / 400 FPS (PAL)]"),
-               FSUI_NSTR("900% [540 FPS (NTSC) / 450 FPS (PAL)]"), FSUI_NSTR("1000% [600 FPS (NTSC) / 500 FPS (PAL)]"));
+  static constexpr const std::array emulation_speed_values = {
+    0.0f,  0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f, 1.25f, 1.5f,
+    1.75f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f, 4.5f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f,  10.0f,
+  };
+  static constexpr const std::array emulation_speed_titles = {
+    FSUI_NSTR("Unlimited"),
+    "10% [6 FPS (NTSC) / 5 FPS (PAL)]",
+    FSUI_NSTR("20% [12 FPS (NTSC) / 10 FPS (PAL)]"),
+    FSUI_NSTR("30% [18 FPS (NTSC) / 15 FPS (PAL)]"),
+    FSUI_NSTR("40% [24 FPS (NTSC) / 20 FPS (PAL)]"),
+    FSUI_NSTR("50% [30 FPS (NTSC) / 25 FPS (PAL)]"),
+    FSUI_NSTR("60% [36 FPS (NTSC) / 30 FPS (PAL)]"),
+    FSUI_NSTR("70% [42 FPS (NTSC) / 35 FPS (PAL)]"),
+    FSUI_NSTR("80% [48 FPS (NTSC) / 40 FPS (PAL)]"),
+    FSUI_NSTR("90% [54 FPS (NTSC) / 45 FPS (PAL)]"),
+    FSUI_NSTR("100% [60 FPS (NTSC) / 50 FPS (PAL)]"),
+    FSUI_NSTR("125% [75 FPS (NTSC) / 62 FPS (PAL)]"),
+    FSUI_NSTR("150% [90 FPS (NTSC) / 75 FPS (PAL)]"),
+    FSUI_NSTR("175% [105 FPS (NTSC) / 87 FPS (PAL)]"),
+    FSUI_NSTR("200% [120 FPS (NTSC) / 100 FPS (PAL)]"),
+    FSUI_NSTR("250% [150 FPS (NTSC) / 125 FPS (PAL)]"),
+    FSUI_NSTR("300% [180 FPS (NTSC) / 150 FPS (PAL)]"),
+    FSUI_NSTR("350% [210 FPS (NTSC) / 175 FPS (PAL)]"),
+    FSUI_NSTR("400% [240 FPS (NTSC) / 200 FPS (PAL)]"),
+    FSUI_NSTR("450% [270 FPS (NTSC) / 225 FPS (PAL)]"),
+    FSUI_NSTR("500% [300 FPS (NTSC) / 250 FPS (PAL)]"),
+    FSUI_NSTR("600% [360 FPS (NTSC) / 300 FPS (PAL)]"),
+    FSUI_NSTR("700% [420 FPS (NTSC) / 350 FPS (PAL)]"),
+    FSUI_NSTR("800% [480 FPS (NTSC) / 400 FPS (PAL)]"),
+    FSUI_NSTR("900% [540 FPS (NTSC) / 450 FPS (PAL)]"),
+    FSUI_NSTR("1000% [600 FPS (NTSC) / 500 FPS (PAL)]"),
+  };
 
   SettingsInterface* bsi = GetEditingSettingsInterface();
 
@@ -3029,10 +3057,10 @@ void FullscreenUI::DrawEmulationSettingsPage()
   const bool runahead_enabled = (runahead_frames > 0);
   const bool rewind_enabled = GetEffectiveBoolSetting(bsi, "Main", "RewindEnable", false);
 
-  static constexpr auto runahead_options =
-    make_array(FSUI_NSTR("Disabled"), FSUI_NSTR("1 Frame"), FSUI_NSTR("2 Frames"), FSUI_NSTR("3 Frames"),
-               FSUI_NSTR("4 Frames"), FSUI_NSTR("5 Frames"), FSUI_NSTR("6 Frames"), FSUI_NSTR("7 Frames"),
-               FSUI_NSTR("8 Frames"), FSUI_NSTR("9 Frames"), FSUI_NSTR("10 Frames"));
+  static constexpr const std::array runahead_options = {
+    FSUI_NSTR("Disabled"), FSUI_NSTR("1 Frame"),  FSUI_NSTR("2 Frames"), FSUI_NSTR("3 Frames"),
+    FSUI_NSTR("4 Frames"), FSUI_NSTR("5 Frames"), FSUI_NSTR("6 Frames"), FSUI_NSTR("7 Frames"),
+    FSUI_NSTR("8 Frames"), FSUI_NSTR("9 Frames"), FSUI_NSTR("10 Frames")};
 
   DrawIntListSetting(
     bsi, FSUI_CSTR("Runahead"),
@@ -3317,7 +3345,7 @@ void FullscreenUI::DrawControllerSettingsPage()
                        });
     }
 
-    if (!ci || ci->bindings.empty() == 0)
+    if (!ci || ci->bindings.empty())
       continue;
 
     if (MenuButton(FSUI_ICONSTR(ICON_FA_MAGIC, "Automatic Mapping"),
@@ -3327,7 +3355,10 @@ void FullscreenUI::DrawControllerSettingsPage()
     }
 
     for (const Controller::ControllerBindingInfo& bi : ci->bindings)
-      DrawInputBindingButton(bsi, bi.type, section.c_str(), bi.name, bi.display_name, true);
+    {
+      DrawInputBindingButton(bsi, bi.type, section.c_str(), bi.name,
+                             Host::TranslateToCString(ci->name, bi.display_name), true);
+    }
 
     if (mtap_enabled[mtap_port])
     {
@@ -3361,7 +3392,7 @@ void FullscreenUI::DrawControllerSettingsPage()
           {
             continue;
           }
-          options.emplace_back(bi.display_name,
+          options.emplace_back(Host::TranslateToString(ci->name, bi.display_name),
                                std::any_of(buttons_split.begin(), buttons_split.end(),
                                            [bi](const std::string_view& it) { return (it == bi.name); }));
         }
@@ -3373,7 +3404,7 @@ void FullscreenUI::DrawControllerSettingsPage()
             std::string_view to_modify;
             for (const Controller::ControllerBindingInfo& bi : ci->bindings)
             {
-              if (bi.display_name == title)
+              if (title == Host::TranslateToStringView(ci->name, bi.display_name))
               {
                 to_modify = bi.name;
                 break;
@@ -3473,24 +3504,24 @@ void FullscreenUI::DrawControllerSettingsPage()
       for (const SettingInfo& si : ci->settings)
       {
         TinyString title;
-        title.fmt(ICON_FA_COG "{}", si.display_name);
+        title.fmt(ICON_FA_COG "{}", Host::TranslateToStringView(ci->name, si.display_name));
+        const char* description = Host::TranslateToCString(ci->name, si.description);
         switch (si.type)
         {
           case SettingInfo::Type::Boolean:
-            DrawToggleSetting(bsi, title, si.description, section.c_str(), si.name, si.BooleanDefaultValue(), true,
-                              false);
+            DrawToggleSetting(bsi, title, description, section.c_str(), si.name, si.BooleanDefaultValue(), true, false);
             break;
           case SettingInfo::Type::Integer:
-            DrawIntRangeSetting(bsi, title, si.description, section.c_str(), si.name, si.IntegerDefaultValue(),
+            DrawIntRangeSetting(bsi, title, description, section.c_str(), si.name, si.IntegerDefaultValue(),
                                 si.IntegerMinValue(), si.IntegerMaxValue(), si.format, true);
             break;
           case SettingInfo::Type::IntegerList:
-            DrawIntListSetting(bsi, title, si.description, section.c_str(), si.name, si.IntegerDefaultValue(),
-                               si.options, 0, false, si.IntegerMinValue(), true, LAYOUT_MENU_BUTTON_HEIGHT,
-                               g_large_font, g_medium_font, ci->name);
+            DrawIntListSetting(bsi, title, description, section.c_str(), si.name, si.IntegerDefaultValue(), si.options,
+                               0, false, si.IntegerMinValue(), true, LAYOUT_MENU_BUTTON_HEIGHT, g_large_font,
+                               g_medium_font, ci->name);
             break;
           case SettingInfo::Type::Float:
-            DrawFloatSpinBoxSetting(bsi, title, si.description, section.c_str(), si.name, si.FloatDefaultValue(),
+            DrawFloatSpinBoxSetting(bsi, title, description, section.c_str(), si.name, si.FloatDefaultValue(),
                                     si.FloatMinValue(), si.FloatMaxValue(), si.FloatStepValue(), si.multiplier,
                                     si.format, true);
             break;
@@ -3510,8 +3541,6 @@ void FullscreenUI::DrawHotkeySettingsPage()
 
   BeginMenuButtons();
 
-  InputManager::GetHotkeyList();
-
   const HotkeyInfo* last_category = nullptr;
   for (const HotkeyInfo* hotkey : s_hotkey_list_cache)
   {
@@ -3521,7 +3550,8 @@ void FullscreenUI::DrawHotkeySettingsPage()
       last_category = hotkey;
     }
 
-    DrawInputBindingButton(bsi, InputBindingInfo::Type::Button, "Hotkeys", hotkey->name, hotkey->display_name, false);
+    DrawInputBindingButton(bsi, InputBindingInfo::Type::Button, "Hotkeys", hotkey->name,
+                           Host::TranslateToCString("Hotkeys", hotkey->display_name), false);
   }
 
   EndMenuButtons();
@@ -3529,8 +3559,8 @@ void FullscreenUI::DrawHotkeySettingsPage()
 
 void FullscreenUI::DrawMemoryCardSettingsPage()
 {
-  static constexpr const auto type_keys = make_array("Card1Type", "Card2Type");
-  static constexpr const auto path_keys = make_array("Card1Path", "Card2Path");
+  static constexpr const std::array type_keys = {"Card1Type", "Card2Type"};
+  static constexpr const std::array path_keys = {"Card1Path", "Card2Path"};
 
   SettingsInterface* bsi = GetEditingSettingsInterface();
   const bool game_settings = IsEditingGameSettings(bsi);
@@ -3664,12 +3694,25 @@ void FullscreenUI::DrawMemoryCardSettingsPage()
 
 void FullscreenUI::DrawDisplaySettingsPage()
 {
-  // TODO: Translation context
-  static constexpr auto resolution_scales =
-    make_array(FSUI_NSTR("Automatic based on window size"), FSUI_NSTR("1x"), FSUI_NSTR("2x"),
-               FSUI_NSTR("3x (for 720p)"), FSUI_NSTR("4x"), FSUI_NSTR("5x (for 1080p)"), FSUI_NSTR("6x (for 1440p)"),
-               FSUI_NSTR("7x"), FSUI_NSTR("8x"), FSUI_NSTR("9x (for 4K)"), FSUI_NSTR("10x"), FSUI_NSTR("11x"),
-               FSUI_NSTR("12x"), FSUI_NSTR("13x"), FSUI_NSTR("14x"), FSUI_NSTR("15x"), FSUI_NSTR("16x"));
+  static constexpr const std::array resolution_scales = {
+    FSUI_NSTR("Automatic based on window size"),
+    FSUI_NSTR("1x"),
+    FSUI_NSTR("2x"),
+    FSUI_NSTR("3x (for 720p)"),
+    FSUI_NSTR("4x"),
+    FSUI_NSTR("5x (for 1080p)"),
+    FSUI_NSTR("6x (for 1440p)"),
+    FSUI_NSTR("7x"),
+    FSUI_NSTR("8x"),
+    FSUI_NSTR("9x (for 4K)"),
+    FSUI_NSTR("10x"),
+    FSUI_NSTR("11x"),
+    FSUI_NSTR("12x"),
+    FSUI_NSTR("13x"),
+    FSUI_NSTR("14x"),
+    FSUI_NSTR("15x"),
+    FSUI_NSTR("16x"),
+  };
 
   SettingsInterface* bsi = GetEditingSettingsInterface();
   const bool game_settings = IsEditingGameSettings(bsi);
@@ -5128,6 +5171,7 @@ void FullscreenUI::DrawSaveStateSelector(bool is_loading)
   ImGui::PushStyleColor(ImGuiCol_ChildBg, ModAlpha(UIBackgroundColor, 0.9f));
   ImGui::SetCursorPos(ImVec2(0.0f, heading_size.y));
 
+  bool closed = false;
   bool close_handled = false;
   if (s_save_state_selector_open &&
       ImGui::BeginChild("state_list", ImVec2(io.DisplaySize.x, io.DisplaySize.y - heading_size.y), false,
@@ -5155,15 +5199,123 @@ void FullscreenUI::DrawSaveStateSelector(bool is_loading)
 
     u32 grid_x = 0;
     ImGui::SetCursorPos(ImVec2(start_x, 0.0f));
-    for (u32 i = 0; i < s_save_state_selector_slots.size(); i++)
+    for (u32 i = 0; i < s_save_state_selector_slots.size();)
     {
       if (i == 0)
         ResetFocusHere();
 
       const SaveStateListEntry& entry = s_save_state_selector_slots[i];
+      if (static_cast<s32>(i) == s_save_state_selector_submenu_index)
+      {
+        // can't use a choice dialog here, because we're already in a modal...
+        ImGuiFullscreen::PushResetLayout();
+        ImGui::PushFont(g_large_font);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, LayoutScale(10.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                            LayoutScale(LAYOUT_MENU_BUTTON_X_PADDING, LAYOUT_MENU_BUTTON_Y_PADDING));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, UIPrimaryTextColor);
+        ImGui::PushStyleColor(ImGuiCol_TitleBg, UIPrimaryDarkColor);
+        ImGui::PushStyleColor(ImGuiCol_TitleBgActive, UIPrimaryColor);
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, MulAlpha(UIBackgroundColor, 0.95f));
+
+        const float width = LayoutScale(600.0f);
+        const float title_height =
+          g_large_font->FontSize + ImGui::GetStyle().FramePadding.y * 2.0f + ImGui::GetStyle().WindowPadding.y * 2.0f;
+        const float height =
+          title_height +
+          LayoutScale(LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY + (LAYOUT_MENU_BUTTON_Y_PADDING * 2.0f)) * 3.0f;
+        ImGui::SetNextWindowSize(ImVec2(width, height));
+        ImGui::SetNextWindowPos(ImGui::GetIO().DisplaySize * 0.5f, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::OpenPopup(entry.title.c_str());
+
+        bool removed = false;
+        if (ImGui::BeginPopupModal(entry.title.c_str(), &is_open,
+                                   ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
+        {
+          ImGui::PushStyleColor(ImGuiCol_Text, UIBackgroundTextColor);
+
+          BeginMenuButtons();
+
+          if (ActiveButton(is_loading ? FSUI_ICONSTR(ICON_FA_FOLDER_OPEN, "Load State") :
+                                        FSUI_ICONSTR(ICON_FA_FOLDER_OPEN, "Save State"),
+                           false, true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
+          {
+            if (is_loading)
+              DoLoadState(std::move(entry.path));
+            else
+              DoSaveState(entry.slot, entry.global);
+
+            closed = true;
+          }
+
+          if (ActiveButton(FSUI_ICONSTR(ICON_FA_FOLDER_MINUS, "Delete Save"), false, true,
+                           LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
+          {
+            if (!FileSystem::FileExists(entry.path.c_str()))
+            {
+              ShowToast({}, fmt::format(FSUI_FSTR("{} does not exist."), ImGuiFullscreen::RemoveHash(entry.title)));
+              is_open = true;
+            }
+            else if (FileSystem::DeleteFile(entry.path.c_str()))
+            {
+              ShowToast({}, fmt::format(FSUI_FSTR("{} deleted."), ImGuiFullscreen::RemoveHash(entry.title)));
+              s_save_state_selector_slots.erase(s_save_state_selector_slots.begin() + i);
+              removed = true;
+
+              if (s_save_state_selector_slots.empty())
+                closed = true;
+              else
+                is_open = false;
+            }
+            else
+            {
+              ShowToast({}, fmt::format(FSUI_FSTR("Failed to delete {}."), ImGuiFullscreen::RemoveHash(entry.title)));
+              is_open = false;
+            }
+          }
+
+          if (ActiveButton(FSUI_ICONSTR(ICON_FA_WINDOW_CLOSE, "Close Menu"), false, true,
+                           LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
+          {
+            is_open = false;
+          }
+
+          EndMenuButtons();
+
+          ImGui::PopStyleColor();
+          ImGui::EndPopup();
+        }
+
+        // don't let the back button flow through to the main window
+        if (WantsToCloseMenu())
+        {
+          close_handled = true;
+          is_open = false;
+        }
+
+        if (!is_open || closed)
+        {
+          s_save_state_selector_submenu_index = -1;
+          if (!closed)
+            QueueResetFocus();
+        }
+
+        ImGui::PopStyleColor(4);
+        ImGui::PopStyleVar(3);
+        ImGui::PopFont();
+        ImGuiFullscreen::PopResetLayout();
+
+        if (removed)
+          continue;
+      }
+
       ImGuiWindow* window = ImGui::GetCurrentWindow();
       if (window->SkipItems)
+      {
+        i++;
         continue;
+      }
 
       const ImGuiID id = window->GetID(static_cast<int>(i));
       const ImVec2 pos(window->DC.CursorPos);
@@ -5218,133 +5370,17 @@ void FullscreenUI::DrawSaveStateSelector(bool is_loading)
         if (pressed)
         {
           if (is_loading)
-          {
             DoLoadState(entry.path);
-            CloseSaveStateSelector();
-            ReturnToPreviousWindow();
-            break;
-          }
           else
-          {
             DoSaveState(entry.slot, entry.global);
-            CloseSaveStateSelector();
-            ReturnToPreviousWindow();
-            break;
-          }
+
+          closed = true;
         }
 
         if (hovered && (ImGui::IsItemClicked(ImGuiMouseButton_Right) ||
                         ImGui::IsNavInputTest(ImGuiNavInput_Input, ImGuiNavReadMode_Pressed)))
         {
           s_save_state_selector_submenu_index = static_cast<s32>(i);
-        }
-
-        if (static_cast<s32>(i) == s_save_state_selector_submenu_index)
-        {
-          // can't use a choice dialog here, because we're already in a modal...
-          ImGuiFullscreen::PushResetLayout();
-          ImGui::PushFont(g_large_font);
-          ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, LayoutScale(10.0f));
-          ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                              LayoutScale(LAYOUT_MENU_BUTTON_X_PADDING, LAYOUT_MENU_BUTTON_Y_PADDING));
-          ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-          ImGui::PushStyleColor(ImGuiCol_Text, UIPrimaryTextColor);
-          ImGui::PushStyleColor(ImGuiCol_TitleBg, UIPrimaryDarkColor);
-          ImGui::PushStyleColor(ImGuiCol_TitleBgActive, UIPrimaryColor);
-          ImGui::PushStyleColor(ImGuiCol_PopupBg, MulAlpha(UIBackgroundColor, 0.95f));
-
-          const float width = LayoutScale(600.0f);
-          const float title_height =
-            g_large_font->FontSize + ImGui::GetStyle().FramePadding.y * 2.0f + ImGui::GetStyle().WindowPadding.y * 2.0f;
-          const float height =
-            title_height +
-            LayoutScale(LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY + (LAYOUT_MENU_BUTTON_Y_PADDING * 2.0f)) * 3.0f;
-          ImGui::SetNextWindowSize(ImVec2(width, height));
-          ImGui::SetNextWindowPos(ImGui::GetIO().DisplaySize * 0.5f, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-          ImGui::OpenPopup(entry.title.c_str());
-
-          // don't let the back button flow through to the main window
-          bool submenu_open = !WantsToCloseMenu();
-          close_handled ^= submenu_open;
-
-          bool closed = false;
-          if (ImGui::BeginPopupModal(entry.title.c_str(), &is_open,
-                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
-          {
-            ImGui::PushStyleColor(ImGuiCol_Text, UIBackgroundTextColor);
-
-            BeginMenuButtons();
-
-            if (ActiveButton(is_loading ? FSUI_ICONSTR(ICON_FA_FOLDER_OPEN, "Load State") :
-                                          FSUI_ICONSTR(ICON_FA_FOLDER_OPEN, "Save State"),
-                             false, true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
-            {
-              if (is_loading)
-                DoLoadState(std::move(entry.path));
-              else
-                DoSaveState(entry.slot, entry.global);
-
-              CloseSaveStateSelector();
-              ReturnToPreviousWindow();
-              closed = true;
-            }
-
-            if (ActiveButton(FSUI_ICONSTR(ICON_FA_FOLDER_MINUS, "Delete Save"), false, true,
-                             LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
-            {
-              if (!FileSystem::FileExists(entry.path.c_str()))
-              {
-                ShowToast({}, fmt::format(FSUI_FSTR("{} does not exist."), ImGuiFullscreen::RemoveHash(entry.title)));
-                is_open = true;
-              }
-              else if (FileSystem::DeleteFile(entry.path.c_str()))
-              {
-                ShowToast({}, fmt::format(FSUI_FSTR("{} deleted."), ImGuiFullscreen::RemoveHash(entry.title)));
-                s_save_state_selector_slots.erase(s_save_state_selector_slots.begin() + i);
-
-                if (s_save_state_selector_slots.empty())
-                {
-                  CloseSaveStateSelector();
-                  ReturnToPreviousWindow();
-                  closed = true;
-                }
-                else
-                {
-                  is_open = false;
-                }
-              }
-              else
-              {
-                ShowToast({}, fmt::format(FSUI_FSTR("Failed to delete {}."), ImGuiFullscreen::RemoveHash(entry.title)));
-                is_open = false;
-              }
-            }
-
-            if (ActiveButton(FSUI_ICONSTR(ICON_FA_WINDOW_CLOSE, "Close Menu"), false, true,
-                             LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
-            {
-              is_open = false;
-            }
-
-            EndMenuButtons();
-
-            ImGui::PopStyleColor();
-            ImGui::EndPopup();
-          }
-          if (!is_open)
-          {
-            s_save_state_selector_submenu_index = -1;
-            if (!closed)
-              QueueResetFocus();
-          }
-
-          ImGui::PopStyleColor(4);
-          ImGui::PopStyleVar(3);
-          ImGui::PopFont();
-          ImGuiFullscreen::PopResetLayout();
-
-          if (closed)
-            break;
         }
       }
 
@@ -5359,6 +5395,8 @@ void FullscreenUI::DrawSaveStateSelector(bool is_loading)
       {
         ImGui::SameLine(start_x + static_cast<float>(grid_x) * (item_width + item_spacing));
       }
+
+      i++;
     }
 
     EndMenuButtons();
@@ -5370,7 +5408,12 @@ void FullscreenUI::DrawSaveStateSelector(bool is_loading)
   ImGui::EndPopup();
   ImGui::PopStyleVar(5);
 
-  if (!close_handled && WantsToCloseMenu())
+  if (closed)
+  {
+    CloseSaveStateSelector();
+    ReturnToMainWindow();
+  }
+  else if (!close_handled && WantsToCloseMenu())
   {
     CloseSaveStateSelector();
     ReturnToPreviousWindow();
@@ -6062,7 +6105,7 @@ void FullscreenUI::DrawGameListSettingsPage(const ImVec2& heading_size)
 
   for (const auto& it : s_game_list_directories_cache)
   {
-    if (MenuButton(SmallString::from_fmt(ICON_FA_FOLDER "{}", it.first),
+    if (MenuButton(SmallString::from_fmt(ICON_FA_FOLDER " {}", it.first),
                    it.second ? FSUI_CSTR("Scanning Subdirectories") : FSUI_CSTR("Not Scanning Subdirectories")))
     {
       ImGuiFullscreen::ChoiceDialogOptions options = {
