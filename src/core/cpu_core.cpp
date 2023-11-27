@@ -2306,6 +2306,7 @@ template<PGXPMode pgxp_mode, bool debug>
   for (;;)
   {
     TimingEvents::RunEvents();
+    Host::PumpMessagesOnCPUThread();
 
     while (g_state.pending_ticks < g_state.downcount)
     {
@@ -3253,7 +3254,7 @@ bool CPU::ReadMemoryByte(VirtualMemoryAddress addr, u8* value)
   #ifdef CPU_PROFILER
     g_profiler_summary.DataReadAccess++;
     GetProfilerCounts(g_state.current_instruction_pc).DataReadAccess++;
-    if (addr&0x7FFFFC00 != 0x1F800000)
+    if ((addr&0x7FFFFC00) != 0x1F800000)
     {
       g_profiler_summary.DataReadMiss++;
       GetProfilerCounts(g_state.current_instruction_pc).DataReadMiss++;
@@ -3280,7 +3281,7 @@ bool CPU::ReadMemoryHalfWord(VirtualMemoryAddress addr, u16* value)
   #ifdef CPU_PROFILER
     g_profiler_summary.DataReadAccess++;
     GetProfilerCounts(g_state.current_instruction_pc).DataReadAccess++;
-    if (addr&0x7FFFFC00 != 0x1F800000)
+    if ((addr&0x7FFFFC00) != 0x1F800000)
     {
       g_profiler_summary.DataReadMiss++;
       GetProfilerCounts(g_state.current_instruction_pc).DataReadMiss++;
@@ -3307,7 +3308,7 @@ bool CPU::ReadMemoryWord(VirtualMemoryAddress addr, u32* value)
   #ifdef CPU_PROFILER
     g_profiler_summary.DataReadAccess++;
     GetProfilerCounts(g_state.current_instruction_pc).DataReadAccess++;
-    if (addr&0x7FFFFC00 != 0x1F800000)
+    if ((addr&0x7FFFFC00) != 0x1F800000)
     {
       g_profiler_summary.DataReadMiss++;
       GetProfilerCounts(g_state.current_instruction_pc).DataReadMiss++;
