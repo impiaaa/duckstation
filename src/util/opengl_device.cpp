@@ -20,6 +20,8 @@
 
 Log_SetChannel(OpenGLDevice);
 
+static constexpr std::array<float, 4> s_clear_color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+
 OpenGLDevice::OpenGLDevice()
 {
   // Something which won't be matched..
@@ -257,7 +259,7 @@ void OpenGLDevice::InsertDebugMessage(const char* msg)
 
   if (msg[0] != '\0')
   {
-    glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_OTHER, 0, GL_DEBUG_SEVERITY_NOTIFICATION,
+    glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_MARKER, 0, GL_DEBUG_SEVERITY_NOTIFICATION,
                          static_cast<GLsizei>(std::strlen(msg)), msg);
   }
 #endif
@@ -427,7 +429,8 @@ bool OpenGLDevice::CheckFeatures(bool* buggy_pbo)
   m_features.dual_source_blend =
     (max_dual_source_draw_buffers > 0) &&
     (GLAD_GL_VERSION_3_3 || GLAD_GL_ARB_blend_func_extended || GLAD_GL_EXT_blend_func_extended);
-  m_features.dual_source_blend = false;
+
+  m_features.framebuffer_fetch = (GLAD_GL_EXT_shader_framebuffer_fetch || GLAD_GL_ARM_shader_framebuffer_fetch);
 
 #ifdef __APPLE__
   // Partial texture buffer uploads appear to be broken in macOS's OpenGL driver.
@@ -600,11 +603,10 @@ void OpenGLDevice::RenderBlankFrame()
 {
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
   glDisable(GL_SCISSOR_TEST);
-  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
+  glClearBufferfv(GL_COLOR, 0, s_clear_color.data());
+  glEnable(GL_SCISSOR_TEST);
   m_gl_context->SwapBuffers();
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_current_framebuffer ? m_current_framebuffer->GetGLId() : 0);
-  glEnable(GL_SCISSOR_TEST);
 }
 
 GPUDevice::AdapterAndModeList OpenGLDevice::GetAdapterAndModeList()
@@ -698,6 +700,9 @@ bool OpenGLDevice::BeginPresent(bool skip_present)
   }
 
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glDisable(GL_SCISSOR_TEST);
+  glClearBufferfv(GL_COLOR, 0, s_clear_color.data());
+  glEnable(GL_SCISSOR_TEST);
 
   const Common::Rectangle<s32> window_rc =
     Common::Rectangle<s32>::FromExtents(0, 0, m_window_info.surface_width, m_window_info.surface_height);
@@ -706,9 +711,6 @@ bool OpenGLDevice::BeginPresent(bool skip_present)
   m_last_scissor = window_rc;
   UpdateViewport();
   UpdateScissor();
-
-  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
   return true;
 }
 

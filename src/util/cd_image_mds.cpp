@@ -1,17 +1,22 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "assert.h"
 #include "cd_image.h"
 #include "cd_subchannel_replacement.h"
+
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <map>
+
 Log_SetChannel(CDImageMds);
+
+namespace {
 
 #pragma pack(push, 1)
 struct TrackEntry
@@ -52,6 +57,8 @@ private:
   u64 m_mdf_file_position = 0;
   CDSubChannelReplacement m_sbi;
 };
+
+} // namespace
 
 CDImageMds::CDImageMds() = default;
 
@@ -112,7 +119,8 @@ bool CDImageMds::OpenAndParse(const char* filename, Error* error)
   if (track_count > 99 || track_offset >= mds.size())
   {
     Log_ErrorPrintf("Invalid track count/block offset %u/%u in '%s'", track_count, track_offset, filename);
-    Error::SetString(error, fmt::format("Invalid track count/block offset {}/{} in '{}'", track_count, track_offset, filename));
+    Error::SetString(
+      error, fmt::format("Invalid track count/block offset {}/{} in '{}'", track_count, track_offset, filename));
     return false;
   }
 
@@ -142,7 +150,8 @@ bool CDImageMds::OpenAndParse(const char* filename, Error* error)
     if (PackedBCDToBinary(track.track_number) != track_number)
     {
       Log_ErrorPrintf("Unexpected track number 0x%02X in track %u", track.track_number, track_number);
-      Error::SetString(error, fmt::format("Unexpected track number 0x{:02X} in track {}", track.track_number, track_number));
+      Error::SetString(error,
+                       fmt::format("Unexpected track number 0x{:02X} in track {}", track.track_number, track_number));
       return false;
     }
 
@@ -176,7 +185,8 @@ bool CDImageMds::OpenAndParse(const char* filename, Error* error)
       if (track_pregap > track_start_lba)
       {
         Log_ErrorPrintf("Track pregap %u is too large for start lba %u", track_pregap, track_start_lba);
-        Error::SetString(error, fmt::format("Track pregap {} is too large for start lba {}", track_pregap, track_start_lba));
+        Error::SetString(error,
+                         fmt::format("Track pregap {} is too large for start lba {}", track_pregap, track_start_lba));
         return false;
       }
 
@@ -187,6 +197,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Error* error)
       pregap_index.track_number = track_number;
       pregap_index.index_number = 0;
       pregap_index.mode = mode;
+      pregap_index.submode = CDImage::SubchannelMode::None;
       pregap_index.control.bits = control.bits;
       pregap_index.is_pregap = true;
 
@@ -204,7 +215,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Error* error)
 
     // add the track itself
     m_tracks.push_back(Track{static_cast<u32>(track_number), track_start_lba, static_cast<u32>(m_indices.size()),
-                             static_cast<u32>(track_length), mode, control});
+                             static_cast<u32>(track_length), mode, SubchannelMode::None, control});
 
     // how many indices in this track?
     Index last_index;
@@ -216,6 +227,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Error* error)
     last_index.file_sector_size = track_sector_size;
     last_index.file_offset = track_file_offset;
     last_index.mode = mode;
+    last_index.submode = CDImage::SubchannelMode::None;
     last_index.control.bits = control.bits;
     last_index.is_pregap = false;
     last_index.length = track_length;
@@ -232,7 +244,7 @@ bool CDImageMds::OpenAndParse(const char* filename, Error* error)
   m_lba_count = m_tracks.back().start_lba + m_tracks.back().length;
   AddLeadOutIndex();
 
-  m_sbi.LoadSBIFromImagePath(filename);
+  m_sbi.LoadFromImagePath(filename);
 
   return Seek(1, Position{0, 0, 0});
 }

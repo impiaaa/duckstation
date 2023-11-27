@@ -144,7 +144,6 @@ void Settings::Load(SettingsInterface& si)
   start_paused = si.GetBoolValue("Main", "StartPaused", false);
   start_fullscreen = si.GetBoolValue("Main", "StartFullscreen", false);
   pause_on_focus_loss = si.GetBoolValue("Main", "PauseOnFocusLoss", false);
-  pause_on_menu = si.GetBoolValue("Main", "PauseOnMenu", true);
   save_state_on_exit = si.GetBoolValue("Main", "SaveStateOnExit", true);
   create_save_state_backups = si.GetBoolValue("Main", "CreateSaveStateBackups", DEFAULT_SAVE_STATE_BACKUPS);
   compress_save_states = si.GetBoolValue("Main", "CompressSaveStates", DEFAULT_SAVE_STATE_COMPRESSION);
@@ -259,6 +258,10 @@ void Settings::Load(SettingsInterface& si)
 
   cdrom_readahead_sectors =
     static_cast<u8>(si.GetIntValue("CDROM", "ReadaheadSectors", DEFAULT_CDROM_READAHEAD_SECTORS));
+  cdrom_mechacon_version =
+    ParseCDROMMechVersionName(
+      si.GetStringValue("CDROM", "MechaconVersion", GetCDROMMechVersionName(DEFAULT_CDROM_MECHACON_VERSION)).c_str())
+      .value_or(DEFAULT_CDROM_MECHACON_VERSION);
   cdrom_region_check = si.GetBoolValue("CDROM", "RegionCheck", false);
   cdrom_load_image_to_ram = si.GetBoolValue("CDROM", "LoadImageToRAM", false);
   cdrom_load_image_patches = si.GetBoolValue("CDROM", "LoadImagePatches", false);
@@ -404,7 +407,6 @@ void Settings::Save(SettingsInterface& si) const
   si.SetBoolValue("Main", "StartPaused", start_paused);
   si.SetBoolValue("Main", "StartFullscreen", start_fullscreen);
   si.SetBoolValue("Main", "PauseOnFocusLoss", pause_on_focus_loss);
-  si.SetBoolValue("Main", "PauseOnMenu", pause_on_menu);
   si.SetBoolValue("Main", "SaveStateOnExit", save_state_on_exit);
   si.SetBoolValue("Main", "CreateSaveStateBackups", create_save_state_backups);
   si.SetBoolValue("Main", "CompressSaveStates", compress_save_states);
@@ -468,7 +470,7 @@ void Settings::Save(SettingsInterface& si) const
   si.SetBoolValue("Display", "Force4_3For24Bit", display_force_4_3_for_24bit);
   si.SetStringValue("Display", "AspectRatio", GetDisplayAspectRatioName(display_aspect_ratio));
   si.SetStringValue("Display", "Alignment", GetDisplayAlignmentName(display_alignment));
-  si.SetBoolValue("Display", "Scaling", GetDisplayScalingName(display_scaling));
+  si.SetStringValue("Display", "Scaling", GetDisplayScalingName(display_scaling));
   si.SetIntValue("Display", "CustomAspectRatioNumerator", display_aspect_ratio_custom_numerator);
   si.GetIntValue("Display", "CustomAspectRatioDenominator", display_aspect_ratio_custom_denominator);
   si.SetBoolValue("Display", "ShowOSDMessages", display_show_osd_messages);
@@ -489,6 +491,7 @@ void Settings::Save(SettingsInterface& si) const
   si.SetFloatValue("Display", "OSDScale", display_osd_scale);
 
   si.SetIntValue("CDROM", "ReadaheadSectors", cdrom_readahead_sectors);
+  si.SetStringValue("CDROM", "MechaconVersion", GetCDROMMechVersionName(cdrom_mechacon_version));
   si.SetBoolValue("CDROM", "RegionCheck", cdrom_region_check);
   si.SetBoolValue("CDROM", "LoadImageToRAM", cdrom_load_image_to_ram);
   si.SetBoolValue("CDROM", "LoadImagePatches", cdrom_load_image_patches);
@@ -704,7 +707,7 @@ void Settings::FixIncompatibleSettings(bool display_osd_messages)
 void Settings::UpdateLogSettings()
 {
   Log::SetLogLevel(log_level);
-  Log::SetLogfilter(log_filter);
+  Log::SetLogFilter(log_filter);
   Log::SetConsoleOutputParams(log_to_console, log_timestamps);
   Log::SetDebugOutputParams(log_to_debug);
 
@@ -1401,6 +1404,37 @@ const char* Settings::GetMultitapModeName(MultitapMode mode)
 const char* Settings::GetMultitapModeDisplayName(MultitapMode mode)
 {
   return Host::TranslateToCString("MultitapMode", s_multitap_enable_mode_display_names[static_cast<size_t>(mode)]);
+}
+
+static constexpr const std::array s_mechacon_version_names = {"VC0A", "VC0B", "VC1A", "VC1B", "VD1",  "VC2", "VC1",
+                                                              "VC2J", "VC2A", "VC2B", "VC3A", "VC3B", "VC3C"};
+static constexpr const std::array s_mechacon_version_display_names = {
+  "94/09/19 (VC0A)", "94/11/18 (VC0B)", "95/05/16 (VC1A)", "95/07/24 (VC1B)", "95/07/24 (VD1)",
+  "96/08/15 (VC2)",  "96/08/18 (VC1)",  "96/09/12 (VC2J)", "97/01/10 (VC2A)", "97/08/14 (VC2B)",
+  "98/06/10 (VC3A)", "99/02/01 (VC3B)", "01/03/06 (VC3C)"};
+
+std::optional<CDROMMechaconVersion> Settings::ParseCDROMMechVersionName(const char* str)
+{
+  u32 index = 0;
+  for (const char* name : s_mechacon_version_names)
+  {
+    if (StringUtil::Strcasecmp(name, str) == 0)
+      return static_cast<CDROMMechaconVersion>(index);
+
+    index++;
+  }
+
+  return std::nullopt;
+}
+
+const char* Settings::GetCDROMMechVersionName(CDROMMechaconVersion mode)
+{
+  return s_mechacon_version_names[static_cast<u32>(mode)];
+}
+
+const char* Settings::GetCDROMMechVersionDisplayName(CDROMMechaconVersion mode)
+{
+  return s_mechacon_version_display_names[static_cast<size_t>(mode)];
 }
 
 std::string EmuFolders::AppRoot;

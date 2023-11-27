@@ -20,6 +20,9 @@
    <iconset resource="resources/resources.qrc">
     <normaloff>:/icons/duck.png</normaloff>:/icons/duck.png</iconset>
   </property>
+  <property name="unifiedTitleAndToolBarOnMac">
+   <bool>true</bool>
+  </property>
   <widget class="QStackedWidget" name="mainContainer"/>
   <widget class="QMenuBar" name="menuBar">
    <property name="geometry">
@@ -154,6 +157,7 @@
     <addaction name="separator"/>
     <addaction name="actionCheckForUpdates"/>
     <addaction name="separator"/>
+    <addaction name="actionViewThirdPartyNotices" />
     <addaction name="actionAboutQt"/>
     <addaction name="actionAbout"/>
    </widget>
@@ -504,6 +508,11 @@
    </property>
    <property name="text">
     <string>Check for &amp;Updates...</string>
+   </property>
+  </action>
+  <action name="actionViewThirdPartyNotices">
+   <property name="text">
+    <string>View Third-Party Notices...</string>
    </property>
   </action>
   <action name="actionAboutQt">

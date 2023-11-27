@@ -390,7 +390,8 @@ static void BeginInputBinding(SettingsInterface* bsi, InputBindingInfo::Type typ
                               const std::string_view& key, const std::string_view& display_name);
 static void DrawInputBindingWindow();
 static void DrawInputBindingButton(SettingsInterface* bsi, InputBindingInfo::Type type, const char* section,
-                                   const char* name, const char* display_name, bool show_type = true);
+                                   const char* name, const char* display_name, const char* icon_name,
+                                   bool show_type = true);
 static void ClearInputBindingVariables();
 static void StartAutomaticBinding(u32 port);
 
@@ -679,7 +680,7 @@ void FullscreenUI::ToggleTheme()
 void FullscreenUI::PauseForMenuOpen(bool set_pause_menu_open)
 {
   s_was_paused_on_quick_menu_open = (System::GetState() == System::State::Paused);
-  if (g_settings.pause_on_menu && !s_was_paused_on_quick_menu_open)
+  if (!s_was_paused_on_quick_menu_open)
     Host::RunOnCPUThread([]() { System::PauseSystem(true); });
 
   s_pause_menu_was_open |= set_pause_menu_open;
@@ -1342,7 +1343,8 @@ std::string FullscreenUI::GetEffectiveStringSetting(SettingsInterface* bsi, cons
 }
 
 void FullscreenUI::DrawInputBindingButton(SettingsInterface* bsi, InputBindingInfo::Type type, const char* section,
-                                          const char* name, const char* display_name, bool show_type)
+                                          const char* name, const char* display_name, const char* icon_name,
+                                          bool show_type)
 {
   if (type == InputBindingInfo::Type::Pointer)
     return;
@@ -1350,50 +1352,82 @@ void FullscreenUI::DrawInputBindingButton(SettingsInterface* bsi, InputBindingIn
   TinyString title;
   title.fmt("{}/{}", section, name);
 
+  std::string value = bsi->GetStringValue(section, name);
+  const bool oneline = (std::count_if(value.begin(), value.end(), [](char ch) { return (ch == '&'); }) <= 1);
+
   ImRect bb;
   bool visible, hovered, clicked;
-  clicked =
-    MenuButtonFrame(title, true, ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT, &visible, &hovered, &bb.Min, &bb.Max);
+  clicked = MenuButtonFrame(title, true,
+                            oneline ? ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY :
+                                      ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT,
+                            &visible, &hovered, &bb.Min, &bb.Max);
   if (!visible)
     return;
 
-  const float midpoint = bb.Min.y + g_large_font->FontSize + LayoutScale(4.0f);
-  const ImRect title_bb(bb.Min, ImVec2(bb.Max.x, midpoint));
-  const ImRect summary_bb(ImVec2(bb.Min.x, midpoint), bb.Max);
+  if (oneline)
+    InputManager::PrettifyInputBinding(value);
 
   if (show_type)
   {
-    switch (type)
+    if (icon_name)
     {
-      case InputBindingInfo::Type::Button:
-        title.fmt(ICON_FA_DOT_CIRCLE "{}", display_name);
-        break;
-      case InputBindingInfo::Type::Axis:
-      case InputBindingInfo::Type::HalfAxis:
-        title.fmt(ICON_FA_BULLSEYE "{}", display_name);
-        break;
-      case InputBindingInfo::Type::Motor:
-        title.fmt(ICON_FA_BELL "{}", display_name);
-        break;
-      case InputBindingInfo::Type::Macro:
-        title.fmt(ICON_FA_PIZZA_SLICE "{}", display_name);
-        break;
-      default:
-        title = display_name;
-        break;
+      title.fmt("{} {}", icon_name, display_name);
+    }
+    else
+    {
+      switch (type)
+      {
+        case InputBindingInfo::Type::Button:
+          title.fmt(ICON_FA_DOT_CIRCLE " {}", display_name);
+          break;
+        case InputBindingInfo::Type::Axis:
+        case InputBindingInfo::Type::HalfAxis:
+          title.fmt(ICON_FA_BULLSEYE " {}", display_name);
+          break;
+        case InputBindingInfo::Type::Motor:
+          title.fmt(ICON_FA_BELL " {}", display_name);
+          break;
+        case InputBindingInfo::Type::Macro:
+          title.fmt(ICON_FA_PIZZA_SLICE " {}", display_name);
+          break;
+        default:
+          title = display_name;
+          break;
+      }
     }
   }
 
-  ImGui::PushFont(g_large_font);
-  ImGui::RenderTextClipped(title_bb.Min, title_bb.Max, show_type ? title.c_str() : display_name, nullptr, nullptr,
-                           ImVec2(0.0f, 0.0f), &title_bb);
-  ImGui::PopFont();
+  const float midpoint = bb.Min.y + g_large_font->FontSize + LayoutScale(4.0f);
 
-  const std::string value(bsi->GetStringValue(section, name));
-  ImGui::PushFont(g_medium_font);
-  ImGui::RenderTextClipped(summary_bb.Min, summary_bb.Max, value.empty() ? FSUI_CSTR("No Binding") : value.c_str(),
-                           nullptr, nullptr, ImVec2(0.0f, 0.0f), &summary_bb);
-  ImGui::PopFont();
+  if (oneline)
+  {
+    ImGui::PushFont(g_large_font);
+
+    const ImVec2 value_size(ImGui::CalcTextSize(value.empty() ? FSUI_CSTR("-") : value.c_str(), nullptr));
+    const float text_end = bb.Max.x - value_size.x;
+    const ImRect title_bb(bb.Min, ImVec2(text_end, midpoint));
+
+    ImGui::RenderTextClipped(title_bb.Min, title_bb.Max, show_type ? title.c_str() : display_name, nullptr, nullptr,
+                             ImVec2(0.0f, 0.0f), &title_bb);
+    ImGui::RenderTextClipped(bb.Min, bb.Max, value.empty() ? FSUI_CSTR("-") : value.c_str(), nullptr, &value_size,
+                             ImVec2(1.0f, 0.5f), &bb);
+    ImGui::PopFont();
+  }
+  else
+  {
+    const ImRect title_bb(bb.Min, ImVec2(bb.Max.x, midpoint));
+    const ImRect summary_bb(ImVec2(bb.Min.x, midpoint), bb.Max);
+
+    ImGui::PushFont(g_large_font);
+    ImGui::RenderTextClipped(title_bb.Min, title_bb.Max, show_type ? title.c_str() : display_name, nullptr, nullptr,
+                             ImVec2(0.0f, 0.0f), &title_bb);
+    ImGui::PopFont();
+
+    ImGui::PushFont(g_medium_font);
+    ImGui::RenderTextClipped(summary_bb.Min, summary_bb.Max, value.empty() ? FSUI_CSTR("No Binding") : value.c_str(),
+                             nullptr, nullptr, ImVec2(0.0f, 0.0f), &summary_bb);
+    ImGui::PopFont();
+  }
 
   if (clicked)
   {
@@ -2722,9 +2756,6 @@ void FullscreenUI::DrawInterfaceSettingsPage()
                     FSUI_CSTR("Pauses the emulator when you minimize the window or switch to another "
                               "application, and unpauses when you switch back."),
                     "Main", "PauseOnFocusLoss", false);
-  DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_WINDOW_MAXIMIZE, "Pause On Menu"),
-                    FSUI_CSTR("Pauses the emulator when you open the quick menu, and unpauses when you close it."),
-                    "Main", "PauseOnMenu", true);
   DrawToggleSetting(
     bsi, FSUI_ICONSTR(ICON_FA_POWER_OFF, "Confirm Power Off"),
     FSUI_CSTR("Determines whether a prompt will be displayed to confirm shutting down the emulator/game "
@@ -3357,7 +3388,7 @@ void FullscreenUI::DrawControllerSettingsPage()
     for (const Controller::ControllerBindingInfo& bi : ci->bindings)
     {
       DrawInputBindingButton(bsi, bi.type, section.c_str(), bi.name,
-                             Host::TranslateToCString(ci->name, bi.display_name), true);
+                             Host::TranslateToCString(ci->name, bi.display_name), bi.icon_name, true);
     }
 
     if (mtap_enabled[mtap_port])
@@ -3375,13 +3406,31 @@ void FullscreenUI::DrawControllerSettingsPage()
     {
       DrawInputBindingButton(bsi, InputBindingInfo::Type::Macro, section.c_str(),
                              TinyString::from_fmt("Macro{}", macro_index + 1),
-                             TinyString::from_fmt(FSUI_FSTR("Macro {} Trigger"), macro_index + 1));
+                             TinyString::from_fmt(FSUI_FSTR("Macro {} Trigger"), macro_index + 1), nullptr);
 
       std::string binds_string(
         bsi->GetStringValue(section.c_str(), fmt::format("Macro{}Binds", macro_index + 1).c_str()));
-      if (MenuButton(
+      TinyString pretty_binds_string;
+      if (!binds_string.empty())
+      {
+        for (const std::string_view& bind : StringUtil::SplitString(binds_string, '&', true))
+        {
+          const char* dispname = nullptr;
+          for (const Controller::ControllerBindingInfo& bi : ci->bindings)
+          {
+            if (bind == bi.name)
+            {
+              dispname = bi.icon_name ? bi.icon_name : Host::TranslateToCString(ci->name, bi.display_name);
+              break;
+            }
+          }
+          pretty_binds_string.append_fmt("{}{}", pretty_binds_string.empty() ? "" : " ", dispname);
+        }
+      }
+      if (MenuButtonWithValue(
             TinyString::from_fmt(fmt::runtime(FSUI_ICONSTR(ICON_FA_KEYBOARD, "Macro {} Buttons")), macro_index + 1),
-            binds_string.empty() ? FSUI_CSTR("No Buttons Selected") : binds_string.c_str()))
+            nullptr, pretty_binds_string.empty() ? FSUI_CSTR("-") : pretty_binds_string.c_str(), true,
+            LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
       {
         std::vector<std::string_view> buttons_split(StringUtil::SplitString(binds_string, '&', true));
         ImGuiFullscreen::ChoiceDialogOptions options;
@@ -3448,10 +3497,10 @@ void FullscreenUI::DrawControllerSettingsPage()
       s32 frequency = bsi->GetIntValue(section.c_str(), freq_key.c_str(), 0);
       SmallString freq_summary;
       if (frequency == 0)
-        freq_summary = FSUI_VSTR("Macro will not auto-toggle.");
+        freq_summary = FSUI_VSTR("Disabled");
       else
-        freq_summary.fmt(FSUI_FSTR("Macro will toggle every {} frames."), frequency);
-      if (MenuButton(freq_title, freq_summary))
+        freq_summary.fmt(FSUI_FSTR("{} Frames"), frequency);
+      if (MenuButtonWithValue(freq_title, nullptr, freq_summary, true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
         ImGui::OpenPopup(freq_title);
 
       ImGui::SetNextWindowSize(LayoutScale(500.0f, 180.0f));
@@ -3551,7 +3600,7 @@ void FullscreenUI::DrawHotkeySettingsPage()
     }
 
     DrawInputBindingButton(bsi, InputBindingInfo::Type::Button, "Hotkeys", hotkey->name,
-                           Host::TranslateToCString("Hotkeys", hotkey->display_name), false);
+                           Host::TranslateToCString("Hotkeys", hotkey->display_name), nullptr, false);
   }
 
   EndMenuButtons();
@@ -6423,98 +6472,6 @@ void FullscreenUI::DrawAboutWindow()
   ImGui::PopFont();
 }
 
-bool FullscreenUI::DrawErrorWindow(const char* message)
-{
-  bool is_open = true;
-
-  ImGuiFullscreen::BeginLayout();
-
-  ImGui::SetNextWindowSize(LayoutScale(500.0f, 0.0f));
-  ImGui::SetNextWindowPos(ImGui::GetIO().DisplaySize * 0.5f, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-  ImGui::OpenPopup("ReportError");
-
-  ImGui::PushFont(g_large_font);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, LayoutScale(10.0f));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, LayoutScale(10.0f, 10.0f));
-
-  if (ImGui::BeginPopupModal("ReportError", &is_open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize))
-  {
-    ImGui::SetCursorPos(LayoutScale(LAYOUT_MENU_BUTTON_X_PADDING, LAYOUT_MENU_BUTTON_Y_PADDING));
-    ImGui::TextWrapped("%s", message);
-    ImGui::GetCurrentWindow()->DC.CursorPos.y += LayoutScale(5.0f);
-
-    BeginMenuButtons();
-
-    if (ActiveButton(FSUI_ICONSTR(ICON_FA_WINDOW_CLOSE, "Close"), false))
-    {
-      ImGui::CloseCurrentPopup();
-      is_open = false;
-    }
-    EndMenuButtons();
-
-    ImGui::EndPopup();
-  }
-
-  ImGui::PopStyleVar(2);
-  ImGui::PopFont();
-
-  ImGuiFullscreen::EndLayout();
-  return !is_open;
-}
-
-bool FullscreenUI::DrawConfirmWindow(const char* message, bool* result)
-{
-  bool is_open = true;
-
-  ImGuiFullscreen::BeginLayout();
-
-  ImGui::SetNextWindowSize(LayoutScale(500.0f, 0.0f));
-  ImGui::SetNextWindowPos(ImGui::GetIO().DisplaySize * 0.5f, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-  ImGui::OpenPopup("ConfirmMessage");
-
-  ImGui::PushFont(g_large_font);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, LayoutScale(10.0f));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, LayoutScale(10.0f, 10.0f));
-
-  if (ImGui::BeginPopupModal("ConfirmMessage", &is_open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize))
-  {
-    ImGui::SetCursorPos(LayoutScale(LAYOUT_MENU_BUTTON_X_PADDING, LAYOUT_MENU_BUTTON_Y_PADDING));
-    ImGui::TextWrapped("%s", message);
-    ImGui::GetCurrentWindow()->DC.CursorPos.y += LayoutScale(5.0f);
-
-    BeginMenuButtons();
-
-    bool done = false;
-
-    if (ActiveButton(FSUI_ICONSTR(ICON_FA_CHECK, "Yes"), false))
-    {
-      *result = true;
-      done = true;
-    }
-
-    if (ActiveButton(FSUI_ICONSTR(ICON_FA_TIMES, "No"), false))
-    {
-      *result = false;
-      done = true;
-    }
-    if (done)
-    {
-      ImGui::CloseCurrentPopup();
-      is_open = false;
-    }
-
-    EndMenuButtons();
-
-    ImGui::EndPopup();
-  }
-
-  ImGui::PopStyleVar(2);
-  ImGui::PopFont();
-
-  ImGuiFullscreen::EndLayout();
-  return !is_open;
-}
-
 void FullscreenUI::OpenAchievementsWindow()
 {
   if (!Achievements::IsActive())
@@ -6687,110 +6644,6 @@ void FullscreenUI::ProgressCallback::SetCancelled()
     m_cancelled = true;
 }
 
-#else
-
-// "Lightweight" version with only notifications for Android.
-namespace FullscreenUI {
-static bool s_initialized = false;
-static bool s_tried_to_initialize = false;
-} // namespace FullscreenUI
-
-bool FullscreenUI::Initialize()
-{
-  if (s_initialized)
-    return true;
-
-  if (s_tried_to_initialize)
-    return false;
-
-  ImGuiFullscreen::SetTheme(false);
-  ImGuiFullscreen::UpdateLayoutScale();
-
-  if (!ImGuiManager::AddFullscreenFontsIfMissing() || !ImGuiFullscreen::Initialize("images/placeholder.png"))
-  {
-    ImGuiFullscreen::Shutdown();
-    s_tried_to_initialize = true;
-    return false;
-  }
-
-  s_initialized = true;
-  return true;
-}
-
-bool FullscreenUI::IsInitialized()
-{
-  return s_initialized;
-}
-
-bool FullscreenUI::HasActiveWindow()
-{
-  return false;
-}
-
-void FullscreenUI::CheckForConfigChanges(const Settings& old_settings)
-{
-  // noop
-}
-
-void FullscreenUI::OnSystemStarted()
-{
-  // noop
-}
-
-void FullscreenUI::OnSystemPaused()
-{
-  // noop
-}
-
-void FullscreenUI::OnSystemResumed()
-{
-  // noop
-}
-
-void FullscreenUI::OnSystemDestroyed()
-{
-  // noop
-}
-
-void FullscreenUI::OnRunningGameChanged()
-{
-  // noop
-}
-
-void FullscreenUI::OpenPauseMenu()
-{
-  // noop
-}
-
-bool FullscreenUI::OpenAchievementsWindow()
-{
-  return false;
-}
-
-bool FullscreenUI::OpenLeaderboardsWindow()
-{
-  return false;
-}
-
-void FullscreenUI::Shutdown()
-{
-  ImGuiFullscreen::Shutdown();
-  s_initialized = false;
-  s_tried_to_initialize = false;
-}
-
-void FullscreenUI::Render()
-{
-  if (!s_initialized)
-    return;
-
-  ImGuiFullscreen::UploadAsyncTextures();
-
-  ImGuiFullscreen::BeginLayout();
-  ImGuiFullscreen::EndLayout();
-  ImGuiFullscreen::ResetCloseMenuIfNeeded();
-}
-
 #endif // __ANDROID__
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -6803,6 +6656,7 @@ void FullscreenUI::Render()
 #if 0
 // TRANSLATION-STRING-AREA-BEGIN
 TRANSLATE_NOOP("FullscreenUI", "${title}: Title of the game.\n${filetitle}: Name component of the game's filename.\n${serial}: Serial of the game.");
+TRANSLATE_NOOP("FullscreenUI", "-");
 TRANSLATE_NOOP("FullscreenUI", "1 Frame");
 TRANSLATE_NOOP("FullscreenUI", "10 Frames");
 TRANSLATE_NOOP("FullscreenUI", "100% [60 FPS (NTSC) / 50 FPS (PAL)]");
@@ -7137,7 +6991,6 @@ TRANSLATE_NOOP("FullscreenUI", "Logs messages to duckstation.log in the user dir
 TRANSLATE_NOOP("FullscreenUI", "Logs messages to the console window.");
 TRANSLATE_NOOP("FullscreenUI", "Logs messages to the debug console where supported.");
 TRANSLATE_NOOP("FullscreenUI", "Logs out of RetroAchievements.");
-TRANSLATE_NOOP("FullscreenUI", "Macro will toggle every {} frames.");
 TRANSLATE_NOOP("FullscreenUI", "Macro {} Buttons");
 TRANSLATE_NOOP("FullscreenUI", "Macro {} Frequency");
 TRANSLATE_NOOP("FullscreenUI", "Macro {} Trigger");
@@ -7157,7 +7010,6 @@ TRANSLATE_NOOP("FullscreenUI", "Mute All Sound");
 TRANSLATE_NOOP("FullscreenUI", "Mute CD Audio");
 TRANSLATE_NOOP("FullscreenUI", "No");
 TRANSLATE_NOOP("FullscreenUI", "No Binding");
-TRANSLATE_NOOP("FullscreenUI", "No Buttons Selected");
 TRANSLATE_NOOP("FullscreenUI", "No Game Selected");
 TRANSLATE_NOOP("FullscreenUI", "No cheats found for {}.");
 TRANSLATE_NOOP("FullscreenUI", "No input profiles available.");
@@ -7188,11 +7040,9 @@ TRANSLATE_NOOP("FullscreenUI", "Patches");
 TRANSLATE_NOOP("FullscreenUI", "Patches the BIOS to skip the boot animation. Safe to enable.");
 TRANSLATE_NOOP("FullscreenUI", "Path");
 TRANSLATE_NOOP("FullscreenUI", "Pause On Focus Loss");
-TRANSLATE_NOOP("FullscreenUI", "Pause On Menu");
 TRANSLATE_NOOP("FullscreenUI", "Pause On Start");
 TRANSLATE_NOOP("FullscreenUI", "Pauses the emulator when a game is started.");
 TRANSLATE_NOOP("FullscreenUI", "Pauses the emulator when you minimize the window or switch to another application, and unpauses when you switch back.");
-TRANSLATE_NOOP("FullscreenUI", "Pauses the emulator when you open the quick menu, and unpauses when you close it.");
 TRANSLATE_NOOP("FullscreenUI", "Per-Game Configuration");
 TRANSLATE_NOOP("FullscreenUI", "Per-game controller configuration initialized with global settings.");
 TRANSLATE_NOOP("FullscreenUI", "Performance enhancement - jumps directly between blocks instead of returning to the dispatcher.");
@@ -7399,6 +7249,7 @@ TRANSLATE_NOOP("FullscreenUI", "Writes textures which can be replaced to the dum
 TRANSLATE_NOOP("FullscreenUI", "Yes");
 TRANSLATE_NOOP("FullscreenUI", "\"Challenge\" mode for achievements, including leaderboard tracking. Disables save state, cheats, and slowdown functions.");
 TRANSLATE_NOOP("FullscreenUI", "\"PlayStation\" and \"PSX\" are registered trademarks of Sony Interactive Entertainment Europe Limited. This software is not affiliated in any way with Sony Interactive Entertainment.");
+TRANSLATE_NOOP("FullscreenUI", "{} Frames");
 TRANSLATE_NOOP("FullscreenUI", "{} deleted.");
 TRANSLATE_NOOP("FullscreenUI", "{} does not exist.");
 TRANSLATE_NOOP("FullscreenUI", "{} is not a valid disc image.");

@@ -13,6 +13,9 @@
 #include "settings.h"
 #include "timing_event.h"
 #include <limits>
+
+#ifdef CPU_ARCH_RISCV64
+
 Log_SetChannel(CPU::NewRec);
 
 #ifdef ENABLE_HOST_DISASSEMBLY
@@ -586,14 +589,14 @@ void CPU::NewRec::RISCV64Compiler::EndBlock(const std::optional<u32>& newpc, boo
 
   // flush regs
   Flush(FLUSH_END_BLOCK);
-  EndAndLinkBlock(newpc, do_event_test);
+  EndAndLinkBlock(newpc, do_event_test, false);
 }
 
 void CPU::NewRec::RISCV64Compiler::EndBlockWithException(Exception excode)
 {
   // flush regs, but not pc, it's going to get overwritten
   // flush cycles because of the GTE instruction stuff...
-  Flush(FLUSH_END_BLOCK | FLUSH_FOR_EXCEPTION);
+  Flush(FLUSH_END_BLOCK | FLUSH_FOR_EXCEPTION | FLUSH_FOR_C_CALL);
 
   // TODO: flush load delay
   // TODO: break for pcdrv
@@ -604,14 +607,16 @@ void CPU::NewRec::RISCV64Compiler::EndBlockWithException(Exception excode)
   EmitCall(reinterpret_cast<const void*>(static_cast<void (*)(u32, u32)>(&CPU::RaiseException)));
   m_dirty_pc = false;
 
-  EndAndLinkBlock(std::nullopt, true);
+  EndAndLinkBlock(std::nullopt, true, false);
 }
 
-void CPU::NewRec::RISCV64Compiler::EndAndLinkBlock(const std::optional<u32>& newpc, bool do_event_test)
+void CPU::NewRec::RISCV64Compiler::EndAndLinkBlock(const std::optional<u32>& newpc, bool do_event_test,
+                                                   bool force_run_events)
 {
   // event test
   // pc should've been flushed
-  DebugAssert(!m_dirty_pc);
+  DebugAssert(!m_dirty_pc && !m_block_ended);
+  m_block_ended = true;
 
   // TODO: try extracting this to a function
   // TODO: move the cycle flush in here..
@@ -646,7 +651,11 @@ void CPU::NewRec::RISCV64Compiler::EndAndLinkBlock(const std::optional<u32>& new
   }
 
   // jump to dispatcher or next block
-  if (!newpc.has_value())
+  if (force_run_events)
+  {
+    rvEmitJmp(rvAsm, CodeCache::g_run_events_and_dispatch);
+  }
+  else if (!newpc.has_value())
   {
     rvEmitJmp(rvAsm, CodeCache::g_dispatcher);
   }
@@ -664,8 +673,6 @@ void CPU::NewRec::RISCV64Compiler::EndAndLinkBlock(const std::optional<u32>& new
       rvEmitJmp(rvAsm, target);
     }
   }
-
-  m_block_ended = true;
 }
 
 const void* CPU::NewRec::RISCV64Compiler::EndCompile(u32* code_size, u32* far_code_size)
@@ -2156,19 +2163,18 @@ void CPU::NewRec::RISCV64Compiler::Compile_mtc0(CompileFlags cf)
     SwitchToFarCode(true, &Assembler::BEQ, RSCRATCH, zero);
     rvAsm->ADDI(sp, sp, -16);
     rvAsm->SW(RARG1, 0, sp);
-    rvAsm->SW(RARG2, 8, sp);
     EmitCall(reinterpret_cast<const void*>(&CPU::UpdateMemoryPointers));
-    rvAsm->SW(RARG2, 8, sp);
-    rvAsm->SW(RARG1, 0, sp);
+    rvAsm->LW(RARG1, 0, sp);
     rvAsm->ADDI(sp, sp, 16);
     rvAsm->LD(RMEMBASE, PTR(&g_state.fastmem_base));
     SwitchToNearCode(true);
-  }
 
-  if (reg == Cop0Reg::SR || reg == Cop0Reg::CAUSE)
+    TestInterrupts(RARG1);
+  }
+  else if (reg == Cop0Reg::CAUSE)
   {
-    const GPR sr = (reg == Cop0Reg::SR) ? RARG2 : (rvAsm->LW(RARG1, PTR(&g_state.cop0_regs.sr.bits)), RARG1);
-    TestInterrupts(sr);
+    rvAsm->LW(RARG1, PTR(&g_state.cop0_regs.sr.bits));
+    TestInterrupts(RARG1);
   }
 
   if (reg == Cop0Reg::DCIC && g_settings.cpu_recompiler_memory_exceptions)
@@ -2208,10 +2214,36 @@ void CPU::NewRec::RISCV64Compiler::TestInterrupts(const biscuit::GPR& sr)
   rvAsm->SRLIW(sr, sr, 8);
   rvAsm->ANDI(sr, sr, 0xFF);
   SwitchToFarCode(true, &Assembler::BEQ, sr, zero);
+
   BackupHostState();
-  Flush(FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_EXCEPTION | FLUSH_FOR_C_CALL);
-  EmitCall(reinterpret_cast<const void*>(&DispatchInterrupt));
-  EndBlock(std::nullopt, true);
+
+  // Update load delay, this normally happens at the end of an instruction, but we're finishing it early.
+  UpdateLoadDelay();
+
+  Flush(FLUSH_END_BLOCK | FLUSH_FOR_EXCEPTION | FLUSH_FOR_C_CALL);
+
+  // Can't use EndBlockWithException() here, because it'll use the wrong PC.
+  // Can't use RaiseException() on the fast path if we're the last instruction, because the next PC is unknown.
+  if (!iinfo->is_last_instruction)
+  {
+    EmitMov(RARG1, Cop0Registers::CAUSE::MakeValueForException(Exception::INT, iinfo->is_branch_instruction, false,
+                                                               (inst + 1)->cop.cop_n));
+    EmitMov(RARG2, m_compiler_pc);
+    EmitCall(reinterpret_cast<const void*>(static_cast<void (*)(u32, u32)>(&CPU::RaiseException)));
+    m_dirty_pc = false;
+    EndAndLinkBlock(std::nullopt, true, false);
+  }
+  else
+  {
+    if (m_dirty_pc)
+      EmitMov(RARG1, m_compiler_pc);
+    rvAsm->SW(biscuit::zero, PTR(&g_state.downcount));
+    if (m_dirty_pc)
+      rvAsm->SW(RARG1, PTR(&g_state.pc));
+    m_dirty_pc = false;
+    EndAndLinkBlock(std::nullopt, false, true);
+  }
+
   RestoreHostState();
   SwitchToNearCode(false);
 
@@ -2451,3 +2483,5 @@ u32 CPU::NewRec::CompileLoadStoreThunk(void* thunk_code, u32 thunk_space, void* 
 
   return static_cast<u32>(rvAsm->GetCodeBuffer().GetSizeInBytes());
 }
+
+#endif // CPU_ARCH_RISCV64

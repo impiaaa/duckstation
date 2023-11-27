@@ -11,6 +11,9 @@
 #include "cpu_recompiler_thunks.h"
 #include "settings.h"
 #include "timing_event.h"
+
+#ifdef CPU_ARCH_ARM64
+
 Log_SetChannel(CPU::Recompiler);
 
 #ifdef ENABLE_HOST_DISASSEMBLY
@@ -1411,17 +1414,7 @@ void CodeGenerator::RestoreStackAfterCall(u32 adjust_size)
 
 void CodeGenerator::EmitCall(const void* ptr)
 {
-  const s64 displacement = armGetPCDisplacement(GetCurrentCodePointer(), ptr);
-  const bool use_blr = !vixl::IsInt26(displacement);
-  if (use_blr)
-  {
-    m_emit->Mov(GetHostReg64(RSCRATCH), reinterpret_cast<uintptr_t>(ptr));
-    m_emit->Blr(GetHostReg64(RSCRATCH));
-  }
-  else
-  {
-    m_emit->bl(displacement);
-  }
+  armEmitCall(m_emit, ptr, false);
 }
 
 void CodeGenerator::EmitFunctionCallPtr(Value* return_value, const void* ptr)
@@ -2270,7 +2263,7 @@ void CodeGenerator::EmitBlockProtectCheck(const u8* ram_ptr, const u8* shadow_pt
     m_emit->ldr(vtmp, a64::MemOperand(RXARG2, offset));
     m_emit->cmeq(dst, dst, vtmp);
     if (!first)
-      m_emit->and_(dst.V16B(), dst.V16B(), vtmp.V16B());
+      m_emit->and_(a64::v0.V16B(), a64::v0.V16B(), dst.V16B());
     else
       first = false;
 
@@ -2602,3 +2595,5 @@ void CodeGenerator::EmitLoadGlobalAddress(HostReg host_reg, const void* ptr)
 }
 
 } // namespace CPU::Recompiler
+
+#endif // CPU_ARCH_ARM64

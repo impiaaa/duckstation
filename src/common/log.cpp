@@ -293,7 +293,10 @@ void Log::DebugOutputLogCallback(void* pUserParam, const char* channelName, cons
   FormatLogMessageAndPrintW(channelName, functionName, level, message, false, false, true,
                             [](const std::wstring_view& message) { OutputDebugStringW(message.data()); });
 #elif defined(__ANDROID__)
-  static const int logPriority[LOGLEVEL_COUNT] = {
+  if (message.empty())
+    return;
+
+  static constexpr int logPriority[LOGLEVEL_COUNT] = {
     ANDROID_LOG_INFO,  // NONE
     ANDROID_LOG_ERROR, // ERROR
     ANDROID_LOG_WARN,  // WARNING
@@ -306,7 +309,7 @@ void Log::DebugOutputLogCallback(void* pUserParam, const char* channelName, cons
     ANDROID_LOG_DEBUG, // TRACE
   };
 
-  __android_log_write(logPriority[level], channelName, message);
+  __android_log_print(logPriority[level], channelName, "%.*s", static_cast<int>(message.length()), message.data());
 #else
 #endif
 }
@@ -442,6 +445,20 @@ void Log::SetFileOutputParams(bool enabled, const char* filename, bool timestamp
   s_file_output_timestamp = timestamps;
 }
 
+LOGLEVEL Log::GetLogLevel()
+{
+  return s_log_level;
+}
+
+bool Log::IsLogVisible(LOGLEVEL level, const char* channelName)
+{
+  if (level > s_log_level)
+    return false;
+
+  std::unique_lock lock(s_callback_mutex);
+  return FilterTest(level, channelName, lock);
+}
+
 void Log::SetLogLevel(LOGLEVEL level)
 {
   std::unique_lock lock(s_callback_mutex);
@@ -449,7 +466,7 @@ void Log::SetLogLevel(LOGLEVEL level)
   s_log_level = level;
 }
 
-void Log::SetLogfilter(std::string_view filter)
+void Log::SetLogFilter(std::string_view filter)
 {
   std::unique_lock lock(s_callback_mutex);
   if (s_log_filter != filter)

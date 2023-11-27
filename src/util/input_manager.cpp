@@ -14,6 +14,8 @@
 #include "imgui_manager.h"
 #include "input_source.h"
 
+#include "IconsPromptFont.h"
+
 #include "fmt/core.h"
 
 #include <array>
@@ -26,6 +28,8 @@
 #include <vector>
 
 Log_SetChannel(InputManager);
+
+namespace {
 
 // ------------------------------------------------------------------------
 // Constants
@@ -88,6 +92,8 @@ struct MacroButton
   bool trigger_state;       ///< Whether the macro button is active.
 };
 
+} // namespace
+
 // ------------------------------------------------------------------------
 // Forward Declarations (for static qualifier)
 // ------------------------------------------------------------------------
@@ -101,6 +107,7 @@ static std::optional<InputBindingKey> ParseSensorKey(const std::string_view& sou
 
 static std::vector<std::string_view> SplitChord(const std::string_view& binding);
 static bool SplitBinding(const std::string_view& binding, std::string_view* source, std::string_view* sub_binding);
+static void PrettifyInputBindingPart(const std::string_view binding, SmallString& ret, bool& changed);
 static void AddBindings(const std::vector<std::string>& bindings, const InputEventHandler& handler);
 
 static bool IsAxisHandler(const InputEventHandler& handler);
@@ -113,6 +120,7 @@ static void GenerateRelativeMouseEvents();
 
 static bool DoEventHook(InputBindingKey key, float value);
 static bool PreprocessEvent(InputBindingKey key, float value, GenericInputBinding generic_key);
+static bool ProcessEvent(InputBindingKey key, float value, bool skip_button_handlers);
 
 static void LoadMacroButtonConfig(SettingsInterface& si, const std::string& section, u32 pad,
                                   const Controller::ControllerInfo* cinfo);
@@ -328,7 +336,7 @@ std::string InputManager::ConvertInputBindingKeyToString(InputBindingInfo::Type 
     }
     else if (key.source_type < InputSourceType::Count && s_input_sources[static_cast<u32>(key.source_type)])
     {
-      return s_input_sources[static_cast<u32>(key.source_type)]->ConvertKeyToString(key);
+      return std::string(s_input_sources[static_cast<u32>(key.source_type)]->ConvertKeyToString(key));
     }
   }
 
@@ -360,6 +368,116 @@ std::string InputManager::ConvertInputBindingKeysToString(InputBindingInfo::Type
   }
 
   return ss.str();
+}
+
+bool InputManager::PrettifyInputBinding(std::string& binding)
+{
+  if (binding.empty())
+    return false;
+
+  const std::string_view binding_view(binding);
+
+  SmallString ret;
+  bool changed = false;
+
+  std::string_view::size_type last = 0;
+  std::string_view::size_type next;
+  while ((next = binding_view.find('&', last)) != std::string_view::npos)
+  {
+    if (last != next)
+    {
+      const std::string_view part = StringUtil::StripWhitespace(binding_view.substr(last, next - last));
+      if (!part.empty())
+      {
+        if (!ret.empty())
+          ret.append(" + ");
+        PrettifyInputBindingPart(part, ret, changed);
+      }
+    }
+    last = next + 1;
+  }
+  if (last < (binding_view.size() - 1))
+  {
+    const std::string_view part = StringUtil::StripWhitespace(binding_view.substr(last));
+    if (!part.empty())
+    {
+      if (!ret.empty())
+        ret.append(" + ");
+      PrettifyInputBindingPart(part, ret, changed);
+    }
+  }
+
+  if (changed)
+    binding = ret.view();
+
+  return changed;
+}
+
+void InputManager::PrettifyInputBindingPart(const std::string_view binding, SmallString& ret, bool& changed)
+{
+  std::string_view source, sub_binding;
+  if (!SplitBinding(binding, &source, &sub_binding))
+    return;
+
+  // lameee, string matching
+  if (StringUtil::StartsWith(source, "Keyboard"))
+  {
+    std::optional<InputBindingKey> key = ParseHostKeyboardKey(source, sub_binding);
+    const char* icon = key.has_value() ? ConvertHostKeyboardCodeToIcon(key->data) : nullptr;
+    if (icon)
+    {
+      ret.append(icon);
+      changed = true;
+      return;
+    }
+  }
+  else if (StringUtil::StartsWith(source, "Pointer"))
+  {
+    const std::optional<InputBindingKey> key = ParsePointerKey(source, sub_binding);
+    if (key.has_value())
+    {
+      if (key->source_subtype == InputSubclass::PointerButton)
+      {
+        static constexpr const char* button_icons[] = {
+          ICON_PF_MOUSE_BUTTON_1, ICON_PF_MOUSE_BUTTON_2, ICON_PF_MOUSE_BUTTON_3,
+          ICON_PF_MOUSE_BUTTON_4, ICON_PF_MOUSE_BUTTON_5,
+        };
+        if (key->data < std::size(button_icons))
+        {
+          ret.append(button_icons[key->data]);
+          changed = true;
+          return;
+        }
+      }
+    }
+  }
+  else if (StringUtil::StartsWith(source, "Sensor"))
+  {
+  }
+  else
+  {
+    for (u32 i = FIRST_EXTERNAL_INPUT_SOURCE; i < LAST_EXTERNAL_INPUT_SOURCE; i++)
+    {
+      if (s_input_sources[i])
+      {
+        std::optional<InputBindingKey> key = s_input_sources[i]->ParseKeyString(source, sub_binding);
+        if (key.has_value())
+        {
+          const TinyString icon = s_input_sources[i]->ConvertKeyToIcon(key.value());
+          if (!icon.empty())
+          {
+            ret.append(icon);
+            changed = true;
+            return;
+          }
+
+          break;
+        }
+      }
+    }
+  }
+
+  ret.append(binding);
 }
 
 void InputManager::AddBindings(const std::vector<std::string>& bindings, const InputEventHandler& handler)
@@ -844,7 +962,11 @@ bool InputManager::InvokeEvents(InputBindingKey key, float value, GenericInputBi
 
   // If imgui ate the event, don't fire our handlers.
   const bool skip_button_handlers = PreprocessEvent(key, value, generic_key);
+  return ProcessEvent(key, value, skip_button_handlers);
+}
 
+bool InputManager::ProcessEvent(InputBindingKey key, float value, bool skip_button_handlers)
+{
   // find all the bindings associated with this key
   const InputBindingKey masked_key = key.MaskDirection();
   const auto range = s_binding_map.equal_range(masked_key);
@@ -856,6 +978,7 @@ bool InputManager::InvokeEvents(InputBindingKey key, float value, GenericInputBi
   for (auto it = range.first; it != range.second; ++it)
   {
     InputBinding* binding = it->second.get();
+
     // find the key which matches us
     for (u32 i = 0; i < binding->num_keys; i++)
     {
@@ -865,6 +988,7 @@ bool InputManager::InvokeEvents(InputBindingKey key, float value, GenericInputBi
       const u8 bit = static_cast<u8>(1) << i;
       const bool negative = binding->keys[i].modifier == InputModifier::Negate;
       const bool new_state = (negative ? (value < 0.0f) : (value > 0.0f));
+
       float value_to_pass = 0.0f;
       switch (binding->keys[i].modifier)
       {
@@ -1603,6 +1727,8 @@ void InputManager::ReloadBindings(SettingsInterface& si, SettingsInterface& bind
   s_binding_map.clear();
   s_pad_vibration_array.clear();
   s_pointer_move_callbacks.clear();
+
+  Host::AddFixedInputBindings(binding_si);
 
   // Hotkeys use the base configuration, except if the custom hotkeys option is enabled.
   const bool use_profile_hotkeys = si.GetBoolValue("ControllerPorts", "UseProfileHotkeyBindings", false);

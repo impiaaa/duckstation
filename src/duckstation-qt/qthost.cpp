@@ -118,6 +118,7 @@ EmuThread::~EmuThread() = default;
 void QtHost::RegisterTypes()
 {
   // Register any standard types we need elsewhere
+  qRegisterMetaType<std::optional<WindowInfo>>("std::optional<WindowInfo>()");
   qRegisterMetaType<std::optional<bool>>();
   qRegisterMetaType<std::function<void()>>("std::function<void()>");
   qRegisterMetaType<std::shared_ptr<SystemBootParameters>>();
@@ -386,7 +387,7 @@ void EmuThread::setDefaultSettings(bool system /* = true */, bool controller /* 
   applySettings(false);
 
   if (system)
-    emit settingsResetToDefault();
+    emit settingsResetToDefault(system, controller);
 }
 
 void QtHost::SetDefaultSettings(SettingsInterface& si, bool system, bool controller)
@@ -1424,6 +1425,10 @@ void Host::ReportDebuggerMessage(const std::string_view& message)
   emit g_emu_thread->debuggerMessageReported(QString::fromUtf8(message));
 }
 
+void Host::AddFixedInputBindings(SettingsInterface& si)
+{
+}
+
 void Host::OnInputDeviceConnected(const std::string_view& identifier, const std::string_view& device_name)
 {
   emit g_emu_thread->onInputDeviceConnected(
@@ -1435,6 +1440,12 @@ void Host::OnInputDeviceDisconnected(const std::string_view& identifier)
 {
   emit g_emu_thread->onInputDeviceDisconnected(
     identifier.empty() ? QString() : QString::fromUtf8(identifier.data(), identifier.size()));
+}
+
+bool Host::ResourceFileExists(const char* filename)
+{
+  const std::string path(Path::Combine(EmuFolders::Resources, filename));
+  return FileSystem::FileExists(path.c_str());
 }
 
 std::optional<std::vector<u8>> Host::ReadResourceFile(const char* filename)
@@ -1622,11 +1633,8 @@ void Host::RequestExit(bool allow_confirm)
 
 std::optional<WindowInfo> Host::GetTopLevelWindowInfo()
 {
-  // Normally we'd just feed the std::optional all the way through here. But that won't work because of some bug
-  // in Qt 6.1, and we can't upgrade that because of raging/abusive Win7 users... to anyone still using that dead
-  // OS, this is a passive-aggressive "screw you".
-  WindowInfo ret;
-  QMetaObject::invokeMethod(g_main_window, "getWindowInfo", Qt::BlockingQueuedConnection, Q_ARG(WindowInfo*, &ret));
+  std::optional<WindowInfo> ret;
+  QMetaObject::invokeMethod(g_main_window, &MainWindow::getWindowInfo, Qt::BlockingQueuedConnection, &ret);
   return ret;
 }
 

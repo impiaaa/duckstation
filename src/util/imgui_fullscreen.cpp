@@ -45,7 +45,6 @@ static void DrawMessageDialog();
 static void DrawBackgroundProgressDialogs(ImVec2& position, float spacing);
 static void DrawNotifications(ImVec2& position, float spacing);
 static void DrawToast();
-static void GetMenuButtonFrameBounds(float height, ImVec2* pos, ImVec2* size);
 static bool MenuButtonFrame(const char* str_id, bool enabled, float height, bool* visible, bool* hovered, ImRect* bb,
                             ImGuiButtonFlags flags = 0, float hover_alpha = 1.0f);
 static void PopulateFileSelectorItems();
@@ -114,6 +113,7 @@ static std::string s_message_dialog_message;
 static std::array<std::string, 3> s_message_dialog_buttons;
 static MessageDialogCallbackVariant s_message_dialog_callback;
 
+namespace {
 struct FileSelectorItem
 {
   FileSelectorItem() = default;
@@ -132,6 +132,7 @@ struct FileSelectorItem
   std::string full_path;
   bool is_file;
 };
+} // namespace
 
 static bool s_file_selector_open = false;
 static bool s_file_selector_directory = false;
@@ -144,6 +145,7 @@ static std::vector<FileSelectorItem> s_file_selector_items;
 static constexpr float NOTIFICATION_FADE_IN_TIME = 0.2f;
 static constexpr float NOTIFICATION_FADE_OUT_TIME = 0.8f;
 
+namespace {
 struct Notification
 {
   std::string key;
@@ -156,6 +158,7 @@ struct Notification
   float target_y;
   float last_y;
 };
+} // namespace
 
 static std::vector<Notification> s_notifications;
 
@@ -164,6 +167,7 @@ static std::string s_toast_message;
 static Common::Timer::Value s_toast_start_time;
 static float s_toast_duration;
 
+namespace {
 struct BackgroundProgressDialogData
 {
   std::string message;
@@ -172,6 +176,7 @@ struct BackgroundProgressDialogData
   s32 max;
   s32 value;
 };
+} // namespace
 
 static std::vector<BackgroundProgressDialogData> s_background_progress_dialogs;
 static std::mutex s_background_progress_lock;

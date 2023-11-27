@@ -33,7 +33,10 @@ def run_regression_tests(runner, gamedir, destdir, dump_interval, frames, parall
     paths = glob.glob(gamedir + "/*.*", recursive=True)
     gamepaths = list(filter(is_game_path, paths))
 
-    if not os.path.isdir(destdir) and not os.mkdir(destdir):
+    try:
+        if not os.path.isdir(destdir):
+            os.mkdir(destdir)
+    except OSError:
         print("Failed to create directory")
         return False
 
@@ -41,7 +44,7 @@ def run_regression_tests(runner, gamedir, destdir, dump_interval, frames, parall
 
     if parallel <= 1:
         for game in gamepaths:
-            run_regression_test(runner, destdir, dump_interval, frames, game)
+            run_regression_test(runner, destdir, dump_interval, frames, renderer, game)
     else:
         print("Processing %u games on %u processors" % (len(gamepaths), parallel))
         func = partial(run_regression_test, runner, destdir, dump_interval, frames, renderer)

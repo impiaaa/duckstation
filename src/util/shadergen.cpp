@@ -14,12 +14,13 @@
 
 Log_SetChannel(ShaderGen);
 
-ShaderGen::ShaderGen(RenderAPI render_api, bool supports_dual_source_blend)
+ShaderGen::ShaderGen(RenderAPI render_api, bool supports_dual_source_blend, bool supports_framebuffer_fetch)
   : m_render_api(render_api), m_glsl(render_api != RenderAPI::D3D11 && render_api != RenderAPI::D3D12),
     m_spirv(render_api == RenderAPI::Vulkan || render_api == RenderAPI::Metal),
-    m_supports_dual_source_blend(supports_dual_source_blend), m_use_glsl_interface_blocks(false)
+    m_supports_dual_source_blend(supports_dual_source_blend), m_supports_framebuffer_fetch(supports_framebuffer_fetch),
+    m_use_glsl_interface_blocks(false)
 {
-#if defined(ENABLE_OPENGL) || defined(ENABLE_VULKAN)
+#if defined(ENABLE_OPENGL) || defined(ENABLE_VULKAN) || defined(__APPLE__)
   if (m_glsl)
   {
 #ifdef ENABLE_OPENGL
@@ -60,6 +61,11 @@ bool ShaderGen::UseGLSLBindingLayout()
 void ShaderGen::DefineMacro(std::stringstream& ss, const char* name, bool enabled)
 {
   ss << "#define " << name << " " << BoolToUInt32(enabled) << "\n";
+}
+
+void ShaderGen::DefineMacro(std::stringstream& ss, const char* name, s32 value)
+{
+  ss << "#define " << name << " " << value << "\n";
 }
 
 #ifdef ENABLE_OPENGL
@@ -116,6 +122,14 @@ void ShaderGen::WriteHeader(std::stringstream& ss)
 
 #ifdef ENABLE_OPENGL
   // Extension enabling for OpenGL.
+  if (m_render_api == RenderAPI::OpenGL || m_render_api == RenderAPI::OpenGLES)
+  {
+    if (GLAD_GL_EXT_shader_framebuffer_fetch)
+      ss << "#extension GL_EXT_shader_framebuffer_fetch : require\n";
+    else if (GLAD_GL_ARM_shader_framebuffer_fetch)
+      ss << "#extension GL_ARM_shader_framebuffer_fetch : require\n";
+  }
+
   if (m_render_api == RenderAPI::OpenGLES)
   {
     // Enable EXT_blend_func_extended for dual-source blend on OpenGL ES.
@@ -486,7 +500,7 @@ void ShaderGen::DeclareFragmentEntryPoint(
   const std::initializer_list<std::pair<const char*, const char*>>& additional_inputs,
   bool declare_fragcoord /* = false */, u32 num_color_outputs /* = 1 */, bool depth_output /* = false */,
   bool msaa /* = false */, bool ssaa /* = false */, bool declare_sample_id /* = false */,
-  bool noperspective_color /* = false */)
+  bool noperspective_color /* = false */, bool framebuffer_fetch /* = false */)
 {
   if (m_glsl)
   {
@@ -540,24 +554,43 @@ void ShaderGen::DeclareFragmentEntryPoint(
     if (depth_output)
       ss << "#define o_depth gl_FragDepth\n";
 
+    const char* target_0_qualifier = "out";
+#ifdef ENABLE_OPENGL
+    if ((m_render_api == RenderAPI::OpenGL || m_render_api == RenderAPI::OpenGLES) && m_supports_framebuffer_fetch &&
+        framebuffer_fetch)
+    {
+      if (GLAD_GL_EXT_shader_framebuffer_fetch)
+      {
+        target_0_qualifier = "inout";
+        ss << "#define LAST_FRAG_COLOR o_col0\n";
+      }
+      else if (GLAD_GL_ARM_shader_framebuffer_fetch)
+      {
+        ss << "#define LAST_FRAG_COLOR gl_LastFragColorARM\n";
+      }
+    }
+#endif
+
     if (m_use_glsl_binding_layout)
     {
       if (m_supports_dual_source_blend)
       {
         for (u32 i = 0; i < num_color_outputs; i++)
-          ss << "layout(location = 0, index = " << i << ") out float4 o_col" << i << ";\n";
+        {
+          ss << "layout(location = 0, index = " << i << ") " << ((i == 0) ? target_0_qualifier : "out")
+             << " float4 o_col" << i << ";\n";
+        }
       }
       else
       {
         Assert(num_color_outputs <= 1);
-        for (u32 i = 0; i < num_color_outputs; i++)
-          ss << "layout(location = " << i << ") out float4 o_col" << i << ";\n";
+        ss << "layout(location = 0) " << target_0_qualifier << " float4 o_col0;\n";
       }
     }
     else
     {
       for (u32 i = 0; i < num_color_outputs; i++)
-        ss << "out float4 o_col" << i << ";\n";
+        ss << ((i == 0) ? target_0_qualifier : "out") << " float4 o_col" << i << ";\n";
     }
 
     ss << "\n";

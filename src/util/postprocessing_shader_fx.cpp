@@ -6,6 +6,7 @@
 #include "shadergen.h"
 
 // TODO: Remove me
+#include "core/host.h"
 #include "core/settings.h"
 
 #include "common/assert.h"
@@ -36,6 +37,28 @@ static constexpr s32 DEFAULT_BUFFER_HEIGHT = 2160;
 static RenderAPI GetRenderAPI()
 {
   return g_gpu_device ? g_gpu_device->GetRenderAPI() : RenderAPI::D3D11;
+}
+
+static bool PreprocessorFileExistsCallback(const std::string& path)
+{
+  if (Path::IsAbsolute(path))
+    return FileSystem::FileExists(path.c_str());
+
+  return Host::ResourceFileExists(path.c_str());
+}
+
+static bool PreprocessorReadFileCallback(const std::string& path, std::string& data)
+{
+  std::optional<std::string> rdata;
+  if (Path::IsAbsolute(path))
+    rdata = FileSystem::ReadFileToString(path.c_str());
+  else
+    rdata = Host::ReadResourceFileToString(path.c_str());
+  if (!rdata.has_value())
+    return false;
+
+  data = std::move(rdata.value());
+  return true;
 }
 
 static std::unique_ptr<reshadefx::codegen> CreateRFXCodegen()
@@ -252,18 +275,38 @@ PostProcessing::ReShadeFXShader::ReShadeFXShader() = default;
 
 PostProcessing::ReShadeFXShader::~ReShadeFXShader() = default;
 
-bool PostProcessing::ReShadeFXShader::LoadFromFile(std::string name, const char* filename, bool only_config,
+bool PostProcessing::ReShadeFXShader::LoadFromFile(std::string name, std::string filename, bool only_config,
                                                    Error* error)
+{
+  std::optional<std::string> data = FileSystem::ReadFileToString(filename.c_str(), error);
+  if (!data.has_value())
+  {
+    Log_ErrorFmt("Failed to read '{}'.", filename);
+    return false;
+  }
+
+  return LoadFromString(std::move(name), std::move(filename), std::move(data.value()), only_config, error);
+}
+
+bool PostProcessing::ReShadeFXShader::LoadFromString(std::string name, std::string filename, std::string code,
+                                                     bool only_config, Error* error)
 {
   DebugAssert(only_config || g_gpu_device);
 
-  m_filename = filename;
   m_name = std::move(name);
+  m_filename = std::move(filename);
+
+  // Reshade's preprocessor expects this.
+  if (code.empty() || code.back() != '\n')
+    code.push_back('\n');
 
   reshadefx::module temp_module;
   if (!CreateModule(only_config ? DEFAULT_BUFFER_WIDTH : g_gpu_device->GetWindowWidth(),
-                    only_config ? DEFAULT_BUFFER_HEIGHT : g_gpu_device->GetWindowHeight(), &temp_module, error))
+                    only_config ? DEFAULT_BUFFER_HEIGHT : g_gpu_device->GetWindowHeight(), &temp_module,
+                    std::move(code), error))
+  {
     return false;
+  }
 
   if (!CreateOptions(temp_module, error))
     return false;
@@ -317,17 +360,33 @@ bool PostProcessing::ReShadeFXShader::IsValid() const
 }
 
 bool PostProcessing::ReShadeFXShader::CreateModule(s32 buffer_width, s32 buffer_height, reshadefx::module* mod,
-                                                   Error* error)
+                                                   std::string code, Error* error)
 {
   reshadefx::preprocessor pp;
-  pp.add_include_path(std::filesystem::path(Path::GetDirectory(m_filename)));
-  pp.add_include_path(std::filesystem::path(Path::Combine(
-    EmuFolders::Resources, "shaders" FS_OSPATH_SEPARATOR_STR "reshade" FS_OSPATH_SEPARATOR_STR "Shaders")));
+  pp.set_include_callbacks(PreprocessorFileExistsCallback, PreprocessorReadFileCallback);
+
+  if (Path::IsAbsolute(m_filename))
+  {
+    // we're a real file, so include that directory
+    pp.add_include_path(std::string(Path::GetDirectory(m_filename)));
+  }
+  else
+  {
+    // we're a resource, include the resource subdirectory, if there is one
+    if (std::string_view resdir = Path::GetDirectory(m_filename); !resdir.empty())
+      pp.add_include_path(std::string(resdir));
+  }
+
+  // root of the user directory, and resources
+  pp.add_include_path(Path::Combine(EmuFolders::Shaders, "reshade" FS_OSPATH_SEPARATOR_STR "Shaders"));
+  pp.add_include_path("shaders/reshade/Shaders");
+
   pp.add_macro_definition("__RESHADE__", "50901");
   pp.add_macro_definition("BUFFER_WIDTH", std::to_string(buffer_width)); // TODO: can we make these uniforms?
   pp.add_macro_definition("BUFFER_HEIGHT", std::to_string(buffer_height));
   pp.add_macro_definition("BUFFER_RCP_WIDTH", std::to_string(1.0f / static_cast<float>(buffer_width)));
   pp.add_macro_definition("BUFFER_RCP_HEIGHT", std::to_string(1.0f / static_cast<float>(buffer_height)));
+  pp.add_macro_definition("BUFFER_COLOR_BIT_DEPTH", "32");
 
   switch (GetRenderAPI())
   {
@@ -348,7 +407,7 @@ bool PostProcessing::ReShadeFXShader::CreateModule(s32 buffer_width, s32 buffer_
       break;
   }
 
-  if (!pp.append_file(std::filesystem::path(m_filename)))
+  if (!pp.append_string(std::move(code), m_filename))
   {
     Error::SetString(error, fmt::format("Failed to preprocess:\n{}", pp.errors()));
     return false;
@@ -682,6 +741,19 @@ bool PostProcessing::ReShadeFXShader::GetSourceOption(const reshadefx::uniform_i
       *si = SourceOptionType::MousePoint;
       return true;
     }
+    else if (source == "random")
+    {
+      if ((!ui.type.is_floating_point() && !ui.type.is_integral()) || ui.type.components() != 1)
+      {
+        Error::SetString(error, fmt::format("Unexpected type '{}' ({} components) for random source in uniform '{}'",
+                                            ui.type.description(), ui.type.components(), ui.name));
+        return false;
+      }
+
+      // TODO: This is missing min/max handling.
+      *si = (ui.type.base == reshadefx::type::t_float) ? SourceOptionType::RandomF : SourceOptionType::Random;
+      return true;
+    }
     else if (source == "overlay_active" || source == "has_depth")
     {
       *si = SourceOptionType::Zero;
@@ -775,13 +847,19 @@ bool PostProcessing::ReShadeFXShader::CreatePasses(GPUTexture::Format backbuffer
         return false;
       }
 
-      const std::string image_path =
-        Path::Combine(EmuFolders::Shaders, Path::Combine("reshade" FS_OSPATH_SEPARATOR_STR "Textures", source));
       Common::RGBA8Image image;
-      if (!image.LoadFromFile(image_path.c_str()))
+      if (const std::string image_path =
+            Path::Combine(EmuFolders::Shaders, Path::Combine("reshade" FS_OSPATH_SEPARATOR_STR "Textures", source));
+          !image.LoadFromFile(image_path.c_str()))
       {
-        Error::SetString(error, fmt::format("Failed to load image '{}' (from '{}')", source, image_path).c_str());
-        return false;
+        // Might be a base file/resource instead.
+        const std::string resource_name = Path::Combine("shaders/reshade/Textures", source);
+        if (std::optional<std::vector<u8>> resdata = Host::ReadResourceFile(resource_name.c_str());
+            !resdata.has_value() || !image.LoadFromBuffer(resource_name.c_str(), resdata->data(), resdata->size()))
+        {
+          Error::SetString(error, fmt::format("Failed to load image '{}' (from '{}')", source, image_path).c_str());
+          return false;
+        }
       }
 
       tex.rt_scale = 0.0f;
@@ -992,9 +1070,20 @@ bool PostProcessing::ReShadeFXShader::CompilePipeline(GPUTexture::Format format,
   m_textures.clear();
   m_passes.clear();
 
+  std::string fxcode;
+  if (!PreprocessorReadFileCallback(m_filename, fxcode))
+  {
+    Log_ErrorFmt("Failed to re-read shader for pipeline: '{}'", m_filename);
+    return false;
+  }
+
+  // Reshade's preprocessor expects this.
+  if (fxcode.empty() || fxcode.back() != '\n')
+    fxcode.push_back('\n');
+
   Error error;
   reshadefx::module mod;
-  if (!CreateModule(width, height, &mod, &error))
+  if (!CreateModule(width, height, &mod, std::move(fxcode), &error))
   {
     Log_ErrorPrintf("Failed to create module for '%s': %s", m_name.c_str(), error.GetDescription().c_str());
     return false;
@@ -1234,6 +1323,19 @@ bool PostProcessing::ReShadeFXShader::Apply(GPUTexture* input, GPUFramebuffer* f
         }
         break;
 
+        case SourceOptionType::Random:
+        {
+          const s32 rv = m_random() % 32767; // reshade uses rand(), which on some platforms has a 0x7fff maximum.
+          std::memcpy(dst, &rv, sizeof(rv));
+        }
+        break;
+        case SourceOptionType::RandomF:
+        {
+          const float rv = (m_random() - m_random.min()) / static_cast<float>(m_random.max() - m_random.min());
+          std::memcpy(dst, &rv, sizeof(rv));
+        }
+        break;
+
         case SourceOptionType::BufferWidth:
         case SourceOptionType::BufferHeight:
         {
@@ -1281,10 +1383,23 @@ bool PostProcessing::ReShadeFXShader::Apply(GPUTexture* input, GPUFramebuffer* f
   for (const Pass& pass : m_passes)
   {
     GL_SCOPE_FMT("Draw pass {}", pass.name.c_str());
-
     GL_INS_FMT("Render Target: ID {} [{}]", pass.render_target, GetTextureNameForID(pass.render_target));
     GPUFramebuffer* output_fb = GetFramebufferByID(pass.render_target, input, final_target);
-    g_gpu_device->SetFramebuffer(output_fb);
+
+    if (!output_fb)
+    {
+      // Drawing to final buffer.
+      if (!g_gpu_device->BeginPresent(false))
+      {
+        GL_POP();
+        return false;
+      }
+    }
+    else
+    {
+      g_gpu_device->SetFramebuffer(output_fb);
+    }
+
     g_gpu_device->SetPipeline(pass.pipeline.get());
 
     // Set all inputs first, before the render pass starts.
@@ -1292,7 +1407,7 @@ bool PostProcessing::ReShadeFXShader::Apply(GPUTexture* input, GPUFramebuffer* f
     for (const Sampler& sampler : pass.samplers)
     {
       GL_INS_FMT("Texture Sampler {}: ID {} [{}]", sampler.slot, sampler.texture_id,
-             GetTextureNameForID(sampler.texture_id));
+                 GetTextureNameForID(sampler.texture_id));
       g_gpu_device->SetTextureSampler(sampler.slot, GetTextureByID(sampler.texture_id, input, final_target),
                                       sampler.sampler);
       bound_textures[sampler.slot] = true;
@@ -1304,16 +1419,6 @@ bool PostProcessing::ReShadeFXShader::Apply(GPUTexture* input, GPUFramebuffer* f
     {
       if (!bound_textures[i])
         g_gpu_device->SetTextureSampler(i, nullptr, nullptr);
-    }
-
-    if (!output_fb)
-    {
-      // Drawing to final buffer.
-      if (!g_gpu_device->BeginPresent(false))
-      {
-        GL_POP();
-        return false;
-      }
     }
 
     g_gpu_device->Draw(pass.num_vertices, 0);

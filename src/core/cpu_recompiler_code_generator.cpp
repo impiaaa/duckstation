@@ -972,6 +972,10 @@ void CodeGenerator::GenerateExceptionExit(Instruction instruction, const CodeCac
 
 void CodeGenerator::BlockPrologue()
 {
+#if 0
+  EmitFunctionCall(nullptr, &CodeCache::LogCurrentState);
+#endif
+
   InitSpeculativeRegs();
 
   if (m_block->protection == CodeCache::PageProtectionMode::ManualCheck)
@@ -991,10 +995,6 @@ void CodeGenerator::BlockPrologue()
     else if (m_pc == 0xb0)
       EmitFunctionCall(nullptr, &CPU::HandleB0Syscall);
   }
-
-#if 0
-  EmitFunctionCall(nullptr, &CodeCache::LogCurrentState);
-#endif
 
   if (m_block->uncached_fetch_ticks > 0 || m_block->icache_line_count > 0)
     EmitICacheCheckAndUpdate();
@@ -2730,19 +2730,29 @@ bool CodeGenerator::Compile_cop0(Instruction instruction, const CodeCache::Instr
             // Emit an interrupt check on load of CAUSE/SR.
             Value sr_value = m_register_cache.AllocateScratch(RegSize_32);
             Value cause_value = m_register_cache.AllocateScratch(RegSize_32);
+            m_register_cache.InhibitAllocation();
 
             // m_cop0_regs.sr.IEc && ((m_cop0_regs.cause.Ip & m_cop0_regs.sr.Im) != 0)
             LabelType no_interrupt;
             EmitLoadCPUStructField(sr_value.host_reg, sr_value.size, offsetof(State, cop0_regs.sr.bits));
             EmitLoadCPUStructField(cause_value.host_reg, cause_value.size, offsetof(State, cop0_regs.cause.bits));
             EmitBranchIfBitClear(sr_value.host_reg, sr_value.size, 0, &no_interrupt);
-            m_register_cache.InhibitAllocation();
             EmitAnd(sr_value.host_reg, sr_value.host_reg, cause_value);
             EmitTest(sr_value.host_reg, Value::FromConstantU32(0xFF00));
             EmitConditionalBranch(Condition::Zero, false, &no_interrupt);
-            EmitStoreCPUStructField(offsetof(State, downcount), Value::FromConstantU32(0));
-            EmitBindLabel(&no_interrupt);
             m_register_cache.UninhibitAllocation();
+
+            EmitBranch(GetCurrentFarCodePointer());
+            SwitchToFarCode();
+            m_register_cache.PushState();
+            if (!info.is_last_instruction)
+              WriteNewPC(CalculatePC(), false);
+            EmitStoreCPUStructField(offsetof(State, downcount), Value::FromConstantU32(0));
+            EmitExceptionExit();
+            m_register_cache.PopState();
+            SwitchToNearCode();
+
+            EmitBindLabel(&no_interrupt);
           }
           else if (reg == Cop0Reg::DCIC && g_settings.cpu_recompiler_memory_exceptions)
           {
@@ -2773,8 +2783,10 @@ bool CodeGenerator::Compile_cop0(Instruction instruction, const CodeCache::Instr
             // exit block early if enabled
             EmitBranch(GetCurrentFarCodePointer());
             SwitchToFarCode();
+            m_register_cache.PushState();
             WriteNewPC(CalculatePC(), false);
             EmitExceptionExit();
+            m_register_cache.PopState();
             SwitchToNearCode();
 
             EmitBindLabel(&not_enabled);
@@ -3088,10 +3100,10 @@ CodeGenerator::SpeculativeValue CodeGenerator::SpeculativeReadMemory(VirtualMemo
     return it->second;
 
   u32 value;
-  if ((phys_addr & DCACHE_LOCATION_MASK) == DCACHE_LOCATION)
+  if ((phys_addr & SCRATCHPAD_ADDR_MASK) == SCRATCHPAD_ADDR)
   {
-    u32 scratchpad_offset = phys_addr & DCACHE_OFFSET_MASK;
-    std::memcpy(&value, &CPU::g_state.dcache[scratchpad_offset], sizeof(value));
+    u32 scratchpad_offset = phys_addr & SCRATCHPAD_OFFSET_MASK;
+    std::memcpy(&value, &CPU::g_state.scratchpad[scratchpad_offset], sizeof(value));
     return value;
   }
 
@@ -3116,7 +3128,7 @@ void CodeGenerator::SpeculativeWriteMemory(u32 address, SpeculativeValue value)
     return;
   }
 
-  if ((phys_addr & DCACHE_LOCATION_MASK) == DCACHE_LOCATION || Bus::IsRAMAddress(phys_addr))
+  if ((phys_addr & SCRATCHPAD_ADDR_MASK) == SCRATCHPAD_ADDR || Bus::IsRAMAddress(phys_addr))
     m_speculative_constants.memory.emplace(address, value);
 }
 

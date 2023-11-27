@@ -18,7 +18,7 @@ namespace {
 class PostProcessingGLSLShaderGen : public ShaderGen
 {
 public:
-  PostProcessingGLSLShaderGen(RenderAPI render_api, bool supports_dual_source_blend);
+  PostProcessingGLSLShaderGen(RenderAPI render_api, bool supports_dual_source_blend, bool supports_framebuffer_fetch);
   ~PostProcessingGLSLShaderGen();
 
   std::string GeneratePostProcessingVertexShader(const PostProcessing::GLSLShader& shader);
@@ -117,7 +117,8 @@ bool PostProcessing::GLSLShader::CompilePipeline(GPUTexture::Format format, u32 
   if (m_pipeline)
     m_pipeline.reset();
 
-  PostProcessingGLSLShaderGen shadergen(g_gpu_device->GetRenderAPI(), g_gpu_device->GetFeatures().dual_source_blend);
+  PostProcessingGLSLShaderGen shadergen(g_gpu_device->GetRenderAPI(), g_gpu_device->GetFeatures().dual_source_blend,
+                                        g_gpu_device->GetFeatures().framebuffer_fetch);
 
   std::unique_ptr<GPUShader> vs =
     g_gpu_device->CreateShader(GPUShaderStage::Vertex, shadergen.GeneratePostProcessingVertexShader(*this));
@@ -176,6 +177,7 @@ bool PostProcessing::GLSLShader::Apply(GPUTexture* input, GPUFramebuffer* final_
 
   g_gpu_device->SetPipeline(m_pipeline.get());
   g_gpu_device->SetTextureSampler(0, input, m_sampler.get());
+  g_gpu_device->SetViewportAndScissor(final_left, final_top, final_width, final_height);
 
   const u32 uniforms_size = GetUniformsSize();
   void* uniforms = g_gpu_device->MapUniformBuffer(uniforms_size);
@@ -319,8 +321,9 @@ void PostProcessing::GLSLShader::LoadOptions()
   }
 }
 
-PostProcessingGLSLShaderGen::PostProcessingGLSLShaderGen(RenderAPI render_api, bool supports_dual_source_blend)
-  : ShaderGen(render_api, supports_dual_source_blend)
+PostProcessingGLSLShaderGen::PostProcessingGLSLShaderGen(RenderAPI render_api, bool supports_dual_source_blend,
+                                                         bool supports_framebuffer_fetch)
+  : ShaderGen(render_api, supports_dual_source_blend, supports_framebuffer_fetch)
 {
 }
 
@@ -377,7 +380,7 @@ static float4 o_col0;
   {
     if (m_use_glsl_interface_blocks)
     {
-      if (IsVulkan())
+      if (IsVulkan() || IsMetal())
         ss << "layout(location = 0) ";
 
       ss << "in VertexData {\n";

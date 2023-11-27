@@ -15,6 +15,9 @@
 #include "settings.h"
 #include "timing_event.h"
 #include <limits>
+
+#ifdef CPU_ARCH_X64
+
 Log_SetChannel(CPU::NewRec);
 
 #define RMEMBASE cg->rbx
@@ -27,6 +30,13 @@ Log_SetChannel(CPU::NewRec);
 // PGXP TODO: Spyro 1 level gates have issues.
 
 static constexpr u32 BACKPATCH_JMP_SIZE = 5;
+
+// on win32, we need to reserve an additional 32 bytes shadow space when calling out to C
+#ifdef _WIN32
+static constexpr u32 STACK_SHADOW_SIZE = 32;
+#else
+static constexpr u32 STACK_SHADOW_SIZE = 0;
+#endif
 
 using namespace Xbyak;
 
@@ -222,14 +232,14 @@ void CPU::NewRec::X64Compiler::EndBlock(const std::optional<u32>& newpc, bool do
 
   // flush regs
   Flush(FLUSH_END_BLOCK);
-  EndAndLinkBlock(newpc, do_event_test);
+  EndAndLinkBlock(newpc, do_event_test, false);
 }
 
 void CPU::NewRec::X64Compiler::EndBlockWithException(Exception excode)
 {
   // flush regs, but not pc, it's going to get overwritten
   // flush cycles because of the GTE instruction stuff...
-  Flush(FLUSH_END_BLOCK | FLUSH_FOR_EXCEPTION);
+  Flush(FLUSH_END_BLOCK | FLUSH_FOR_EXCEPTION | FLUSH_FOR_C_CALL);
 
   // TODO: flush load delay
   // TODO: break for pcdrv
@@ -240,14 +250,16 @@ void CPU::NewRec::X64Compiler::EndBlockWithException(Exception excode)
   cg->call(static_cast<void (*)(u32, u32)>(&CPU::RaiseException));
   m_dirty_pc = false;
 
-  EndAndLinkBlock(std::nullopt, true);
+  EndAndLinkBlock(std::nullopt, true, false);
 }
 
-void CPU::NewRec::X64Compiler::EndAndLinkBlock(const std::optional<u32>& newpc, bool do_event_test)
+void CPU::NewRec::X64Compiler::EndAndLinkBlock(const std::optional<u32>& newpc, bool do_event_test,
+                                               bool force_run_events)
 {
   // event test
   // pc should've been flushed
-  DebugAssert(!m_dirty_pc);
+  DebugAssert(!m_dirty_pc && !m_block_ended);
+  m_block_ended = true;
 
   // TODO: try extracting this to a function
 
@@ -261,6 +273,12 @@ void CPU::NewRec::X64Compiler::EndAndLinkBlock(const std::optional<u32>& newpc, 
       cg->inc(cg->dword[PTR(&g_state.pending_ticks)]);
     else if (cycles > 0)
       cg->add(cg->dword[PTR(&g_state.pending_ticks)], cycles);
+
+    if (force_run_events)
+    {
+      cg->jmp(CodeCache::g_run_events_and_dispatch);
+      return;
+    }
   }
   else
   {
@@ -303,8 +321,6 @@ void CPU::NewRec::X64Compiler::EndAndLinkBlock(const std::optional<u32>& newpc, 
       cg->jmp(target, CodeGenerator::T_NEAR);
     }
   }
-
-  m_block_ended = true;
 }
 
 const void* CPU::NewRec::X64Compiler::EndCompile(u32* code_size, u32* far_code_size)
@@ -1339,7 +1355,7 @@ Xbyak::Reg32 CPU::NewRec::X64Compiler::GenerateLoad(const Xbyak::Reg32& addr_reg
     cg->mov(RWARG2, m_current_instruction_pc);
     cg->call(static_cast<void (*)(u32, u32)>(&CPU::RaiseException));
     m_dirty_pc = false;
-    EndAndLinkBlock(std::nullopt, true);
+    EndAndLinkBlock(std::nullopt, true, false);
 
     SwitchToNearCode(false);
     RestoreHostState();
@@ -1459,7 +1475,7 @@ void CPU::NewRec::X64Compiler::GenerateStore(const Xbyak::Reg32& addr_reg, const
     cg->mov(RWARG2, m_current_instruction_pc);
     cg->call(reinterpret_cast<const void*>(static_cast<void (*)(u32, u32)>(&CPU::RaiseException)));
     m_dirty_pc = false;
-    EndAndLinkBlock(std::nullopt, true);
+    EndAndLinkBlock(std::nullopt, true, false);
 
     SwitchToNearCode(false);
     RestoreHostState();
@@ -1875,20 +1891,20 @@ void CPU::NewRec::X64Compiler::Compile_mtc0(CompileFlags cf)
 
     cg->test(changed_bits, 1u << 16);
     SwitchToFarCode(true, &CodeGenerator::jnz);
-    cg->push(RWARG1);
-    cg->push(RWARG2);
+    cg->mov(cg->dword[cg->rsp], RWARG2);
+    cg->sub(cg->rsp, STACK_SHADOW_SIZE + 8);
     cg->call(&CPU::UpdateMemoryPointers);
-    cg->pop(RWARG2);
-    cg->pop(RWARG1);
+    cg->add(cg->rsp, STACK_SHADOW_SIZE + 8);
+    cg->mov(RWARG2, cg->dword[cg->rsp]);
     cg->mov(RMEMBASE, cg->qword[PTR(&g_state.fastmem_base)]);
     SwitchToNearCode(true);
-  }
 
-  if (reg == Cop0Reg::SR || reg == Cop0Reg::CAUSE)
+    TestInterrupts(RWARG2);
+  }
+  else if (reg == Cop0Reg::CAUSE)
   {
-    const Reg32 sr =
-      (reg == Cop0Reg::SR) ? RWARG2 : (cg->mov(RWARG1, cg->dword[PTR(&g_state.cop0_regs.sr.bits)]), RWARG1);
-    TestInterrupts(sr);
+    cg->mov(RWARG1, cg->dword[PTR(&g_state.cop0_regs.sr.bits)]);
+    TestInterrupts(RWARG1);
   }
 
   if (reg == Cop0Reg::DCIC && g_settings.cpu_recompiler_memory_exceptions)
@@ -1929,9 +1945,32 @@ void CPU::NewRec::X64Compiler::TestInterrupts(const Xbyak::Reg32& sr)
 
   SwitchToFarCode(true, &CodeGenerator::jnz);
   BackupHostState();
-  Flush(FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_EXCEPTION | FLUSH_FOR_C_CALL);
-  cg->call(reinterpret_cast<const void*>(&DispatchInterrupt));
-  EndBlock(std::nullopt, true);
+
+  // Update load delay, this normally happens at the end of an instruction, but we're finishing it early.
+  UpdateLoadDelay();
+
+  Flush(FLUSH_END_BLOCK | FLUSH_FOR_EXCEPTION | FLUSH_FOR_C_CALL);
+
+  // Can't use EndBlockWithException() here, because it'll use the wrong PC.
+  // Can't use RaiseException() on the fast path if we're the last instruction, because the next PC is unknown.
+  if (!iinfo->is_last_instruction)
+  {
+    cg->mov(RWARG1, Cop0Registers::CAUSE::MakeValueForException(Exception::INT, iinfo->is_branch_instruction, false,
+                                                                (inst + 1)->cop.cop_n));
+    cg->mov(RWARG2, m_compiler_pc);
+    cg->call(static_cast<void (*)(u32, u32)>(&CPU::RaiseException));
+    m_dirty_pc = false;
+    EndAndLinkBlock(std::nullopt, true, false);
+  }
+  else
+  {
+    if (m_dirty_pc)
+      cg->mov(cg->dword[PTR(&g_state.pc)], m_compiler_pc);
+    m_dirty_pc = false;
+    cg->mov(cg->dword[PTR(&g_state.downcount)], 0);
+    EndAndLinkBlock(std::nullopt, false, true);
+  }
+
   RestoreHostState();
   SwitchToNearCode(false);
 
@@ -2075,13 +2114,6 @@ u32 CPU::NewRec::CompileLoadStoreThunk(void* thunk_code, u32 thunk_space, void* 
 
   static constexpr u32 GPR_SIZE = 8;
 
-  // on win32, we need to reserve an additional 32 bytes shadow space when calling out to C
-#ifdef _WIN32
-  static constexpr u32 SHADOW_SIZE = 32;
-#else
-  static constexpr u32 SHADOW_SIZE = 0;
-#endif
-
   // save regs
   u32 num_gprs = 0;
 
@@ -2091,13 +2123,13 @@ u32 CPU::NewRec::CompileLoadStoreThunk(void* thunk_code, u32 thunk_space, void* 
       num_gprs++;
   }
 
-  const u32 stack_size = (((num_gprs + 1) & ~1u) * GPR_SIZE) + SHADOW_SIZE;
+  const u32 stack_size = (((num_gprs + 1) & ~1u) * GPR_SIZE) + STACK_SHADOW_SIZE;
 
   if (stack_size > 0)
   {
     cg->sub(cg->rsp, stack_size);
 
-    u32 stack_offset = SHADOW_SIZE;
+    u32 stack_offset = STACK_SHADOW_SIZE;
     for (u32 i = 0; i < NUM_HOST_REGS; i++)
     {
       if ((gpr_bitmask & (1u << i)) && IsCallerSavedRegister(i) && (!is_load || data_register != i))
@@ -2172,7 +2204,7 @@ u32 CPU::NewRec::CompileLoadStoreThunk(void* thunk_code, u32 thunk_space, void* 
   // restore regs
   if (stack_size > 0)
   {
-    u32 stack_offset = SHADOW_SIZE;
+    u32 stack_offset = STACK_SHADOW_SIZE;
     for (u32 i = 0; i < NUM_HOST_REGS; i++)
     {
       if ((gpr_bitmask & (1u << i)) && IsCallerSavedRegister(i) && (!is_load || data_register != i))
@@ -2194,3 +2226,5 @@ u32 CPU::NewRec::CompileLoadStoreThunk(void* thunk_code, u32 thunk_space, void* 
 
   return static_cast<u32>(cg->getSize());
 }
+
+#endif // CPU_ARCH_X64

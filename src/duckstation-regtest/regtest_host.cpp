@@ -53,13 +53,15 @@ bool RegTestHost::SetFolders()
   EmuFolders::AppRoot = Path::Canonicalize(Path::GetDirectory(program_path));
   EmuFolders::DataRoot = EmuFolders::AppRoot;
 
-#ifndef __APPLE__
+#ifdef __APPLE__
+  static constexpr char MAC_DATA_DIR[] = "Library/Application Support/DuckStation";
+  const char* home_dir = getenv("HOME");
+  if (home_dir)
+    EmuFolders::DataRoot = Path::Combine(home_dir, MAC_DATA_DIR);
+#endif
+
   // On Windows/Linux, these are in the binary directory.
   EmuFolders::Resources = Path::Combine(EmuFolders::AppRoot, "resources");
-#else
-  // On macOS, this is in the bundle resources directory.
-  EmuFolders::Resources = Path::Canonicalize(Path::Combine(EmuFolders::AppRoot, "../Resources"));
-#endif
 
   Log_DevPrintf("AppRoot Directory: %s", EmuFolders::AppRoot.c_str());
   Log_DevPrintf("DataRoot Directory: %s", EmuFolders::DataRoot.c_str());
@@ -71,7 +73,7 @@ bool RegTestHost::SetFolders()
   // the resources directory should exist, bail out if not
   if (!FileSystem::DirectoryExists(EmuFolders::Resources.c_str()))
   {
-    Log_ErrorPrintf("Error", "Resources directory is missing, your installation is incomplete.");
+    Log_ErrorPrint("Resources directory is missing, your installation is incomplete.");
     return false;
   }
 
@@ -167,6 +169,12 @@ void Host::CheckForSettingsChanges(const Settings& old_settings)
 void Host::CommitBaseSettingChanges()
 {
   // noop, in memory
+}
+
+bool Host::ResourceFileExists(const char* filename)
+{
+  const std::string path(Path::Combine(EmuFolders::Resources, filename));
+  return FileSystem::FileExists(path.c_str());
 }
 
 std::optional<std::vector<u8>> Host::ReadResourceFile(const char* filename)
@@ -353,6 +361,16 @@ std::optional<u32> InputManager::ConvertHostKeyboardStringToCode(const std::stri
 std::optional<std::string> InputManager::ConvertHostKeyboardCodeToString(u32 code)
 {
   return std::nullopt;
+}
+
+const char* InputManager::ConvertHostKeyboardCodeToIcon(u32 code)
+{
+  return nullptr;
+}
+
+void Host::AddFixedInputBindings(SettingsInterface& si)
+{
+  // noop
 }
 
 void Host::OnInputDeviceConnected(const std::string_view& identifier, const std::string_view& device_name)

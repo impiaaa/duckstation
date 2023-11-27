@@ -14,6 +14,9 @@
 #include "settings.h"
 #include "timing_event.h"
 #include <limits>
+
+#ifdef CPU_ARCH_ARM32
+
 Log_SetChannel(CPU::NewRec);
 
 #define PTR(x) vixl::aarch32::MemOperand(RSTATE, (((u8*)(x)) - ((u8*)&g_state)))
@@ -367,14 +370,14 @@ void CPU::NewRec::AArch32Compiler::EndBlock(const std::optional<u32>& newpc, boo
 
   // flush regs
   Flush(FLUSH_END_BLOCK);
-  EndAndLinkBlock(newpc, do_event_test);
+  EndAndLinkBlock(newpc, do_event_test, false);
 }
 
 void CPU::NewRec::AArch32Compiler::EndBlockWithException(Exception excode)
 {
   // flush regs, but not pc, it's going to get overwritten
   // flush cycles because of the GTE instruction stuff...
-  Flush(FLUSH_END_BLOCK | FLUSH_FOR_EXCEPTION);
+  Flush(FLUSH_END_BLOCK | FLUSH_FOR_EXCEPTION | FLUSH_FOR_C_CALL);
 
   // TODO: flush load delay
   // TODO: break for pcdrv
@@ -385,14 +388,16 @@ void CPU::NewRec::AArch32Compiler::EndBlockWithException(Exception excode)
   EmitCall(reinterpret_cast<const void*>(static_cast<void (*)(u32, u32)>(&CPU::RaiseException)));
   m_dirty_pc = false;
 
-  EndAndLinkBlock(std::nullopt, true);
+  EndAndLinkBlock(std::nullopt, true, false);
 }
 
-void CPU::NewRec::AArch32Compiler::EndAndLinkBlock(const std::optional<u32>& newpc, bool do_event_test)
+void CPU::NewRec::AArch32Compiler::EndAndLinkBlock(const std::optional<u32>& newpc, bool do_event_test,
+                                                   bool force_run_events)
 {
   // event test
   // pc should've been flushed
-  DebugAssert(!m_dirty_pc);
+  DebugAssert(!m_dirty_pc && !m_block_ended);
+  m_block_ended = true;
 
   // TODO: try extracting this to a function
 
@@ -420,7 +425,11 @@ void CPU::NewRec::AArch32Compiler::EndAndLinkBlock(const std::optional<u32>& new
     armEmitCondBranch(armAsm, ge, CodeCache::g_run_events_and_dispatch);
 
   // jump to dispatcher or next block
-  if (!newpc.has_value())
+  if (force_run_events)
+  {
+    armEmitJmp(armAsm, CodeCache::g_run_events_and_dispatch, false);
+  }
+  else if (!newpc.has_value())
   {
     armEmitJmp(armAsm, CodeCache::g_dispatcher, false);
   }
@@ -438,8 +447,6 @@ void CPU::NewRec::AArch32Compiler::EndAndLinkBlock(const std::optional<u32>& new
       armEmitJmp(armAsm, target, true);
     }
   }
-
-  m_block_ended = true;
 }
 
 const void* CPU::NewRec::AArch32Compiler::EndCompile(u32* code_size, u32* far_code_size)
@@ -1927,21 +1934,22 @@ void CPU::NewRec::AArch32Compiler::Compile_mtc0(CompileFlags cf)
     Flush(FLUSH_FOR_C_CALL);
 
     SwitchToFarCodeIfBitSet(changed_bits, 16);
-    armAsm->push(RegisterList(RARG1, RARG2));
+    armAsm->push(RegisterList(RARG1));
     EmitCall(reinterpret_cast<const void*>(&CPU::UpdateMemoryPointers));
-    armAsm->pop(RegisterList(RARG1, RARG2));
+    armAsm->pop(RegisterList(RARG1));
     if (CodeCache::IsUsingFastmem() && m_block->HasFlag(CodeCache::BlockFlags::ContainsLoadStoreInstructions) &&
         IsHostRegAllocated(RMEMBASE.GetCode()))
     {
       FreeHostReg(RMEMBASE.GetCode());
     }
     SwitchToNearCode(true);
-  }
 
-  if (reg == Cop0Reg::SR || reg == Cop0Reg::CAUSE)
+    TestInterrupts(RARG1);
+  }
+  else if (reg == Cop0Reg::CAUSE)
   {
-    const Register sr = (reg == Cop0Reg::SR) ? RARG2 : (armAsm->ldr(RARG1, PTR(&g_state.cop0_regs.sr.bits)), RARG1);
-    TestInterrupts(sr);
+    armAsm->ldr(RARG1, PTR(&g_state.cop0_regs.sr.bits));
+    TestInterrupts(RARG1);
   }
 
   if (reg == Cop0Reg::DCIC && g_settings.cpu_recompiler_memory_exceptions)
@@ -1979,9 +1987,35 @@ void CPU::NewRec::AArch32Compiler::TestInterrupts(const vixl::aarch32::Register&
 
   SwitchToFarCode(true, ne);
   BackupHostState();
-  Flush(FLUSH_FLUSH_MIPS_REGISTERS | FLUSH_FOR_EXCEPTION | FLUSH_FOR_C_CALL);
-  EmitCall(reinterpret_cast<const void*>(&DispatchInterrupt));
-  EndBlock(std::nullopt, true);
+
+  // Update load delay, this normally happens at the end of an instruction, but we're finishing it early.
+  UpdateLoadDelay();
+
+  Flush(FLUSH_END_BLOCK | FLUSH_FOR_EXCEPTION | FLUSH_FOR_C_CALL);
+
+  // Can't use EndBlockWithException() here, because it'll use the wrong PC.
+  // Can't use RaiseException() on the fast path if we're the last instruction, because the next PC is unknown.
+  if (!iinfo->is_last_instruction)
+  {
+    EmitMov(RARG1, Cop0Registers::CAUSE::MakeValueForException(Exception::INT, iinfo->is_branch_instruction, false,
+                                                               (inst + 1)->cop.cop_n));
+    EmitMov(RARG2, m_compiler_pc);
+    EmitCall(reinterpret_cast<const void*>(static_cast<void (*)(u32, u32)>(&CPU::RaiseException)));
+    m_dirty_pc = false;
+    EndAndLinkBlock(std::nullopt, true, false);
+  }
+  else
+  {
+    EmitMov(RARG1, 0);
+    if (m_dirty_pc)
+      EmitMov(RARG2, m_compiler_pc);
+    armAsm->str(RARG1, PTR(&g_state.downcount));
+    if (m_dirty_pc)
+      armAsm->str(RARG2, PTR(&g_state.pc));
+    m_dirty_pc = false;
+    EndAndLinkBlock(std::nullopt, false, true);
+  }
+
   RestoreHostState();
   SwitchToNearCode(false);
 
@@ -2229,3 +2263,5 @@ u32 CPU::NewRec::CompileLoadStoreThunk(void* thunk_code, u32 thunk_space, void* 
 
   return static_cast<u32>(armAsm->GetCursorOffset());
 }
+
+#endif // CPU_ARCH_ARM32

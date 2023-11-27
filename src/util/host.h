@@ -12,6 +12,9 @@
 #include <vector>
 
 namespace Host {
+/// Returns true if the specified resource file exists.
+bool ResourceFileExists(const char* filename);
+
 /// Reads a file from the resources directory of the application.
 /// This may be outside of the "normal" filesystem on platforms such as Mac.
 std::optional<std::vector<u8>> ReadResourceFile(const char* filename);
@@ -29,6 +32,9 @@ void ReportFormattedErrorAsync(const std::string_view& title, const char* format
 /// Displays a synchronous confirmation on the UI thread, i.e. blocks the caller.
 bool ConfirmMessage(const std::string_view& title, const std::string_view& message);
 bool ConfirmFormattedMessage(const std::string_view& title, const char* format, ...);
+
+/// Returns the user agent to use for HTTP requests.
+std::string GetHTTPUserAgent();
 
 /// Opens a URL, using the default application.
 void OpenURL(const std::string_view& url);

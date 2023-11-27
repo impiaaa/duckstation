@@ -6,10 +6,13 @@
 #include "common/small_string.h"
 #include "common/types.h"
 
+#include <functional>
 #include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
+
+struct rc_client_t;
 
 class Error;
 class StateWrapper;
@@ -27,6 +30,9 @@ enum class LoginRequestReason
 
 /// Acquires the achievements lock. Must be held when accessing any achievement state from another thread.
 std::unique_lock<std::recursive_mutex> GetLock();
+
+/// Returns the rc_client instance. Should have the lock held.
+rc_client_t* GetClient();
 
 /// Initializes the RetroAchievments client.
 bool Initialize();
@@ -52,6 +58,9 @@ void FrameUpdate();
 /// Called when the system is paused, because FrameUpdate() won't be getting called.
 void IdleUpdate();
 
+/// Returns true if idle updates are necessary (e.g. outstanding requests).
+bool NeedsIdleUpdate();
+
 /// Saves/loads state.
 bool DoState(StateWrapper& sw);
 
@@ -73,6 +82,7 @@ void DisableHardcoreMode();
 
 /// Prompts the user to disable hardcore mode, if they agree, returns true.
 bool ConfirmHardcoreModeDisable(const char* trigger);
+void ConfirmHardcoreModeDisableAsync(const char* trigger, std::function<void(bool)> callback);
 
 /// Returns true if hardcore mode is active, and functionality should be restricted.
 bool IsHardcoreModeActive();
@@ -118,6 +128,8 @@ void DrawGameOverlays();
 /// Draws ImGui overlays when paused.
 void DrawPauseMenuOverlays();
 
+#ifndef __ANDROID__
+
 /// Queries the achievement list, and if no achievements are available, returns false.
 bool PrepareAchievementsWindow();
 
@@ -129,6 +141,8 @@ bool PrepareLeaderboardsWindow();
 
 /// Renders the leaderboard list.
 void DrawLeaderboardsWindow();
+
+#endif // __ANDROID__
 
 #ifdef ENABLE_RAINTEGRATION
 /// Prevents the internal implementation from being used. Instead, RAIntegration will be

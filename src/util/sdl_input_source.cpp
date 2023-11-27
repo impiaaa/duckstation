@@ -1,15 +1,20 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "sdl_input_source.h"
 #include "input_manager.h"
 
 #include "core/host.h"
+#include "core/settings.h"
 
 #include "common/assert.h"
 #include "common/bitutils.h"
+#include "common/file_system.h"
 #include "common/log.h"
+#include "common/path.h"
 #include "common/string_util.h"
+
+#include "IconsPromptFont.h"
 
 #include <cmath>
 
@@ -19,6 +24,8 @@
 
 Log_SetChannel(SDLInputSource);
 
+static constexpr const char* CONTROLLER_DB_FILENAME = "gamecontrollerdb.txt";
+
 static constexpr const char* s_sdl_axis_names[] = {
   "LeftX",        // SDL_CONTROLLER_AXIS_LEFTX
   "LeftY",        // SDL_CONTROLLER_AXIS_LEFTY
@@ -26,6 +33,14 @@ static constexpr const char* s_sdl_axis_names[] = {
   "RightY",       // SDL_CONTROLLER_AXIS_RIGHTY
   "LeftTrigger",  // SDL_CONTROLLER_AXIS_TRIGGERLEFT
   "RightTrigger", // SDL_CONTROLLER_AXIS_TRIGGERRIGHT
+};
+static constexpr const char* s_sdl_axis_icons[][2] = {
+  {ICON_PF_LEFT_ANALOG_LEFT, ICON_PF_LEFT_ANALOG_RIGHT},   // SDL_CONTROLLER_AXIS_LEFTX
+  {ICON_PF_LEFT_ANALOG_UP, ICON_PF_LEFT_ANALOG_DOWN},      // SDL_CONTROLLER_AXIS_LEFTY
+  {ICON_PF_RIGHT_ANALOG_LEFT, ICON_PF_RIGHT_ANALOG_RIGHT}, // SDL_CONTROLLER_AXIS_RIGHTX
+  {ICON_PF_RIGHT_ANALOG_UP, ICON_PF_RIGHT_ANALOG_DOWN},    // SDL_CONTROLLER_AXIS_RIGHTY
+  {nullptr, ICON_PF_LEFT_TRIGGER_PULL},                    // SDL_CONTROLLER_AXIS_TRIGGERLEFT
+  {nullptr, ICON_PF_RIGHT_TRIGGER_PULL},                   // SDL_CONTROLLER_AXIS_TRIGGERRIGHT
 };
 static constexpr const GenericInputBinding s_sdl_generic_binding_axis_mapping[][2] = {
   {GenericInputBinding::LeftStickLeft, GenericInputBinding::LeftStickRight},   // SDL_CONTROLLER_AXIS_LEFTX
@@ -58,6 +73,23 @@ static constexpr const char* s_sdl_button_names[] = {
   "Paddle3",       // SDL_CONTROLLER_BUTTON_PADDLE3
   "Paddle4",       // SDL_CONTROLLER_BUTTON_PADDLE4
   "Touchpad",      // SDL_CONTROLLER_BUTTON_TOUCHPAD
+};
+static constexpr const char* s_sdl_button_icons[] = {
+  ICON_PF_BUTTON_A,           // SDL_CONTROLLER_BUTTON_A
+  ICON_PF_BUTTON_B,           // SDL_CONTROLLER_BUTTON_B
+  ICON_PF_BUTTON_X,           // SDL_CONTROLLER_BUTTON_X
+  ICON_PF_BUTTON_Y,           // SDL_CONTROLLER_BUTTON_Y
+  ICON_PF_SHARE_CAPTURE,      // SDL_CONTROLLER_BUTTON_BACK
+  ICON_PF_XBOX,               // SDL_CONTROLLER_BUTTON_GUIDE
+  ICON_PF_BURGER_MENU,        // SDL_CONTROLLER_BUTTON_START
+  ICON_PF_LEFT_ANALOG_CLICK,  // SDL_CONTROLLER_BUTTON_LEFTSTICK
+  ICON_PF_RIGHT_ANALOG_CLICK, // SDL_CONTROLLER_BUTTON_RIGHTSTICK
+  ICON_PF_LEFT_SHOULDER_LB,   // SDL_CONTROLLER_BUTTON_LEFTSHOULDER
+  ICON_PF_RIGHT_SHOULDER_RB,  // SDL_CONTROLLER_BUTTON_RIGHTSHOULDER
+  ICON_PF_XBOX_DPAD_UP,       // SDL_CONTROLLER_BUTTON_DPAD_UP
+  ICON_PF_XBOX_DPAD_DOWN,     // SDL_CONTROLLER_BUTTON_DPAD_DOWN
+  ICON_PF_XBOX_DPAD_LEFT,     // SDL_CONTROLLER_BUTTON_DPAD_LEFT
+  ICON_PF_XBOX_DPAD_RIGHT,    // SDL_CONTROLLER_BUTTON_DPAD_RIGHT
 };
 static constexpr const GenericInputBinding s_sdl_generic_binding_button_mapping[] = {
   GenericInputBinding::Cross,     // SDL_CONTROLLER_BUTTON_A
@@ -104,6 +136,21 @@ static void SetControllerRGBLED(SDL_GameController* gc, u32 color)
   SDL_GameControllerSetLED(gc, (color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff);
 }
 
+static void SDLLogCallback(void* userdata, int category, SDL_LogPriority priority, const char* message)
+{
+  static constexpr LOGLEVEL priority_map[SDL_NUM_LOG_PRIORITIES] = {
+    LOGLEVEL_DEBUG,
+    LOGLEVEL_DEBUG,   // SDL_LOG_PRIORITY_VERBOSE
+    LOGLEVEL_DEBUG,   // SDL_LOG_PRIORITY_DEBUG
+    LOGLEVEL_INFO,    // SDL_LOG_PRIORITY_INFO
+    LOGLEVEL_WARNING, // SDL_LOG_PRIORITY_WARN
+    LOGLEVEL_ERROR,   // SDL_LOG_PRIORITY_ERROR
+    LOGLEVEL_ERROR,   // SDL_LOG_PRIORITY_CRITICAL
+  };
+
+  Log::Write("SDL", "SDL", priority_map[priority], message);
+}
+
 SDLInputSource::SDLInputSource() = default;
 
 SDLInputSource::~SDLInputSource()
@@ -113,18 +160,6 @@ SDLInputSource::~SDLInputSource()
 
 bool SDLInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
 {
-  std::optional<std::vector<u8>> controller_db_data = Host::ReadResourceFile("gamecontrollerdb.txt");
-  if (controller_db_data.has_value())
-  {
-    SDL_RWops* ops = SDL_RWFromConstMem(controller_db_data->data(), static_cast<int>(controller_db_data->size()));
-    if (SDL_GameControllerAddMappingsFromRW(ops, true) < 0)
-      Log_ErrorPrintf("SDL_GameControllerAddMappingsFromRW() failed: %s", SDL_GetError());
-  }
-  else
-  {
-    Log_ErrorPrintf("Controller database resource is missing.");
-  }
-
   LoadSettings(si);
   settings_lock.unlock();
   SetHints();
@@ -202,6 +237,12 @@ u32 SDLInputSource::ParseRGBForPlayerId(const std::string_view& str, u32 player_
 
 void SDLInputSource::SetHints()
 {
+  const std::string controller_db_path = Path::Combine(EmuFolders::Resources, CONTROLLER_DB_FILENAME);
+  if (FileSystem::FileExists(controller_db_path.c_str()))
+    SDL_SetHint(SDL_HINT_GAMECONTROLLERCONFIG_FILE, controller_db_path.c_str());
+  else
+    Log_ErrorFmt("Controller DB not found at '{}'", controller_db_path);
+
   SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4_RUMBLE, m_controller_enhanced_mode ? "1" : "0");
   SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, m_controller_enhanced_mode ? "1" : "0");
   // Enable Wii U Pro Controller support
@@ -225,6 +266,13 @@ bool SDLInputSource::InitializeSubsystem()
     Log_ErrorPrint("SDL_InitSubSystem(SDL_INIT_JOYSTICK |SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) failed");
     return false;
   }
+
+  SDL_LogSetOutputFunction(SDLLogCallback, nullptr);
+#ifdef _DEBUG
+  SDL_LogSetAllPriority(SDL_LOG_PRIORITY_VERBOSE);
+#else
+  SDL_LogSetAllPriority(SDL_LOG_PRIORITY_INFO);
+#endif
 
   // we should open the controllers as the connected events come in, so no need to do any more here
   m_sdl_subsystem_initialized = true;
@@ -395,9 +443,9 @@ std::optional<InputBindingKey> SDLInputSource::ParseKeyString(const std::string_
   return std::nullopt;
 }
 
-std::string SDLInputSource::ConvertKeyToString(InputBindingKey key)
+TinyString SDLInputSource::ConvertKeyToString(InputBindingKey key)
 {
-  std::string ret;
+  TinyString ret;
 
   if (key.source_type == InputSourceType::SDL)
   {
@@ -407,40 +455,64 @@ std::string SDLInputSource::ConvertKeyToString(InputBindingKey key)
         (key.modifier == InputModifier::FullAxis ? "Full" : (key.modifier == InputModifier::Negate ? "-" : "+"));
       if (key.data < std::size(s_sdl_axis_names))
       {
-        ret = fmt::format("SDL-{}/{}{}", static_cast<u32>(key.source_index), modifier, s_sdl_axis_names[key.data]);
+        ret.fmt("SDL-{}/{}{}", static_cast<u32>(key.source_index), modifier, s_sdl_axis_names[key.data]);
       }
       else
       {
-        ret = fmt::format("SDL-{}/{}Axis{}{}", static_cast<u32>(key.source_index), modifier,
-                          key.data - static_cast<u32>(std::size(s_sdl_axis_names)), key.invert ? "~" : "");
+        ret.fmt("SDL-{}/{}Axis{}{}", static_cast<u32>(key.source_index), modifier,
+                key.data - static_cast<u32>(std::size(s_sdl_axis_names)), key.invert ? "~" : "");
       }
     }
     else if (key.source_subtype == InputSubclass::ControllerButton)
     {
       if (key.data < std::size(s_sdl_button_names))
       {
-        ret = fmt::format("SDL-{}/{}", static_cast<u32>(key.source_index), s_sdl_button_names[key.data]);
+        ret.fmt("SDL-{}/{}", static_cast<u32>(key.source_index), s_sdl_button_names[key.data]);
       }
       else
       {
-        ret = fmt::format("SDL-{}/Button{}", static_cast<u32>(key.source_index),
-                          key.data - static_cast<u32>(std::size(s_sdl_button_names)));
+        ret.fmt("SDL-{}/Button{}", static_cast<u32>(key.source_index),
+                key.data - static_cast<u32>(std::size(s_sdl_button_names)));
       }
     }
     else if (key.source_subtype == InputSubclass::ControllerHat)
     {
       const u32 hat_index = key.data / static_cast<u32>(std::size(s_sdl_hat_direction_names));
       const u32 hat_direction = key.data % static_cast<u32>(std::size(s_sdl_hat_direction_names));
-      ret = fmt::format("SDL-{}/Hat{}{}", static_cast<u32>(key.source_index), hat_index,
-                        s_sdl_hat_direction_names[hat_direction]);
+      ret.fmt("SDL-{}/Hat{}{}", static_cast<u32>(key.source_index), hat_index,
+              s_sdl_hat_direction_names[hat_direction]);
     }
     else if (key.source_subtype == InputSubclass::ControllerMotor)
     {
-      ret = fmt::format("SDL-{}/{}Motor", static_cast<u32>(key.source_index), key.data ? "Large" : "Small");
+      ret.fmt("SDL-{}/{}Motor", static_cast<u32>(key.source_index), key.data ? "Large" : "Small");
     }
     else if (key.source_subtype == InputSubclass::ControllerHaptic)
     {
-      ret = fmt::format("SDL-{}/Haptic", static_cast<u32>(key.source_index));
+      ret.fmt("SDL-{}/Haptic", static_cast<u32>(key.source_index));
+    }
+  }
+
+  return ret;
+}
+
+TinyString SDLInputSource::ConvertKeyToIcon(InputBindingKey key)
+{
+  TinyString ret;
+
+  if (key.source_type == InputSourceType::SDL)
+  {
+    if (key.source_subtype == InputSubclass::ControllerAxis)
+    {
+      if (key.data < std::size(s_sdl_axis_icons) && key.modifier != InputModifier::FullAxis)
+      {
+        ret.fmt("SDL-{}  {}", static_cast<u32>(key.source_index),
+                s_sdl_axis_icons[key.data][key.modifier == InputModifier::None]);
+      }
+    }
+    else if (key.source_subtype == InputSubclass::ControllerButton)
+    {
+      if (key.data < std::size(s_sdl_button_icons))
+        ret.fmt("SDL-{}  {}", static_cast<u32>(key.source_index), s_sdl_button_icons[key.data]);
     }
   }
 

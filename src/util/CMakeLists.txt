@@ -29,6 +29,8 @@ add_library(util
   gpu_texture.h
   host.cpp
   host.h
+  http_downloader.cpp
+  http_downloader.h
   imgui_fullscreen.cpp
   imgui_fullscreen.h
   imgui_manager.cpp
@@ -75,7 +77,6 @@ target_link_libraries(util PRIVATE stb libchdr zlib soundtouch Zstd::Zstd reshad
 if(ENABLE_CUBEB)
   target_sources(util PRIVATE
     cubeb_audio_stream.cpp
-    cubeb_audio_stream.h
   )
   target_compile_definitions(util PUBLIC "ENABLE_CUBEB=1")
   target_link_libraries(util PRIVATE cubeb)
@@ -140,10 +141,7 @@ if(ENABLE_OPENGL)
       )
     endif()
     if(ANDROID)
-      target_sources(util PRIVATE
-        gl/context_egl_android.cpp
-        gl/context_egl_android.h
-      )
+      target_include_directories(util PRIVATE "${CMAKE_SOURCE_DIR}/android/app/src/cpp")
     endif()
   endif()
 
@@ -237,16 +235,17 @@ if(WIN32)
     d3d12_texture.h
     dinput_source.cpp
     dinput_source.h
+    http_downloader_winhttp.cpp
+    http_downloader_winhttp.h
     platform_misc_win32.cpp
     win32_raw_input_source.cpp
     win32_raw_input_source.h
     xaudio2_audio_stream.cpp
-    xaudio2_audio_stream.h
     xinput_source.cpp
     xinput_source.h
   )
   target_link_libraries(util PRIVATE d3d12ma)
-  target_link_libraries(util PRIVATE d3d11.lib d3d12.lib d3dcompiler.lib dxgi.lib winmm.lib Dwmapi.lib)
+  target_link_libraries(util PRIVATE d3d11.lib d3d12.lib d3dcompiler.lib dxgi.lib winmm.lib Dwmapi.lib winhttp.lib)
 
   if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
     target_link_libraries(util PRIVATE WinPixEventRuntime::WinPixEventRuntime)
@@ -280,6 +279,16 @@ elseif(NOT ANDROID)
   pkg_check_modules(DBUS REQUIRED dbus-1)
   target_include_directories(util PRIVATE ${DBUS_INCLUDE_DIRS})
   target_link_libraries(util PRIVATE ${DBUS_LINK_LIBRARIES})
+endif()
+
+if(NOT WIN32 AND NOT ANDROID)
+  target_sources(util PRIVATE
+    http_downloader_curl.cpp
+    http_downloader_curl.h
+  )
+  target_link_libraries(util PRIVATE
+    CURL::libcurl
+  )
 endif()
 
 function(add_util_resources target)

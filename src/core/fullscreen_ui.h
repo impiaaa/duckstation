@@ -1,11 +1,15 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
+
 #include "common/progress_callback.h"
 #include "common/types.h"
+
+#include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 
 class SmallStringBase;
 
@@ -21,6 +25,8 @@ void OnSystemPaused();
 void OnSystemResumed();
 void OnSystemDestroyed();
 void OnRunningGameChanged();
+
+#ifndef __ANDROID__
 void OpenPauseMenu();
 void OpenAchievementsWindow();
 bool IsAchievementsWindowOpen();
@@ -28,15 +34,12 @@ void OpenLeaderboardsWindow();
 bool IsLeaderboardsWindowOpen();
 void ReturnToMainWindow();
 void ReturnToPreviousWindow();
+#endif
 
 void Shutdown();
 void Render();
 void InvalidateCoverCache();
 void TimeToPrintableString(SmallStringBase* str, time_t t);
-
-// Returns true if the message has been dismissed.
-bool DrawErrorWindow(const char* message);
-bool DrawConfirmWindow(const char* message, bool* result);
 
 class ProgressCallback final : public BaseProgressCallback
 {
