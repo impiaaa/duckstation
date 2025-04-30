@@ -20,7 +20,6 @@
 #include "metal_stream_buffer.h"
 #include "window_info.h"
 
-#include "common/rectangle.h"
 #include "common/timer.h"
 
 #include <atomic>
@@ -33,7 +32,6 @@
 #include <vector>
 
 class MetalDevice;
-class MetalFramebuffer;
 class MetalPipeline;
 class MetalTexture;
 
@@ -46,7 +44,7 @@ public:
 
   ALWAYS_INLINE id<MTLSamplerState> GetSamplerState() const { return m_ss; }
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
 private:
   MetalSampler(id<MTLSamplerState> ss);
@@ -64,7 +62,7 @@ public:
   ALWAYS_INLINE id<MTLLibrary> GetLibrary() const { return m_library; }
   ALWAYS_INLINE id<MTLFunction> GetFunction() const { return m_function; }
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
 private:
   MetalShader(GPUShaderStage stage, id<MTLLibrary> library, id<MTLFunction> function);
@@ -85,7 +83,7 @@ public:
   ALWAYS_INLINE MTLCullMode GetCullMode() const { return m_cull_mode; }
   ALWAYS_INLINE MTLPrimitiveType GetPrimitive() const { return m_primitive; }
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
 private:
   MetalPipeline(id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth, MTLCullMode cull_mode,
@@ -108,9 +106,6 @@ public:
 
   bool Create(id<MTLDevice> device, u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type,
               Format format, const void* initial_data = nullptr, u32 initial_data_stride = 0);
-  void Destroy();
-
-  bool IsValid() const override;
 
   bool Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch, u32 layer = 0, u32 level = 0) override;
   bool Map(void** map, u32* map_stride, u32 x, u32 y, u32 width, u32 height, u32 layer = 0, u32 level = 0) override;
@@ -118,7 +113,7 @@ public:
 
   void MakeReadyForSampling() override;
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
   // Call when the texture is bound to the pipeline, or read from in a copy.
   ALWAYS_INLINE void SetUseFenceCounter(u64 counter) { m_use_fence_counter = counter; }
@@ -141,6 +136,34 @@ private:
   u8 m_map_level = 0;
 };
 
+class MetalDownloadTexture final : public GPUDownloadTexture
+{
+public:
+  ~MetalDownloadTexture() override;
+
+  static std::unique_ptr<MetalDownloadTexture> Create(u32 width, u32 height, GPUTexture::Format format, void* memory,
+                                                      size_t memory_size, u32 memory_stride);
+
+  void CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width, u32 height,
+                       u32 src_layer, u32 src_level, bool use_transfer_pitch) override;
+
+  bool Map(u32 x, u32 y, u32 width, u32 height) override;
+  void Unmap() override;
+
+  void Flush() override;
+
+  void SetDebugName(std::string_view name) override;
+
+private:
+  MetalDownloadTexture(u32 width, u32 height, GPUTexture::Format format, u8* import_buffer, size_t buffer_offset,
+                       id<MTLBuffer> buffer, const u8* map_ptr, u32 map_pitch);
+
+  size_t m_buffer_offset = 0;
+  id<MTLBuffer> m_buffer = nil;
+
+  u64 m_copy_fence_counter = 0;
+};
+
 class MetalTextureBuffer final : public GPUTextureBuffer
 {
 public:
@@ -155,34 +178,17 @@ public:
   void* Map(u32 required_elements) override;
   void Unmap(u32 used_elements) override;
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
 private:
   MetalStreamBuffer m_buffer;
 };
 
-class MetalFramebuffer final : public GPUFramebuffer
-{
-  friend MetalDevice;
-
-public:
-  ~MetalFramebuffer() override;
-
-  MTLRenderPassDescriptor* GetDescriptor() const;
-
-  void SetDebugName(const std::string_view& name) override;
-
-private:
-  MetalFramebuffer(GPUTexture* rt, GPUTexture* ds, u32 width, u32 height, id<MTLTexture> rt_tex, id<MTLTexture> ds_tex,
-                   MTLRenderPassDescriptor* descriptor);
-
-  id<MTLTexture> m_rt_tex;
-  id<MTLTexture> m_ds_tex;
-  MTLRenderPassDescriptor* m_descriptor;
-};
-
 class MetalDevice final : public GPUDevice
 {
+  friend MetalTexture;
+  friend MetalDownloadTexture;
+
 public:
   ALWAYS_INLINE static MetalDevice& GetInstance() { return *static_cast<MetalDevice*>(g_gpu_device.get()); }
   ALWAYS_INLINE id<MTLDevice> GetMTLDevice() { return m_device; }
@@ -198,21 +204,23 @@ public:
 
   bool UpdateWindow() override;
   void ResizeWindow(s32 new_window_width, s32 new_window_height, float new_window_scale) override;
-
-  AdapterAndModeList GetAdapterAndModeList() override;
   void DestroySurface() override;
 
   std::string GetDriverInfo() const override;
 
+  void ExecuteAndWaitForGPUIdle() override;
+
   std::unique_ptr<GPUTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
                                             GPUTexture::Type type, GPUTexture::Format format,
-                                            const void* data = nullptr, u32 data_stride = 0,
-                                            bool dynamic = false) override;
+                                            const void* data = nullptr, u32 data_stride = 0) override;
   std::unique_ptr<GPUSampler> CreateSampler(const GPUSampler::Config& config) override;
   std::unique_ptr<GPUTextureBuffer> CreateTextureBuffer(GPUTextureBuffer::Format format, u32 size_in_elements) override;
 
-  bool DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
-                       u32 out_data_stride) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format,
+                                                            void* memory, size_t memory_size,
+                                                            u32 memory_stride) override;
+
   bool SupportsTextureFormat(GPUTexture::Format format) const override;
   void CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level, GPUTexture* src,
                          u32 src_x, u32 src_y, u32 src_layer, u32 src_level, u32 width, u32 height) override;
@@ -222,13 +230,12 @@ public:
   void ClearDepth(GPUTexture* t, float d) override;
   void InvalidateRenderTarget(GPUTexture* t) override;
 
-  std::unique_ptr<GPUFramebuffer> CreateFramebuffer(GPUTexture* rt_or_ds, GPUTexture* ds = nullptr) override;
-
-  std::unique_ptr<GPUShader> CreateShaderFromBinary(GPUShaderStage stage, std::span<const u8> data) override;
-  std::unique_ptr<GPUShader> CreateShaderFromSource(GPUShaderStage stage, const std::string_view& source,
-                                                    const char* entry_point,
-                                                    DynamicHeapArray<u8>* out_binary = nullptr) override;
-  std::unique_ptr<GPUPipeline> CreatePipeline(const GPUPipeline::GraphicsConfig& config) override;
+  std::unique_ptr<GPUShader> CreateShaderFromBinary(GPUShaderStage stage, std::span<const u8> data,
+                                                    Error* error) override;
+  std::unique_ptr<GPUShader> CreateShaderFromSource(GPUShaderStage stage, GPUShaderLanguage language,
+                                                    std::string_view source, const char* entry_point,
+                                                    DynamicHeapArray<u8>* out_binary, Error* error) override;
+  std::unique_ptr<GPUPipeline> CreatePipeline(const GPUPipeline::GraphicsConfig& config, Error* error) override;
 
   void PushDebugGroup(const char* name) override;
   void PopDebugGroup() override;
@@ -242,24 +249,25 @@ public:
   void PushUniformBuffer(const void* data, u32 data_size) override;
   void* MapUniformBuffer(u32 size) override;
   void UnmapUniformBuffer(u32 size) override;
-  void SetFramebuffer(GPUFramebuffer* fb) override;
+  void SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds,
+                        GPUPipeline::RenderPassFlag feedback_loop) override;
   void SetPipeline(GPUPipeline* pipeline) override;
   void SetTextureSampler(u32 slot, GPUTexture* texture, GPUSampler* sampler) override;
   void SetTextureBuffer(u32 slot, GPUTextureBuffer* buffer) override;
-  void SetViewport(s32 x, s32 y, s32 width, s32 height) override;
-  void SetScissor(s32 x, s32 y, s32 width, s32 height) override;
+  void SetViewport(const GSVector4i rc) override;
+  void SetScissor(const GSVector4i rc) override;
   void Draw(u32 vertex_count, u32 base_vertex) override;
   void DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex) override;
-
-  bool GetHostRefreshRate(float* refresh_rate) override;
+  void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type) override;
 
   bool SetGPUTimingEnabled(bool enabled) override;
   float GetAndResetAccumulatedGPUTime() override;
 
-  void SetVSync(bool enabled) override;
+  void SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle) override;
 
-  bool BeginPresent(bool skip_present) override;
-  void EndPresent() override;
+  bool BeginPresent(bool skip_present, u32 clear_color) override;
+  void EndPresent(bool explicit_submit) override;
+  void SubmitPresent() override;
 
   void WaitForFenceCounter(u64 counter);
 
@@ -271,8 +279,6 @@ public:
 
   void CommitClear(MetalTexture* tex);
 
-  void UnbindFramebuffer(MetalFramebuffer* fb);
-  void UnbindFramebuffer(MetalTexture* tex);
   void UnbindPipeline(MetalPipeline* pl);
   void UnbindTexture(MetalTexture* tex);
   void UnbindTextureBuffer(MetalTextureBuffer* buf);
@@ -280,10 +286,10 @@ public:
   static void DeferRelease(id obj);
   static void DeferRelease(u64 fence_counter, id obj);
 
-  static AdapterAndModeList StaticGetAdapterAndModeList();
-
 protected:
-  bool CreateDevice(const std::string_view& adapter, bool threaded_presentation) override;
+  bool CreateDevice(std::string_view adapter, bool threaded_presentation,
+                    std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
+                    Error* error) override;
   void DestroyDevice() override;
 
 private:
@@ -296,16 +302,31 @@ private:
 
   using DepthStateMap = std::unordered_map<u8, id<MTLDepthStencilState>>;
 
+  struct ClearPipelineConfig
+  {
+    GPUTexture::Format color_formats[MAX_RENDER_TARGETS];
+    GPUTexture::Format depth_format;
+    u8 samples;
+    u8 pad[2];
+
+    bool operator==(const ClearPipelineConfig& c) const { return (std::memcmp(this, &c, sizeof(*this)) == 0); }
+    bool operator!=(const ClearPipelineConfig& c) const { return (std::memcmp(this, &c, sizeof(*this)) != 0); }
+    bool operator<(const ClearPipelineConfig& c) const { return (std::memcmp(this, &c, sizeof(*this)) < 0); }
+  };
+  static_assert(sizeof(ClearPipelineConfig) == 8);
+
   ALWAYS_INLINE NSView* GetWindowView() const { return (__bridge NSView*)m_window_info.window_handle; }
 
-  void SetFeatures();
+  void SetFeatures(FeatureMask disabled_features);
   bool LoadShaders();
 
   id<MTLFunction> GetFunctionFromLibrary(id<MTLLibrary> library, NSString* name);
   id<MTLComputePipelineState> CreateComputePipeline(id<MTLFunction> function, NSString* name);
+  ClearPipelineConfig GetCurrentClearPipelineConfig() const;
+  id<MTLRenderPipelineState> GetClearDepthPipeline(const ClearPipelineConfig& config);
 
-  std::unique_ptr<GPUShader> CreateShaderFromMSL(GPUShaderStage stage, const std::string_view& source,
-                                                 const std::string_view& entry_point);
+  std::unique_ptr<GPUShader> CreateShaderFromMSL(GPUShaderStage stage, std::string_view source,
+                                                 std::string_view entry_point, Error* error);
 
   id<MTLDepthStencilState> GetDepthState(const GPUPipeline::DepthState& ds);
 
@@ -321,13 +342,11 @@ private:
   void EndInlineUploading();
   void EndAnyEncoding();
 
-  Common::Rectangle<s32> ClampToFramebufferSize(const Common::Rectangle<s32>& rc) const;
+  GSVector4i ClampToFramebufferSize(const GSVector4i rc) const;
   void PreDrawCheck();
   void SetInitialEncoderState();
   void SetViewportInRenderEncoder();
   void SetScissorInRenderEncoder();
-
-  bool CheckDownloadBufferSize(u32 required_size);
 
   bool CreateLayer();
   void DestroyLayer();
@@ -335,6 +354,8 @@ private:
 
   bool CreateBuffers();
   void DestroyBuffers();
+
+  bool IsRenderTargetBound(const GPUTexture* tex) const;
 
   id<MTLDevice> m_device;
   id<MTLCommandQueue> m_queue;
@@ -350,9 +371,6 @@ private:
 
   DepthStateMap m_depth_states;
 
-  id<MTLBuffer> m_download_buffer = nil;
-  u32 m_download_buffer_size = 0;
-
   MetalStreamBuffer m_vertex_buffer;
   MetalStreamBuffer m_index_buffer;
   MetalStreamBuffer m_uniform_buffer;
@@ -361,6 +379,7 @@ private:
   id<MTLLibrary> m_shaders = nil;
   std::vector<std::pair<std::pair<GPUTexture::Format, GPUTexture::Format>, id<MTLComputePipelineState>>>
     m_resolve_pipelines;
+  std::vector<std::pair<ClearPipelineConfig, id<MTLRenderPipelineState>>> m_clear_pipelines;
 
   id<MTLCommandBuffer> m_upload_cmdbuf = nil;
   id<MTLBlitCommandEncoder> m_upload_encoder = nil;
@@ -369,7 +388,10 @@ private:
   id<MTLCommandBuffer> m_render_cmdbuf = nil;
   id<MTLRenderCommandEncoder> m_render_encoder = nil;
 
-  MetalFramebuffer* m_current_framebuffer = nullptr;
+  u8 m_num_current_render_targets = 0;
+  GPUPipeline::RenderPassFlag m_current_feedback_loop = GPUPipeline::NoRenderPassFlags;
+  std::array<MetalTexture*, MAX_RENDER_TARGETS> m_current_render_targets = {};
+  MetalTexture* m_current_depth_target = nullptr;
 
   MetalPipeline* m_current_pipeline = nullptr;
   id<MTLDepthStencilState> m_current_depth_state = nil;
@@ -379,8 +401,8 @@ private:
   std::array<id<MTLTexture>, MAX_TEXTURE_SAMPLERS> m_current_textures = {};
   std::array<id<MTLSamplerState>, MAX_TEXTURE_SAMPLERS> m_current_samplers = {};
   id<MTLBuffer> m_current_ssbo = nil;
-  Common::Rectangle<s32> m_current_viewport = {};
-  Common::Rectangle<s32> m_current_scissor = {};
+  GSVector4i m_current_viewport = {};
+  GSVector4i m_current_scissor = {};
 
   bool m_vsync_enabled = false;
 

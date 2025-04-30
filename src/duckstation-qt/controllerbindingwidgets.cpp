@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "controllerbindingwidgets.h"
@@ -8,6 +8,15 @@
 #include "qtutils.h"
 #include "settingswindow.h"
 #include "settingwidgetbinder.h"
+
+#include "ui_controllerbindingwidget_analog_controller.h"
+#include "ui_controllerbindingwidget_analog_joystick.h"
+#include "ui_controllerbindingwidget_digital_controller.h"
+#include "ui_controllerbindingwidget_guncon.h"
+#include "ui_controllerbindingwidget_justifier.h"
+#include "ui_controllerbindingwidget_mouse.h"
+#include "ui_controllerbindingwidget_negcon.h"
+#include "ui_controllerbindingwidget_negconrumble.h"
 
 #include "core/controller.h"
 #include "core/host.h"
@@ -23,6 +32,7 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QMessageBox>
+#include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSpinBox>
 #include <algorithm>
 
@@ -46,11 +56,6 @@ ControllerBindingWidget::ControllerBindingWidget(QWidget* parent, ControllerSett
 
 ControllerBindingWidget::~ControllerBindingWidget() = default;
 
-QIcon ControllerBindingWidget::getIcon() const
-{
-  return m_bindings_widget->getIcon();
-}
-
 void ControllerBindingWidget::populateControllerTypes()
 {
   for (u32 i = 0; i < static_cast<u32>(ControllerType::Count); i++)
@@ -60,14 +65,18 @@ void ControllerBindingWidget::populateControllerTypes()
     if (!cinfo)
       continue;
 
-    m_ui.controllerType->addItem(qApp->translate("ControllerType", cinfo->display_name), QVariant(static_cast<int>(i)));
+    m_ui.controllerType->addItem(QString::fromUtf8(cinfo->GetDisplayName()), QVariant(static_cast<int>(i)));
   }
 
-  const std::string controller_type_name(
+  m_controller_info = Controller::GetControllerInfo(
     m_dialog->getStringValue(m_config_section.c_str(), "Type", Controller::GetDefaultPadType(m_port_number)));
-  m_controller_type = Settings::ParseControllerTypeName(controller_type_name.c_str()).value_or(ControllerType::None);
+  if (!m_controller_info)
+  {
+    m_controller_info = Controller::GetControllerInfo(m_port_number == 0 ? Settings::DEFAULT_CONTROLLER_1_TYPE :
+                                                                           Settings::DEFAULT_CONTROLLER_2_TYPE);
+  }
 
-  const int index = m_ui.controllerType->findData(QVariant(static_cast<int>(m_controller_type)));
+  const int index = m_ui.controllerType->findData(QVariant(static_cast<int>(m_controller_info->type)));
   if (index >= 0 && index != m_ui.controllerType->currentIndex())
   {
     QSignalBlocker sb(m_ui.controllerType);
@@ -97,35 +106,98 @@ void ControllerBindingWidget::populateWidgets()
     m_macros_widget = nullptr;
   }
 
-  const Controller::ControllerInfo* cinfo = Controller::GetControllerInfo(m_controller_type);
-  const bool has_settings = (cinfo && !cinfo->settings.empty());
-  const bool has_macros = (cinfo && !cinfo->bindings.empty());
+  const bool has_settings = !m_controller_info->settings.empty();
+  const bool has_macros = !m_controller_info->bindings.empty();
   m_ui.settings->setEnabled(has_settings);
   m_ui.macros->setEnabled(has_macros);
 
-  switch (m_controller_type)
+  m_bindings_widget = new QWidget(this);
+  switch (m_controller_info->type)
   {
     case ControllerType::AnalogController:
-      m_bindings_widget = ControllerBindingWidget_AnalogController::createInstance(this);
-      break;
+    {
+      Ui::ControllerBindingWidget_AnalogController ui;
+      ui.setupUi(m_bindings_widget);
+      bindBindingWidgets(m_bindings_widget);
+      m_icon = QIcon::fromTheme(QStringLiteral("controller-line"));
+    }
+    break;
+
     case ControllerType::AnalogJoystick:
-      m_bindings_widget = ControllerBindingWidget_AnalogJoystick::createInstance(this);
-      break;
+    {
+      Ui::ControllerBindingWidget_AnalogJoystick ui;
+      ui.setupUi(m_bindings_widget);
+      bindBindingWidgets(m_bindings_widget);
+      m_icon = QIcon::fromTheme(QStringLiteral("joystick-line"));
+    }
+    break;
+
     case ControllerType::DigitalController:
-      m_bindings_widget = ControllerBindingWidget_DigitalController::createInstance(this);
-      break;
+    {
+      Ui::ControllerBindingWidget_DigitalController ui;
+      ui.setupUi(m_bindings_widget);
+      bindBindingWidgets(m_bindings_widget);
+      m_icon = QIcon::fromTheme(QStringLiteral("controller-digital-line"));
+    }
+    break;
+
     case ControllerType::GunCon:
-      m_bindings_widget = ControllerBindingWidget_GunCon::createInstance(this);
-      break;
+    {
+      Ui::ControllerBindingWidget_GunCon ui;
+      ui.setupUi(m_bindings_widget);
+      bindBindingWidgets(m_bindings_widget);
+      m_icon = QIcon::fromTheme(QStringLiteral("guncon-line"));
+    }
+    break;
+
     case ControllerType::NeGcon:
-      m_bindings_widget = ControllerBindingWidget_NeGcon::createInstance(this);
-      break;
+    {
+      Ui::ControllerBindingWidget_NeGcon ui;
+      ui.setupUi(m_bindings_widget);
+      bindBindingWidgets(m_bindings_widget);
+      m_icon = QIcon::fromTheme(QStringLiteral("negcon-line"));
+    }
+    break;
+
+    case ControllerType::NeGconRumble:
+    {
+      Ui::ControllerBindingWidget_NeGconRumble ui;
+      ui.setupUi(m_bindings_widget);
+      bindBindingWidgets(m_bindings_widget);
+      m_icon = QIcon::fromTheme(QStringLiteral("negcon-line"));
+    }
+    break;
+
     case ControllerType::PlayStationMouse:
-      m_bindings_widget = ControllerBindingWidget_Mouse::createInstance(this);
-      break;
+    {
+      Ui::ControllerBindingWidget_Mouse ui;
+      ui.setupUi(m_bindings_widget);
+      bindBindingWidgets(m_bindings_widget);
+      m_icon = QIcon::fromTheme(QStringLiteral("mouse-line"));
+    }
+    break;
+
+    case ControllerType::Justifier:
+    {
+      Ui::ControllerBindingWidget_Justifier ui;
+      ui.setupUi(m_bindings_widget);
+      bindBindingWidgets(m_bindings_widget);
+      m_icon = QIcon::fromTheme(QStringLiteral("guncon-line"));
+    }
+    break;
+
+    case ControllerType::None:
+    {
+      m_icon = QIcon::fromTheme(QStringLiteral("controller-strike-line"));
+    }
+    break;
+
     default:
-      m_bindings_widget = new ControllerBindingWidget_Base(this);
-      break;
+    {
+      createBindingWidgets(m_bindings_widget);
+      m_icon = QIcon::fromTheme(QStringLiteral("controller-line"));
+    }
+    break;
   }
 
   m_ui.stackedWidget->addWidget(m_bindings_widget);
@@ -172,18 +244,19 @@ void ControllerBindingWidget::onTypeChanged()
   if (!ok || index < 0 || index >= static_cast<int>(ControllerType::Count))
     return;
 
-  m_controller_type = static_cast<ControllerType>(index);
+  m_controller_info = Controller::GetControllerInfo(static_cast<ControllerType>(index));
+  DebugAssert(m_controller_info);
 
-  SettingsInterface* sif = m_dialog->getProfileSettingsInterface();
+  SettingsInterface* sif = m_dialog->getEditingSettingsInterface();
   if (sif)
   {
-    sif->SetStringValue(m_config_section.c_str(), "Type", Settings::GetControllerTypeName(m_controller_type));
+    sif->SetStringValue(m_config_section.c_str(), "Type", m_controller_info->name);
+    QtHost::SaveGameSettings(sif, false);
     g_emu_thread->reloadGameSettings();
   }
   else
   {
-    Host::SetBaseStringSettingValue(m_config_section.c_str(), "Type",
-                                    Settings::GetControllerTypeName(m_controller_type));
+    Host::SetBaseStringSettingValue(m_config_section.c_str(), "Type", m_controller_info->name);
     Host::CommitBaseSettingChanges();
     g_emu_thread->applySettings();
   }
@@ -196,11 +269,13 @@ void ControllerBindingWidget::onAutomaticBindingClicked()
   QMenu menu(this);
   bool added = false;
 
-  for (const QPair<QString, QString>& dev : m_dialog->getDeviceList())
+  for (const auto& [identifier, device_name] : m_dialog->getDeviceList())
   {
     // we set it as data, because the device list could get invalidated while the menu is up
-    QAction* action = menu.addAction(QStringLiteral("%1 (%2)").arg(dev.first).arg(dev.second));
-    action->setData(dev.first);
+    const QString qidentifier = QString::fromStdString(identifier);
+    QAction* action =
+      menu.addAction(QStringLiteral("%1 (%2)").arg(qidentifier).arg(QString::fromStdString(device_name)));
+    action->setData(qidentifier);
     connect(action, &QAction::triggered, this,
             [this, action]() { doDeviceAutomaticBinding(action->data().toString()); });
     added = true;
@@ -232,7 +307,7 @@ void ControllerBindingWidget::onClearBindingsClicked()
   }
   else
   {
-    InputManager::ClearPortBindings(*m_dialog->getProfileSettingsInterface(), m_port_number);
+    InputManager::ClearPortBindings(*m_dialog->getEditingSettingsInterface(), m_port_number);
   }
 
   saveAndRefresh();
@@ -283,8 +358,8 @@ void ControllerBindingWidget::doDeviceAutomaticBinding(const QString& device)
   }
   else
   {
-    result = InputManager::MapController(*m_dialog->getProfileSettingsInterface(), m_port_number, mapping);
-    m_dialog->getProfileSettingsInterface()->Save();
+    result = InputManager::MapController(*m_dialog->getEditingSettingsInterface(), m_port_number, mapping);
+    QtHost::SaveGameSettings(m_dialog->getEditingSettingsInterface(), false);
     g_emu_thread->reloadInputBindings();
   }
 
@@ -298,6 +373,151 @@ void ControllerBindingWidget::saveAndRefresh()
   onTypeChanged();
   QtHost::QueueSettingsSave();
   g_emu_thread->applySettings();
+}
+
+void ControllerBindingWidget::createBindingWidgets(QWidget* parent)
+{
+  SettingsInterface* sif = getDialog()->getEditingSettingsInterface();
+  DebugAssert(m_controller_info);
+
+  QGroupBox* axis_gbox = nullptr;
+  QGridLayout* axis_layout = nullptr;
+  QGroupBox* button_gbox = nullptr;
+  QGridLayout* button_layout = nullptr;
+
+  QScrollArea* scrollarea = new QScrollArea(parent);
+  QWidget* scrollarea_widget = new QWidget(scrollarea);
+  scrollarea->setWidget(scrollarea_widget);
+  scrollarea->setWidgetResizable(true);
+  scrollarea->setFrameShape(QFrame::StyledPanel);
+  scrollarea->setFrameShadow(QFrame::Sunken);
+
+  // We do axes and buttons separately, so we can figure out how many columns to use.
+  constexpr int NUM_AXIS_COLUMNS = 2;
+  int column = 0;
+  int row = 0;
+  for (const Controller::ControllerBindingInfo& bi : m_controller_info->bindings)
+  {
+    if (bi.type == InputBindingInfo::Type::Axis || bi.type == InputBindingInfo::Type::HalfAxis ||
+        bi.type == InputBindingInfo::Type::Pointer)
+    {
+      if (!axis_gbox)
+      {
+        axis_gbox = new QGroupBox(tr("Axes"), scrollarea_widget);
+        axis_layout = new QGridLayout(axis_gbox);
+      }
+
+      QGroupBox* gbox = new QGroupBox(qApp->translate("USB", bi.display_name), axis_gbox);
+      QVBoxLayout* temp = new QVBoxLayout(gbox);
+      InputBindingWidget* widget = new InputBindingWidget(gbox, sif, bi.type, getConfigSection(), bi.name);
+      temp->addWidget(widget);
+      axis_layout->addWidget(gbox, row, column);
+      if ((++column) == NUM_AXIS_COLUMNS)
+      {
+        column = 0;
+        row++;
+      }
+    }
+  }
+  if (axis_gbox)
+    axis_layout->addItem(new QSpacerItem(1, 1, QSizePolicy::Minimum, QSizePolicy::Expanding), ++row, 0);
+
+  const int num_button_columns = axis_layout ? 2 : 4;
+  row = 0;
+  column = 0;
+  for (const Controller::ControllerBindingInfo& bi : m_controller_info->bindings)
+  {
+    if (bi.type == InputBindingInfo::Type::Button)
+    {
+      if (!button_gbox)
+      {
+        button_gbox = new QGroupBox(tr("Buttons"), scrollarea_widget);
+        button_layout = new QGridLayout(button_gbox);
+      }
+
+      QGroupBox* gbox = new QGroupBox(qApp->translate("USB", bi.display_name), button_gbox);
+      QVBoxLayout* temp = new QVBoxLayout(gbox);
+      InputBindingWidget* widget = new InputBindingWidget(gbox, sif, bi.type, getConfigSection(), bi.name);
+      temp->addWidget(widget);
+      button_layout->addWidget(gbox, row, column);
+      if ((++column) == num_button_columns)
+      {
+        column = 0;
+        row++;
+      }
+    }
+  }
+
+  if (button_gbox)
+    button_layout->addItem(new QSpacerItem(1, 1, QSizePolicy::Minimum, QSizePolicy::Expanding), ++row, 0);
+
+  if (!axis_gbox && !button_gbox)
+  {
+    delete scrollarea_widget;
+    delete scrollarea;
+    return;
+  }
+
+  QHBoxLayout* layout = new QHBoxLayout(scrollarea_widget);
+  if (axis_gbox)
+    layout->addWidget(axis_gbox);
+  if (button_gbox)
+    layout->addWidget(button_gbox);
+  layout->addItem(new QSpacerItem(1, 1, QSizePolicy::Expanding, QSizePolicy::Minimum));
+
+  QHBoxLayout* main_layout = new QHBoxLayout(parent);
+  main_layout->addWidget(scrollarea);
+}
+
+void ControllerBindingWidget::bindBindingWidgets(QWidget* parent)
+{
+  SettingsInterface* sif = getDialog()->getEditingSettingsInterface();
+  DebugAssert(m_controller_info);
+
+  const std::string& config_section = getConfigSection();
+  for (const Controller::ControllerBindingInfo& bi : m_controller_info->bindings)
+  {
+    if (bi.type == InputBindingInfo::Type::Axis || bi.type == InputBindingInfo::Type::HalfAxis ||
+        bi.type == InputBindingInfo::Type::Button || bi.type == InputBindingInfo::Type::Pointer)
+    {
+      InputBindingWidget* widget = parent->findChild<InputBindingWidget*>(QString::fromUtf8(bi.name));
+      if (!widget)
+      {
+        ERROR_LOG("No widget found for '{}' ({})", bi.name, m_controller_info->name);
+        continue;
+      }
+
+      widget->initialize(sif, bi.type, config_section, bi.name);
+    }
+  }
+
+  switch (m_controller_info->vibration_caps)
+  {
+    case Controller::VibrationCapabilities::LargeSmallMotors:
+    {
+      InputVibrationBindingWidget* widget =
+        parent->findChild<InputVibrationBindingWidget*>(QStringLiteral("LargeMotor"));
+      if (widget)
+        widget->setKey(getDialog(), config_section, "LargeMotor");
+
+      widget = parent->findChild<InputVibrationBindingWidget*>(QStringLiteral("SmallMotor"));
+      if (widget)
+        widget->setKey(getDialog(), config_section, "SmallMotor");
+    }
+    break;
+
+    case Controller::VibrationCapabilities::SingleMotor:
+    {
+      InputVibrationBindingWidget* widget = parent->findChild<InputVibrationBindingWidget*>(QStringLiteral("Motor"));
+      if (widget)
+        widget->setKey(getDialog(), config_section, "Motor");
+    }
+    break;
+
+    case Controller::VibrationCapabilities::NoVibration:
+    default:
+      break;
+  }
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -346,16 +566,12 @@ ControllerMacroEditWidget::ControllerMacroEditWidget(ControllerMacroWidget* pare
 
   ControllerSettingsWindow* dialog = m_bwidget->getDialog();
   const std::string& section = m_bwidget->getConfigSection();
-  const Controller::ControllerInfo* cinfo = Controller::GetControllerInfo(m_bwidget->getControllerType());
-  if (!cinfo)
-  {
-    // Shouldn't ever happen.
-    return;
-  }
+  const Controller::ControllerInfo* cinfo = m_bwidget->getControllerInfo();
+  DebugAssert(cinfo);
 
   // load binds (single string joined by &)
   const std::string binds_string(
-    dialog->getStringValue(section.c_str(), fmt::format("Macro{}Binds", index + 1u).c_str(), ""));
+    dialog->getStringValue(section.c_str(), TinyString::from_format("Macro{}Binds", index + 1u), ""));
   const std::vector<std::string_view> buttons_split(StringUtil::SplitString(binds_string, '&', true));
 
   for (const std::string_view& button : buttons_split)
@@ -383,10 +599,13 @@ ControllerMacroEditWidget::ControllerMacroEditWidget(ControllerMacroWidget* pare
     m_ui.bindList->addItem(item);
   }
 
-  m_frequency = dialog->getIntValue(section.c_str(), fmt::format("Macro{}Frequency", index + 1u).c_str(), 0);
+  m_frequency = dialog->getIntValue(section.c_str(), TinyString::from_format("Macro{}Frequency", index + 1u), 0);
+  ControllerSettingWidgetBinder::BindWidgetToInputProfileBool(dialog->getEditingSettingsInterface(), m_ui.triggerToggle,
+                                                              section.c_str(), fmt::format("Macro{}Toggle", index + 1u),
+                                                              false);
   updateFrequencyText();
 
-  m_ui.trigger->initialize(dialog->getProfileSettingsInterface(), InputBindingInfo::Type::Macro, section,
+  m_ui.trigger->initialize(dialog->getEditingSettingsInterface(), InputBindingInfo::Type::Macro, section,
                            fmt::format("Macro{}", index + 1u));
 
   connect(m_ui.increaseFrequency, &QAbstractButton::clicked, this, [this]() { modFrequency(1); });
@@ -449,9 +668,8 @@ void ControllerMacroEditWidget::updateFrequencyText()
 void ControllerMacroEditWidget::updateBinds()
 {
   ControllerSettingsWindow* dialog = m_bwidget->getDialog();
-  const Controller::ControllerInfo* cinfo = Controller::GetControllerInfo(m_bwidget->getControllerType());
-  if (!cinfo)
-    return;
+  const Controller::ControllerInfo* cinfo = m_bwidget->getControllerInfo();
+  DebugAssert(cinfo);
 
   std::vector<const Controller::ControllerBindingInfo*> new_binds;
   u32 bind_index = 0;
@@ -500,26 +718,24 @@ void ControllerMacroEditWidget::updateBinds()
 ControllerCustomSettingsWidget::ControllerCustomSettingsWidget(ControllerBindingWidget* parent)
   : QWidget(parent), m_parent(parent)
 {
-  const Controller::ControllerInfo* cinfo = Controller::GetControllerInfo(parent->getControllerType());
-  if (!cinfo || cinfo->settings.empty())
+  const Controller::ControllerInfo* cinfo = parent->getControllerInfo();
+  DebugAssert(cinfo);
+  if (cinfo->settings.empty())
     return;
 
-  QGroupBox* gbox = new QGroupBox(tr("%1 Settings").arg(qApp->translate("ControllerType", cinfo->display_name)), this);
-  QGridLayout* gbox_layout = new QGridLayout(gbox);
-  createSettingWidgets(parent, gbox, gbox_layout, cinfo);
+  QScrollArea* sarea = new QScrollArea(this);
+  QWidget* swidget = new QWidget(sarea);
+  sarea->setWidget(swidget);
+  sarea->setWidgetResizable(true);
+  sarea->setFrameShape(QFrame::StyledPanel);
+  sarea->setFrameShadow(QFrame::Sunken);
+
+  QGridLayout* swidget_layout = new QGridLayout(swidget);
+  createSettingWidgets(parent, swidget, swidget_layout, cinfo);
 
   QVBoxLayout* layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
-  layout->addWidget(gbox);
-
-  QHBoxLayout* bottom_hlayout = new QHBoxLayout();
-  QPushButton* restore_defaults = new QPushButton(tr("Restore Default Settings"), this);
-  restore_defaults->setIcon(QIcon::fromTheme(QStringLiteral("restart-line")));
-  connect(restore_defaults, &QPushButton::clicked, this, &ControllerCustomSettingsWidget::restoreDefaults);
-  bottom_hlayout->addStretch(1);
-  bottom_hlayout->addWidget(restore_defaults);
-  layout->addLayout(bottom_hlayout);
-  layout->addStretch(1);
+  layout->addWidget(sarea);
 }
 
 ControllerCustomSettingsWidget::~ControllerCustomSettingsWidget()
@@ -530,7 +746,7 @@ void ControllerCustomSettingsWidget::createSettingWidgets(ControllerBindingWidge
                                                           QGridLayout* layout, const Controller::ControllerInfo* cinfo)
 {
   const std::string& section = parent->getConfigSection();
-  SettingsInterface* sif = parent->getDialog()->getProfileSettingsInterface();
+  SettingsInterface* sif = parent->getDialog()->getEditingSettingsInterface();
   int current_row = 0;
 
   for (const SettingInfo& si : cinfo->settings)
@@ -629,7 +845,7 @@ void ControllerCustomSettingsWidget::createSettingWidgets(ControllerBindingWidge
         QPushButton* browse_button = new QPushButton(tr("Browse..."), this);
         SettingWidgetBinder::BindWidgetToStringSetting(sif, le, section, std::move(key_name), si.StringDefaultValue());
         connect(browse_button, &QPushButton::clicked, [this, le]() {
-          QString path = QFileDialog::getOpenFileName(this, tr("Select File"));
+          QString path = QDir::toNativeSeparators(QFileDialog::getOpenFileName(this, tr("Select File")));
           if (!path.isEmpty())
             le->setText(path);
         });
@@ -651,12 +867,23 @@ void ControllerCustomSettingsWidget::createSettingWidgets(ControllerBindingWidge
 
     layout->addItem(new QSpacerItem(1, 10, QSizePolicy::Minimum, QSizePolicy::Fixed), current_row++, 0, 1, 4);
   }
+
+  QHBoxLayout* bottom_hlayout = new QHBoxLayout();
+  QPushButton* restore_defaults = new QPushButton(tr("Restore Default Settings"), this);
+  restore_defaults->setIcon(QIcon::fromTheme(QStringLiteral("restart-line")));
+  connect(restore_defaults, &QPushButton::clicked, this, &ControllerCustomSettingsWidget::restoreDefaults);
+  bottom_hlayout->addStretch(1);
+  bottom_hlayout->addWidget(restore_defaults);
+  layout->addLayout(bottom_hlayout, current_row++, 0, 1, 4);
+
+  layout->addItem(new QSpacerItem(1, 1, QSizePolicy::Minimum, QSizePolicy::Expanding), current_row++, 0, 1, 4);
 }
 
 void ControllerCustomSettingsWidget::restoreDefaults()
 {
-  const Controller::ControllerInfo* cinfo = Controller::GetControllerInfo(m_parent->getControllerType());
-  if (!cinfo || cinfo->settings.empty())
+  const Controller::ControllerInfo* cinfo = m_parent->getControllerInfo();
+  DebugAssert(cinfo);
+  if (cinfo->settings.empty())
     return;
 
   for (const SettingInfo& si : cinfo->settings)
@@ -720,228 +947,3 @@ void ControllerCustomSettingsWidget::restoreDefaults()
     }
   }
 }
-
-//////////////////////////////////////////////////////////////////////////
-
-ControllerBindingWidget_Base::ControllerBindingWidget_Base(ControllerBindingWidget* parent) : QWidget(parent)
-{
-}
-
-ControllerBindingWidget_Base::~ControllerBindingWidget_Base()
-{
-}
-
-QIcon ControllerBindingWidget_Base::getIcon() const
-{
-  return QIcon::fromTheme("controller-strike-line");
-}
-
-void ControllerBindingWidget_Base::initBindingWidgets()
-{
-  SettingsInterface* sif = getDialog()->getProfileSettingsInterface();
-  const ControllerType type = getControllerType();
-  const Controller::ControllerInfo* cinfo = Controller::GetControllerInfo(type);
-  if (!cinfo)
-    return;
-
-  const std::string& config_section = getConfigSection();
-  for (const Controller::ControllerBindingInfo& bi : cinfo->bindings)
-  {
-    if (bi.type == InputBindingInfo::Type::Axis || bi.type == InputBindingInfo::Type::HalfAxis ||
-        bi.type == InputBindingInfo::Type::Button || bi.type == InputBindingInfo::Type::Pointer)
-    {
-      InputBindingWidget* widget = findChild<InputBindingWidget*>(QString::fromUtf8(bi.name));
-      if (!widget)
-      {
-        Log_ErrorPrintf("No widget found for '%s' (%s)", bi.name, cinfo->name);
-        continue;
-      }
-
-      widget->initialize(sif, bi.type, config_section, bi.name);
-    }
-  }
-
-  switch (cinfo->vibration_caps)
-  {
-    case Controller::VibrationCapabilities::LargeSmallMotors:
-    {
-      InputVibrationBindingWidget* widget = findChild<InputVibrationBindingWidget*>(QStringLiteral("LargeMotor"));
-      if (widget)
-        widget->setKey(getDialog(), config_section, "LargeMotor");
-
-      widget = findChild<InputVibrationBindingWidget*>(QStringLiteral("SmallMotor"));
-      if (widget)
-        widget->setKey(getDialog(), config_section, "SmallMotor");
-    }
-    break;
-
-    case Controller::VibrationCapabilities::SingleMotor:
-    {
-      InputVibrationBindingWidget* widget = findChild<InputVibrationBindingWidget*>(QStringLiteral("Motor"));
-      if (widget)
-        widget->setKey(getDialog(), config_section, "Motor");
-    }
-    break;
-
-    case Controller::VibrationCapabilities::NoVibration:
-    default:
-      break;
-  }
-}
-
-//////////////////////////////////////////////////////////////////////////
-
-ControllerBindingWidget_DigitalController::ControllerBindingWidget_DigitalController(ControllerBindingWidget* parent)
-  : ControllerBindingWidget_Base(parent)
-{
-  m_ui.setupUi(this);
-  initBindingWidgets();
-}
-
-ControllerBindingWidget_DigitalController::~ControllerBindingWidget_DigitalController()
-{
-}
-
-QIcon ControllerBindingWidget_DigitalController::getIcon() const
-{
-  return QIcon::fromTheme(QStringLiteral("controller-digital-line"));
-}
-
-ControllerBindingWidget_Base* ControllerBindingWidget_DigitalController::createInstance(ControllerBindingWidget* parent)
-{
-  return new ControllerBindingWidget_DigitalController(parent);
-}
-
-//////////////////////////////////////////////////////////////////////////
-
-ControllerBindingWidget_AnalogController::ControllerBindingWidget_AnalogController(ControllerBindingWidget* parent)
-  : ControllerBindingWidget_Base(parent)
-{
-  m_ui.setupUi(this);
-  initBindingWidgets();
-}
-
-ControllerBindingWidget_AnalogController::~ControllerBindingWidget_AnalogController()
-{
-}
-
-QIcon ControllerBindingWidget_AnalogController::getIcon() const
-{
-  return QIcon::fromTheme(QStringLiteral("controller-line"));
-}
-
-ControllerBindingWidget_Base* ControllerBindingWidget_AnalogController::createInstance(ControllerBindingWidget* parent)
-{
-  return new ControllerBindingWidget_AnalogController(parent);
-}
-
-//////////////////////////////////////////////////////////////////////////
-
-ControllerBindingWidget_AnalogJoystick::ControllerBindingWidget_AnalogJoystick(ControllerBindingWidget* parent)
-  : ControllerBindingWidget_Base(parent)
-{
-  m_ui.setupUi(this);
-  initBindingWidgets();
-}
-
-ControllerBindingWidget_AnalogJoystick::~ControllerBindingWidget_AnalogJoystick()
-{
-}
-
-QIcon ControllerBindingWidget_AnalogJoystick::getIcon() const
-{
-  return QIcon::fromTheme(QStringLiteral("joystick-line"));
-}
-
-ControllerBindingWidget_Base* ControllerBindingWidget_AnalogJoystick::createInstance(ControllerBindingWidget* parent)
-{
-  return new ControllerBindingWidget_AnalogJoystick(parent);
-}
-
-//////////////////////////////////////////////////////////////////////////
-
-ControllerBindingWidget_NeGcon::ControllerBindingWidget_NeGcon(ControllerBindingWidget* parent)
-  : ControllerBindingWidget_Base(parent)
-{
-  m_ui.setupUi(this);
-  initBindingWidgets();
-
-  SettingsInterface* sif = getDialog()->getProfileSettingsInterface();
-  const std::string& config_section = getConfigSection();
-  if (QSlider* widget = findChild<QSlider*>(QStringLiteral("SteeringDeadzone")); widget)
-  {
-    const float range = static_cast<float>(widget->maximum());
-    QLabel* label = findChild<QLabel*>(QStringLiteral("SteeringDeadzoneLabel"));
-    if (label)
-    {
-      connect(widget, &QSlider::valueChanged, this, [range, label](int value) {
-        label->setText(tr("%1%").arg((static_cast<float>(value) / range) * 100.0f, 0, 'f', 0));
-      });
-    }
-
-    ControllerSettingWidgetBinder::BindWidgetToInputProfileNormalized(sif, widget, config_section, "SteeringDeadzone",
-                                                                      range, 0.0f);
-  }
-}
-
-ControllerBindingWidget_NeGcon::~ControllerBindingWidget_NeGcon()
-{
-}
-
-QIcon ControllerBindingWidget_NeGcon::getIcon() const
-{
-  return QIcon::fromTheme(QStringLiteral("negcon-line"));
-}
-
-ControllerBindingWidget_Base* ControllerBindingWidget_NeGcon::createInstance(ControllerBindingWidget* parent)
-{
-  return new ControllerBindingWidget_NeGcon(parent);
-}
-
-//////////////////////////////////////////////////////////////////////////
-
-ControllerBindingWidget_GunCon::ControllerBindingWidget_GunCon(ControllerBindingWidget* parent)
-  : ControllerBindingWidget_Base(parent)
-{
-  m_ui.setupUi(this);
-  initBindingWidgets();
-}
-
-ControllerBindingWidget_GunCon::~ControllerBindingWidget_GunCon()
-{
-}
-
-QIcon ControllerBindingWidget_GunCon::getIcon() const
-{
-  return QIcon::fromTheme(QStringLiteral("guncon-line"));
-}
-
-ControllerBindingWidget_Base* ControllerBindingWidget_GunCon::createInstance(ControllerBindingWidget* parent)
-{
-  return new ControllerBindingWidget_GunCon(parent);
-}
-
-//////////////////////////////////////////////////////////////////////////
-
-ControllerBindingWidget_Mouse::ControllerBindingWidget_Mouse(ControllerBindingWidget* parent)
-  : ControllerBindingWidget_Base(parent)
-{
-  m_ui.setupUi(this);
-  initBindingWidgets();
-}
-
-ControllerBindingWidget_Mouse::~ControllerBindingWidget_Mouse()
-{
-}
-
-QIcon ControllerBindingWidget_Mouse::getIcon() const
-{
-  return QIcon::fromTheme(QStringLiteral("mouse-line"));
-}
-
-ControllerBindingWidget_Base* ControllerBindingWidget_Mouse::createInstance(ControllerBindingWidget* parent)
-{
-  return new ControllerBindingWidget_Mouse(parent);
-}
-
-//////////////////////////////////////////////////////////////////////////

@@ -1,12 +1,13 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
+
 #include "controller.h"
+
 #include <array>
 #include <memory>
 #include <optional>
-#include <string_view>
 
 class NeGcon final : public Controller
 {
@@ -43,6 +44,41 @@ public:
     Count
   };
 
+  struct AxisModifier
+  {
+    float deadzone;
+    float saturation;
+    float linearity;
+    float scaling;
+    float zero;
+    float unit;
+  };
+
+  static constexpr float DEFAULT_DEADZONE = 0.00f;
+  static constexpr float DEFAULT_SATURATION = 1.00f;
+  static constexpr float DEFAULT_LINEARITY = 0.00f;
+  static constexpr float DEFAULT_SCALING = 1.00f;
+  static constexpr float DEFAULT_STEERING_ZERO = 128.0f;
+  static constexpr float DEFAULT_STEERING_UNIT = 128.0f;
+  static constexpr float DEFAULT_PEDAL_ZERO = 0.0f;
+  static constexpr float DEFAULT_PEDAL_UNIT = 255.0f;
+  static constexpr AxisModifier DEFAULT_STEERING_MODIFIER = {
+    .deadzone = DEFAULT_DEADZONE,
+    .saturation = DEFAULT_SATURATION,
+    .linearity = DEFAULT_LINEARITY,
+    .scaling = DEFAULT_SCALING,
+    .zero = DEFAULT_STEERING_ZERO,
+    .unit = DEFAULT_STEERING_UNIT,
+  };
+  static constexpr AxisModifier DEFAULT_PEDAL_MODIFIER = {
+    .deadzone = DEFAULT_DEADZONE,
+    .saturation = DEFAULT_SATURATION,
+    .linearity = DEFAULT_LINEARITY,
+    .scaling = DEFAULT_SCALING,
+    .zero = DEFAULT_PEDAL_ZERO,
+    .unit = DEFAULT_PEDAL_UNIT,
+  };
+
   static const Controller::ControllerInfo INFO;
 
   NeGcon(u32 index);
@@ -64,7 +100,7 @@ public:
   u32 GetButtonStateBits() const override;
   std::optional<u32> GetAnalogInputBytes() const override;
 
-  void LoadSettings(SettingsInterface& si, const char* section) override;
+  void LoadSettings(SettingsInterface& si, const char* section, bool initial) override;
 
 private:
   enum class TransferState : u8
@@ -83,13 +119,17 @@ private:
   std::array<u8, static_cast<u8>(Axis::Count)> m_axis_state{};
 
   // steering, merged to m_axis_state
-  std::array<u8, 2> m_half_axis_state{};
+  std::array<float, 2> m_half_axis_state;
 
   // buttons are active low; bits 0-2, 8-10, 14-15 are not used and are always high
   u16 m_button_state = UINT16_C(0xFFFF);
 
   TransferState m_transfer_state = TransferState::Idle;
 
-  float m_steering_deadzone = 0.00f;
-  float m_steering_sensitivity = 1.00f;
+  AxisModifier m_steering_modifier = DEFAULT_STEERING_MODIFIER;
+  std::array<AxisModifier, 3> m_half_axis_modifiers = {
+    DEFAULT_PEDAL_MODIFIER,
+    DEFAULT_PEDAL_MODIFIER,
+    DEFAULT_PEDAL_MODIFIER,
+  };
 };

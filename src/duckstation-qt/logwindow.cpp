@@ -14,31 +14,25 @@
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QScrollBar>
 
+// TODO: Since log callbacks are synchronized, no mutex is needed here.
+// But once I get rid of that, there will be.
 LogWindow* g_log_window;
 
 LogWindow::LogWindow(bool attach_to_main)
   : QMainWindow(), m_filter_names(Settings::GetLogFilters()), m_attached_to_main_window(attach_to_main)
 {
-  // TODO: probably should save the size..
-  resize(700, 400);
-
+  restoreSize();
   createUi();
 
   Log::RegisterCallback(&LogWindow::logCallback, this);
 }
 
-LogWindow::~LogWindow()
-{
-  if (g_log_window == this)
-    g_log_window = nullptr;
-
-  Log::UnregisterCallback(&LogWindow::logCallback, this);
-}
+LogWindow::~LogWindow() = default;
 
 void LogWindow::updateSettings()
 {
-  const bool new_enabled = Host::GetBaseBoolSettingValue("Logging", "LogToWindow", false);
-  const bool attach_to_main = Host::GetBaseBoolSettingValue("Logging", "AttachLogWindowToMainWindow", true);
+  const bool new_enabled = Host::GetBoolSettingValue("Logging", "LogToWindow", false);
+  const bool attach_to_main = Host::GetBoolSettingValue("Logging", "AttachLogWindowToMainWindow", true);
   const bool curr_enabled = (g_log_window != nullptr);
   if (new_enabled == curr_enabled)
   {
@@ -60,10 +54,24 @@ void LogWindow::updateSettings()
 
     g_log_window->show();
   }
-  else
+  else if (g_log_window)
   {
-    delete g_log_window;
+    g_log_window->m_destroying = true;
+    g_log_window->close();
+    g_log_window->deleteLater();
+    g_log_window = nullptr;
   }
+}
+
+void LogWindow::destroy()
+{
+  if (!g_log_window)
+    return;
+
+  g_log_window->m_destroying = true;
+  g_log_window->close();
+  g_log_window->deleteLater();
+  g_log_window = nullptr;
 }
 
 void LogWindow::reattachToMainWindow()
@@ -103,6 +111,7 @@ void LogWindow::createUi()
   QIcon icon;
   icon.addFile(QString::fromUtf8(":/icons/duck.png"), QSize(), QIcon::Normal, QIcon::Off);
   setWindowIcon(icon);
+  setWindowFlag(Qt::WindowCloseButtonHint, false);
   updateWindowTitle();
 
   QAction* action;
@@ -162,15 +171,18 @@ void LogWindow::createUi()
   m_text = new QPlainTextEdit(this);
   m_text->setReadOnly(true);
   m_text->setUndoRedoEnabled(false);
-  m_text->setTextInteractionFlags(Qt::TextSelectableByKeyboard);
+  m_text->setTextInteractionFlags(Qt::TextSelectableByKeyboard | Qt::TextSelectableByMouse);
   m_text->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
 
-#ifndef _WIN32
-  QFont font("Monospace");
-  font.setStyleHint(QFont::TypeWriter);
-#else
+#if defined(_WIN32)
   QFont font("Consolas");
   font.setPointSize(10);
+#elif defined(__APPLE__)
+  QFont font("Monaco");
+  font.setPointSize(11);
+#else
+  QFont font("Monospace");
+  font.setStyleHint(QFont::TypeWriter);
 #endif
   m_text->setFont(font);
 
@@ -277,7 +289,7 @@ void LogWindow::logCallback(void* pUserParam, const char* channelName, const cha
   qmessage.append(QUtf8StringView(message.data(), message.length()));
   qmessage.append(QChar('\n'));
 
-  const QLatin1StringView qchannel((level <= LOGLEVEL_PERF) ? functionName : channelName);
+  const QLatin1StringView qchannel((level <= LOGLEVEL_WARNING) ? functionName : channelName);
 
   if (g_emu_thread->isOnUIThread())
   {
@@ -293,7 +305,16 @@ void LogWindow::logCallback(void* pUserParam, const char* channelName, const cha
 
 void LogWindow::closeEvent(QCloseEvent* event)
 {
-  // TODO: Update config.
+  if (!m_destroying)
+  {
+    event->ignore();
+    return;
+  }
+
+  Log::UnregisterCallback(&LogWindow::logCallback, this);
+
+  saveSize();
+
   QMainWindow::closeEvent(event);
 }
 
@@ -307,16 +328,14 @@ void LogWindow::appendMessage(const QLatin1StringView& channel, quint32 level, c
   temp_cursor.movePosition(QTextCursor::End);
 
   {
-    static constexpr const QChar level_characters[LOGLEVEL_COUNT] = {'X', 'E', 'W', 'P', 'I', 'V', 'D', 'R', 'B', 'T'};
+    static constexpr const QChar level_characters[LOGLEVEL_COUNT] = {'X', 'E', 'W', 'I', 'V', 'D', 'B', 'T'};
     static constexpr const QColor level_colors[LOGLEVEL_COUNT] = {
       QColor(255, 255, 255),    // NONE
       QColor(0xE7, 0x48, 0x56), // ERROR, Red Intensity
       QColor(0xF9, 0xF1, 0xA5), // WARNING, Yellow Intensity
-      QColor(0xB4, 0x00, 0x9E), // PERF, Purple Intensity
       QColor(0xF2, 0xF2, 0xF2), // INFO, White Intensity
       QColor(0x16, 0xC6, 0x0C), // VERBOSE, Green Intensity
       QColor(0xCC, 0xCC, 0xCC), // DEV, White
-      QColor(0x61, 0xD6, 0xD6), // PROFILE, Cyan Intensity
       QColor(0x13, 0xA1, 0x0E), // DEBUG, Green
       QColor(0x00, 0x37, 0xDA), // TRACE, Blue
     };
@@ -334,7 +353,7 @@ void LogWindow::appendMessage(const QLatin1StringView& channel, quint32 level, c
       temp_cursor.insertText(qtimestamp);
     }
 
-    const QString qchannel = (level <= LOGLEVEL_PERF) ?
+    const QString qchannel = (level <= LOGLEVEL_WARNING) ?
                                QStringLiteral("%1(%2): ").arg(level_characters[level]).arg(channel) :
                                QStringLiteral("%1/%2: ").arg(level_characters[level]).arg(channel);
     format.setForeground(QBrush(channel_color));
@@ -362,4 +381,33 @@ void LogWindow::appendMessage(const QLatin1StringView& channel, quint32 level, c
       scrollbar->setSliderPosition(pos);
     }
   }
+}
+
+void LogWindow::saveSize()
+{
+  const int current_width = Host::GetBaseIntSettingValue("UI", "LogWindowWidth", DEFAULT_WIDTH);
+  const int current_height = Host::GetBaseIntSettingValue("UI", "LogWindowHeight", DEFAULT_HEIGHT);
+  const QSize wsize = size();
+
+  bool changed = false;
+  if (current_width != wsize.width())
+  {
+    Host::SetBaseIntSettingValue("UI", "LogWindowWidth", wsize.width());
+    changed = true;
+  }
+  if (current_height != wsize.height())
+  {
+    Host::SetBaseIntSettingValue("UI", "LogWindowHeight", wsize.height());
+    changed = true;
+  }
+
+  if (changed)
+    Host::CommitBaseSettingChanges();
+}
+
+void LogWindow::restoreSize()
+{
+  const int width = Host::GetBaseIntSettingValue("UI", "LogWindowWidth", DEFAULT_WIDTH);
+  const int height = Host::GetBaseIntSettingValue("UI", "LogWindowHeight", DEFAULT_HEIGHT);
+  resize(width, height);
 }

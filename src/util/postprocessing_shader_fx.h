@@ -5,6 +5,7 @@
 
 #include "postprocessing_shader.h"
 
+#include "common/thirdparty/SmallVector.h"
 #include "common/timer.h"
 
 // reshadefx
@@ -23,14 +24,16 @@ public:
   ~ReShadeFXShader();
 
   bool IsValid() const override;
+  bool WantsDepthBuffer() const override;
 
   bool LoadFromFile(std::string name, std::string filename, bool only_config, Error* error);
   bool LoadFromString(std::string name, std::string filename, std::string code, bool only_config, Error* error);
 
   bool ResizeOutput(GPUTexture::Format format, u32 width, u32 height) override;
-  bool CompilePipeline(GPUTexture::Format format, u32 width, u32 height) override;
-  bool Apply(GPUTexture* input, GPUFramebuffer* final_target, s32 final_left, s32 final_top, s32 final_width,
-             s32 final_height, s32 orig_width, s32 orig_height, u32 target_width, u32 target_height) override;
+  bool CompilePipeline(GPUTexture::Format format, u32 width, u32 height, ProgressCallback* progress) override;
+  bool Apply(GPUTexture* input_color, GPUTexture* input_depth, GPUTexture* final_target, GSVector4i final_rect,
+             s32 orig_width, s32 orig_height, s32 native_width, s32 native_height, u32 target_width,
+             u32 target_height) override;
 
 private:
   using TextureID = s32;
@@ -43,6 +46,7 @@ private:
   {
     None,
     Zero,
+    HasDepth,
     Timer,
     FrameTime,
     FrameCount,
@@ -59,6 +63,22 @@ private:
     InternalHeight,
     InternalWidthF,
     InternalHeightF,
+    NativeWidth,
+    NativeHeight,
+    NativeWidthF,
+    NativeHeightF,
+    UpscaleMultiplier,
+    ViewportX,
+    ViewportY,
+    ViewportWidth,
+    ViewportHeight,
+    ViewportOffset,
+    ViewportSize,
+    InternalPixelSize,
+    InternalNormPixelSize,
+    NativePixelSize,
+    NativeNormPixelSize,
+    BufferToViewportRatio,
 
     MaxCount
   };
@@ -80,15 +100,14 @@ private:
   bool CreatePasses(GPUTexture::Format backbuffer_format, reshadefx::module& mod, Error* error);
 
   const char* GetTextureNameForID(TextureID id) const;
-  GPUTexture* GetTextureByID(TextureID id, GPUTexture* input, GPUFramebuffer* final_target) const;
-  GPUFramebuffer* GetFramebufferByID(TextureID id, GPUTexture* input, GPUFramebuffer* final_target) const;
+  GPUTexture* GetTextureByID(TextureID id, GPUTexture* input_color, GPUTexture* input_depth,
+                             GPUTexture* final_target) const;
 
   std::string m_filename;
 
   struct Texture
   {
     std::unique_ptr<GPUTexture> texture;
-    std::unique_ptr<GPUFramebuffer> framebuffer;
     std::string reshade_name; // TODO: we might be able to drop this
     GPUTexture::Format format;
     float rt_scale;
@@ -105,8 +124,8 @@ private:
   struct Pass
   {
     std::unique_ptr<GPUPipeline> pipeline;
-    TextureID render_target;
-    std::vector<Sampler> samplers;
+    llvm::SmallVector<TextureID, GPUDevice::MAX_RENDER_TARGETS> render_targets;
+    llvm::SmallVector<Sampler, GPUDevice::MAX_TEXTURE_SAMPLERS> samplers;
     u32 num_vertices;
 
 #ifdef _DEBUG
@@ -119,6 +138,7 @@ private:
   std::vector<SourceOption> m_source_options;
   u32 m_uniforms_size = 0;
   bool m_valid = false;
+  bool m_wants_depth_buffer = false;
 
   Common::Timer m_frame_timer;
   u32 m_frame_count = 0;

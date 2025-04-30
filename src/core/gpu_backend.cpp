@@ -23,10 +23,10 @@ bool GPUBackend::Initialize(bool force_thread)
   return true;
 }
 
-void GPUBackend::Reset(bool clear_vram)
+void GPUBackend::Reset()
 {
   Sync(true);
-  m_drawing_area = {};
+  DrawingAreaChanged(GPUDrawingArea{0, 0, 0, 0}, GSVector4i::zero());
 }
 
 void GPUBackend::UpdateSettings()
@@ -71,6 +71,12 @@ GPUBackendSetDrawingAreaCommand* GPUBackend::NewSetDrawingAreaCommand()
 {
   return static_cast<GPUBackendSetDrawingAreaCommand*>(
     AllocateCommand(GPUBackendCommandType::SetDrawingArea, sizeof(GPUBackendSetDrawingAreaCommand)));
+}
+
+GPUBackendUpdateCLUTCommand* GPUBackend::NewUpdateCLUTCommand()
+{
+  return static_cast<GPUBackendUpdateCLUTCommand*>(
+    AllocateCommand(GPUBackendCommandType::UpdateCLUT, sizeof(GPUBackendUpdateCLUTCommand)));
 }
 
 GPUBackendDrawPolygonCommand* GPUBackend::NewDrawPolygonCommand(u32 num_vertices)
@@ -177,7 +183,7 @@ void GPUBackend::StartGPUThread()
   m_gpu_loop_done.store(false);
   m_use_gpu_thread = true;
   m_gpu_thread.Start([this]() { RunGPULoop(); });
-  Log_InfoPrint("GPU thread started.");
+  INFO_LOG("GPU thread started.");
 }
 
 void GPUBackend::StopGPUThread()
@@ -189,7 +195,7 @@ void GPUBackend::StopGPUThread()
   WakeGPUThread();
   m_gpu_thread.Join();
   m_use_gpu_thread = false;
-  Log_InfoPrint("GPU thread stopped.");
+  INFO_LOG("GPU thread stopped.");
 }
 
 void GPUBackend::Sync(bool allow_sleep)
@@ -304,8 +310,15 @@ void GPUBackend::HandleCommand(const GPUBackendCommand* cmd)
     case GPUBackendCommandType::SetDrawingArea:
     {
       FlushRender();
-      m_drawing_area = static_cast<const GPUBackendSetDrawingAreaCommand*>(cmd)->new_area;
-      DrawingAreaChanged();
+      const GPUBackendSetDrawingAreaCommand* ccmd = static_cast<const GPUBackendSetDrawingAreaCommand*>(cmd);
+      DrawingAreaChanged(ccmd->new_area, GSVector4i::load<false>(ccmd->new_clamped_area));
+    }
+    break;
+
+    case GPUBackendCommandType::UpdateCLUT:
+    {
+      const GPUBackendUpdateCLUTCommand* ccmd = static_cast<const GPUBackendUpdateCLUTCommand*>(cmd);
+      UpdateCLUT(ccmd->reg, ccmd->clut_is_8bit);
     }
     break;
 
@@ -328,6 +341,6 @@ void GPUBackend::HandleCommand(const GPUBackendCommand* cmd)
     break;
 
     default:
-      break;
+      UnreachableCode();
   }
 }

@@ -12,6 +12,7 @@ add_library(rcheevos
   include/rc_runtime.h
   include/rc_runtime_types.h
   include/rc_url.h
+  include/rc_util.h
   src/rapi/rc_api_common.c
   src/rapi/rc_api_common.h
   src/rapi/rc_api_editor.c
@@ -27,8 +28,6 @@ add_library(rcheevos
   src/rcheevos/memref.c
   src/rcheevos/operand.c
   src/rcheevos/rc_internal.h
-  src/rcheevos/rc_validate.c
-  src/rcheevos/rc_validate.h
   src/rcheevos/richpresence.c
   src/rcheevos/runtime.c
   src/rcheevos/runtime_progress.c
@@ -39,10 +38,7 @@ add_library(rcheevos
   src/rc_compat.c
   src/rc_compat.h
   src/rc_util.c
-  src/rc_util.h
   src/rc_version.h
-  src/rhash/cdreader.c
-  src/rhash/hash.c
   src/rhash/md5.c
   src/rhash/md5.h
   src/rurl/url.c
@@ -50,5 +46,5 @@ add_library(rcheevos
 
 target_include_directories(rcheevos PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_include_directories(rcheevos INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_compile_definitions(rcheevos PRIVATE "RC_DISABLE_LUA=1" "RCHEEVOS_URL_SSL=1")
+target_compile_definitions(rcheevos PRIVATE "RC_DISABLE_LUA=1" "RCHEEVOS_URL_SSL=1" "RC_NO_THREADS=1")
 

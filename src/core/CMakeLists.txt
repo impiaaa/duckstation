@@ -26,6 +26,8 @@ add_library(core
   cpu_core_private.h
   cpu_disasm.cpp
   cpu_disasm.h
+  cpu_pgxp.cpp
+  cpu_pgxp.h
   cpu_types.cpp
   cpu_types.h
   digital_controller.cpp
@@ -38,8 +40,8 @@ add_library(core
   game_database.h
   game_list.cpp
   game_list.h
-  gdb_protocol.cpp
-  gdb_protocol.h
+  gdb_server.cpp
+  gdb_server.h
   gpu.cpp
   gpu.h
   gpu_backend.cpp
@@ -55,6 +57,8 @@ add_library(core
   gpu_sw.h
   gpu_sw_backend.cpp
   gpu_sw_backend.h
+  gpu_sw_rasterizer.cpp
+  gpu_sw_rasterizer.h
   gpu_types.h
   guncon.cpp
   guncon.h
@@ -71,28 +75,31 @@ add_library(core
   imgui_overlays.h
   interrupt_controller.cpp
   interrupt_controller.h
+  justifier.cpp
+  justifier.h
   mdec.cpp
   mdec.h
   memory_card.cpp
   memory_card.h
   memory_card_image.cpp
   memory_card_image.h
+  mips_encoder.h
   multitap.cpp
   multitap.h
   negcon.cpp
   negcon.h
+  negcon_rumble.cpp
+  negcon_rumble.h
   pad.cpp
   pad.h
   pcdrv.cpp
   pcdrv.h
-  pgxp.cpp
-  pgxp.h
+  pine_server.cpp
+  pine_server.h
   playstation_mouse.cpp
   playstation_mouse.h
   psf_loader.cpp
   psf_loader.h
-  resources.cpp
-  resources.h
   save_state_version.h
   settings.cpp
   settings.h
@@ -130,8 +137,8 @@ set(NEWREC_SOURCES
 target_precompile_headers(core PRIVATE "pch.h")
 target_include_directories(core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_link_libraries(core PUBLIC Threads::Threads common util zlib)
-target_link_libraries(core PRIVATE stb xxhash imgui rapidjson rcheevos)
+target_link_libraries(core PUBLIC Threads::Threads common util)
+target_link_libraries(core PRIVATE xxhash imgui rapidyaml rcheevos cpuinfo::cpuinfo ZLIB::ZLIB Zstd::Zstd)
 
 if(CPU_ARCH_X64)
   target_compile_definitions(core PUBLIC "ENABLE_RECOMPILER=1" "ENABLE_NEWREC=1" "ENABLE_MMAP_FASTMEM=1")
@@ -144,7 +151,7 @@ if(CPU_ARCH_X64)
   if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
     target_link_libraries(core PRIVATE zydis)
   endif()
-  message("Building x64 recompiler")
+  message(STATUS "Building x64 recompiler.")
 endif()
 if(CPU_ARCH_ARM32)
   target_compile_definitions(core PUBLIC "ENABLE_RECOMPILER=1" "ENABLE_NEWREC=1")
@@ -154,7 +161,7 @@ if(CPU_ARCH_ARM32)
     cpu_newrec_compiler_aarch32.h
   )
   target_link_libraries(core PUBLIC vixl)
-  message("Building AArch32 recompiler")
+  message(STATUS "Building AArch32 recompiler.")
 endif()
 if(CPU_ARCH_ARM64)
   target_compile_definitions(core PUBLIC "ENABLE_RECOMPILER=1" "ENABLE_NEWREC=1" "ENABLE_MMAP_FASTMEM=1")
@@ -164,7 +171,7 @@ if(CPU_ARCH_ARM64)
     cpu_newrec_compiler_aarch64.h
   )
   target_link_libraries(core PUBLIC vixl)
-  message("Building AArch64 recompiler")
+  message(STATUS "Building AArch64 recompiler.")
 endif()
 if(CPU_ARCH_RISCV64)
   target_compile_definitions(core PUBLIC "ENABLE_NEWREC=1" "ENABLE_MMAP_FASTMEM=1")
@@ -173,12 +180,7 @@ if(CPU_ARCH_RISCV64)
     cpu_newrec_compiler_riscv64.h
   )
   target_link_libraries(core PUBLIC biscuit::biscuit riscv-disas)
-  message("Building RISC-V 64-bit recompiler")
-endif()
-
-if(ENABLE_DISCORD_PRESENCE)
-  target_compile_definitions(core PUBLIC -DENABLE_DISCORD_PRESENCE=1)
-  target_link_libraries(core PRIVATE discord-rpc)
+  message(STATUS "Building RISC-V 64-bit recompiler.")
 endif()
 
 # Copy the provided data directory to the output directory. Borrowed from PCSX2.
@@ -199,6 +201,13 @@ endfunction()
 function(add_core_resources target)
   add_util_resources(${target})
 
+  if(APPLE)
+    # Copy discord-rpc into the bundle
+    get_target_property(DISCORD_RPC_LIBRARY DiscordRPC::discord-rpc IMPORTED_LOCATION_RELEASE)
+    target_sources(${target} PRIVATE "${DISCORD_RPC_LIBRARY}")
+    set_source_files_properties("${DISCORD_RPC_LIBRARY}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+  endif()
+
   file(GLOB_RECURSE RESOURCE_FILES ${CMAKE_SOURCE_DIR}/data/resources/*)
   foreach(path IN LISTS RESOURCE_FILES)
     get_filename_component(file ${path} NAME)
@@ -207,4 +216,8 @@ function(add_core_resources target)
     endif()
     add_resources(${target} ${path} ${CMAKE_SOURCE_DIR}/data/resources/)
   endforeach()
+  if(ALLOW_INSTALL)
+    install_imported_dep_library(cpuinfo::cpuinfo)
+    install(DIRECTORY "$<TARGET_FILE_DIR:${target}>/resources" DESTINATION "${CMAKE_INSTALL_PREFIX}")
+  endif()
 endfunction()

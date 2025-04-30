@@ -1,14 +1,15 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
-#include "common/bitfield.h"
-#include "controller.h"
+
 #include <array>
-#include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
+
+class Error;
 
 namespace MemoryCardImage {
 enum : u32
@@ -25,8 +26,8 @@ enum : u32
 
 using DataArray = std::array<u8, DATA_SIZE>;
 
-bool LoadFromFile(DataArray* data, const char* filename);
-bool SaveToFile(const DataArray& data, const char* filename);
+bool LoadFromFile(DataArray* data, const char* filename, Error* error);
+bool SaveToFile(const DataArray& data, const char* filename, Error* error);
 
 void Format(DataArray* data);
 
@@ -50,12 +51,12 @@ struct FileInfo
 bool IsValid(const DataArray& data);
 u32 GetFreeBlockCount(const DataArray& data);
 std::vector<FileInfo> EnumerateFiles(const DataArray& data, bool include_deleted);
-bool ReadFile(const DataArray& data, const FileInfo& fi, std::vector<u8>* buffer);
-bool WriteFile(DataArray* data, const std::string_view& filename, const std::vector<u8>& buffer);
+bool ReadFile(const DataArray& data, const FileInfo& fi, std::vector<u8>* buffer, Error* error);
+bool WriteFile(DataArray* data, std::string_view filename, std::span<const u8> buffer, Error* error);
 bool DeleteFile(DataArray* data, const FileInfo& fi, bool clear_sectors);
 bool UndeleteFile(DataArray* data, const FileInfo& fi);
-bool ImportCard(DataArray* data, const char* filename);
-bool ImportCard(DataArray* data, const char* filename, std::vector<u8> file_data);
-bool ExportSave(DataArray* data, const FileInfo& fi, const char* filename);
-bool ImportSave(DataArray* data, const char* filename);
+bool ImportCard(DataArray* data, const char* filename, Error* error);
+bool ImportCard(DataArray* data, const char* filename, std::span<const u8> file_data, Error* error);
+bool ExportSave(DataArray* data, const FileInfo& fi, const char* filename, Error* error);
+bool ImportSave(DataArray* data, const char* filename, Error* error);
 } // namespace MemoryCardImage

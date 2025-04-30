@@ -189,6 +189,10 @@ static rc_richpresence_display_t* rc_parse_richpresence_display_internal(const c
           {"Float4", 6, RC_FORMAT_FLOAT4},
           {"Float5", 6, RC_FORMAT_FLOAT5},
           {"Float6", 6, RC_FORMAT_FLOAT6},
+          {"Fixed1", 6, RC_FORMAT_FIXED1},
+          {"Fixed2", 6, RC_FORMAT_FIXED2},
+          {"Fixed3", 6, RC_FORMAT_FIXED3},
+          {"Unsigned", 8, RC_FORMAT_UNSIGNED_VALUE}
         };
         size_t i;
 
@@ -279,7 +283,6 @@ static void rc_rebalance_richpresence_lookup_rebuild(rc_richpresence_lookup_item
 static void rc_rebalance_richpresence_lookup(rc_richpresence_lookup_item_t** root, rc_parse_state_t* parse)
 {
   rc_richpresence_lookup_item_t** items;
-  rc_scratch_buffer_t* buffer;
   int index;
   int size;
 
@@ -288,29 +291,13 @@ static void rc_rebalance_richpresence_lookup(rc_richpresence_lookup_item_t** roo
   if (count < 3)
     return;
 
-  /* allocate space for the flattened list - prefer scratch memory if available */
+  /* allocate space for the flattened list in scratch memory */
   size = count * sizeof(rc_richpresence_lookup_item_t*);
-  buffer = &parse->scratch.buffer;
-  do {
-    const int aligned_offset = RC_ALIGN(buffer->offset);
-    const int remaining = sizeof(buffer->buffer) - aligned_offset;
+  items = (rc_richpresence_lookup_item_t**)rc_buffer_alloc(&parse->scratch.buffer, size);
 
-    if (remaining >= size) {
-      items = (rc_richpresence_lookup_item_t**)&buffer->buffer[aligned_offset];
-      break;
-    }
-
-    buffer = buffer->next;
-    if (buffer == NULL) {
-      /* could not find large enough block of scratch memory; allocate. if allocation fails,
-       * we can still use the unbalanced tree, so just bail out */
-      items = (rc_richpresence_lookup_item_t**)malloc(size);
-      if (items == NULL)
-        return;
-
-      break;
-    }
-  } while (1);
+  /* if allocation fails, we can still use the unbalanced tree, so just bail out */
+  if (items == NULL)
+    return;
 
   /* flatten the list */
   index = 0;
@@ -318,9 +305,6 @@ static void rc_rebalance_richpresence_lookup(rc_richpresence_lookup_item_t** roo
 
   /* and rebuild it as a balanced tree */
   rc_rebalance_richpresence_lookup_rebuild(root, items, 0, count - 1);
-
-  if (buffer == NULL)
-    free(items);
 }
 
 static void rc_insert_richpresence_lookup_item(rc_richpresence_lookup_t* lookup,
@@ -842,4 +826,79 @@ void rc_reset_richpresence(rc_richpresence_t* self) {
 
   for (variable = self->variables; variable; variable = variable->next)
     rc_reset_value(variable);
+}
+
+static int rc_get_richpresence_strings_has_string(const char** buffer, size_t written, const char* search) {
+  for (size_t i = 0; i < written; i++) {
+    if (buffer[i] == search)
+      return 1;
+  }
+
+  return 0;
+}
+
+static int rc_get_richpresence_strings_recurse(const rc_richpresence_lookup_item_t* item, const char** buffer, size_t buffersize, size_t* written) {
+  size_t len;
+  int err;
+
+  if (!rc_get_richpresence_strings_has_string(buffer, *written, item->label)) {
+    if (*written == buffersize)
+      return RC_INSUFFICIENT_BUFFER;
+
+    buffer[(*written)++] = item->label;
+  }
+
+  if (item->left && (err = rc_get_richpresence_strings_recurse(item->left, buffer, buffersize, written)) != RC_OK)
+    return err;
+  if (item->right && (err = rc_get_richpresence_strings_recurse(item->right, buffer, buffersize, written)) != RC_OK)
+    return err;
+
+  return RC_OK;
+}
+
+int rc_get_richpresence_strings(rc_richpresence_t* richpresence, const char** buffer, size_t buffersize, size_t* count) {
+  const rc_richpresence_display_t* display;
+  const rc_richpresence_display_part_t* part;
+  size_t written;
+  size_t len;
+  int err;
+
+  written = 0;
+  for (display = richpresence->first_display; display; display = display->next) {
+    for (part = display->display; part; part = part->next) {
+      switch (part->display_type) {
+        case RC_FORMAT_STRING:
+          if (!rc_get_richpresence_strings_has_string(buffer, written, part->text)) {
+            if (written == buffersize)
+              return RC_INSUFFICIENT_BUFFER;
+
+            buffer[written++] = part->text;
+          }
+          break;
+
+        case RC_FORMAT_LOOKUP:
+          if (part->lookup->default_label && !rc_get_richpresence_strings_has_string(buffer, written, part->lookup->default_label)) {
+            if (written == buffersize)
+              return RC_INSUFFICIENT_BUFFER;
+
+            buffer[written++] = part->lookup->default_label;
+          }
+
+          if ((err = rc_get_richpresence_strings_recurse(part->lookup->root, buffer, buffersize, &written)) != RC_OK)
+            return err;
+
+          break;
+
+        default:
+          break;
+      }
+    }
+  }
+
+  if (written == buffersize)
+    return RC_INSUFFICIENT_BUFFER;
+
+  *count = written;
+  buffer[written++] = NULL; /* terminate list */
+  return RC_OK;
 }

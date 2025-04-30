@@ -1,28 +1,31 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
 
-#include "gl/context.h"
 #include "gpu_device.h"
+#include "gpu_framebuffer_manager.h"
 #include "gpu_shader_cache.h"
+#include "opengl_context.h"
 #include "opengl_loader.h"
 #include "opengl_pipeline.h"
 #include "opengl_texture.h"
 
-#include "common/rectangle.h"
-
 #include <cstdio>
 #include <memory>
+#include <string_view>
 #include <tuple>
 
-class OpenGLFramebuffer;
 class OpenGLPipeline;
 class OpenGLStreamBuffer;
 class OpenGLTexture;
+class OpenGLDownloadTexture;
 
 class OpenGLDevice final : public GPUDevice
 {
+  friend OpenGLTexture;
+  friend OpenGLDownloadTexture;
+
 public:
   OpenGLDevice();
   ~OpenGLDevice();
@@ -32,9 +35,10 @@ public:
   {
     return GetInstance().m_texture_stream_buffer.get();
   }
+  ALWAYS_INLINE static bool IsGLES() { return GetInstance().m_gl_context->IsGLES(); }
   static void BindUpdateTextureUnit();
-
-  ALWAYS_INLINE GL::Context* GetGLContext() const { return m_gl_context.get(); }
+  static bool ShouldUsePBOsForDownloads();
+  static void SetErrorObject(Error* errptr, std::string_view prefix, GLenum glerr);
 
   RenderAPI GetRenderAPI() const override;
 
@@ -46,17 +50,19 @@ public:
 
   std::string GetDriverInfo() const override;
 
-  AdapterAndModeList GetAdapterAndModeList() override;
+  void ExecuteAndWaitForGPUIdle() override;
 
   std::unique_ptr<GPUTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
                                             GPUTexture::Type type, GPUTexture::Format format,
-                                            const void* data = nullptr, u32 data_stride = 0,
-                                            bool dynamic = false) override;
+                                            const void* data = nullptr, u32 data_stride = 0) override;
   std::unique_ptr<GPUSampler> CreateSampler(const GPUSampler::Config& config) override;
   std::unique_ptr<GPUTextureBuffer> CreateTextureBuffer(GPUTextureBuffer::Format format, u32 size_in_elements) override;
 
-  bool DownloadTexture(GPUTexture* texture, u32 x, u32 y, u32 width, u32 height, void* out_data,
-                       u32 out_data_stride) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format,
+                                                            void* memory, size_t memory_size,
+                                                            u32 memory_stride) override;
+
   bool SupportsTextureFormat(GPUTexture::Format format) const override;
   void CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level, GPUTexture* src,
                          u32 src_x, u32 src_y, u32 src_layer, u32 src_level, u32 width, u32 height) override;
@@ -66,12 +72,12 @@ public:
   void ClearDepth(GPUTexture* t, float d) override;
   void InvalidateRenderTarget(GPUTexture* t) override;
 
-  std::unique_ptr<GPUFramebuffer> CreateFramebuffer(GPUTexture* rt_or_ds, GPUTexture* ds = nullptr) override;
-
-  std::unique_ptr<GPUShader> CreateShaderFromBinary(GPUShaderStage stage, std::span<const u8> data) override;
-  std::unique_ptr<GPUShader> CreateShaderFromSource(GPUShaderStage stage, const std::string_view& source,
-                                                    const char* entry_point, DynamicHeapArray<u8>* out_binary) override;
-  std::unique_ptr<GPUPipeline> CreatePipeline(const GPUPipeline::GraphicsConfig& config) override;
+  std::unique_ptr<GPUShader> CreateShaderFromBinary(GPUShaderStage stage, std::span<const u8> data,
+                                                    Error* error) override;
+  std::unique_ptr<GPUShader> CreateShaderFromSource(GPUShaderStage stage, GPUShaderLanguage language,
+                                                    std::string_view source, const char* entry_point,
+                                                    DynamicHeapArray<u8>* out_binary, Error* error) override;
+  std::unique_ptr<GPUPipeline> CreatePipeline(const GPUPipeline::GraphicsConfig& config, Error* error) override;
 
   void PushDebugGroup(const char* name) override;
   void PopDebugGroup() override;
@@ -85,47 +91,53 @@ public:
   void PushUniformBuffer(const void* data, u32 data_size) override;
   void* MapUniformBuffer(u32 size) override;
   void UnmapUniformBuffer(u32 size) override;
-  void SetFramebuffer(GPUFramebuffer* fb) override;
+  void SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds,
+                        GPUPipeline::RenderPassFlag feedback_loop = GPUPipeline::NoRenderPassFlags) override;
   void SetPipeline(GPUPipeline* pipeline) override;
   void SetTextureSampler(u32 slot, GPUTexture* texture, GPUSampler* sampler) override;
   void SetTextureBuffer(u32 slot, GPUTextureBuffer* buffer) override;
-  void SetViewport(s32 x, s32 y, s32 width, s32 height) override;
-  void SetScissor(s32 x, s32 y, s32 width, s32 height) override;
+  void SetViewport(const GSVector4i rc) override;
+  void SetScissor(const GSVector4i rc) override;
   void Draw(u32 vertex_count, u32 base_vertex) override;
   void DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex) override;
+  void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type) override;
 
-  void SetVSync(bool enabled) override;
+  void SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle) override;
 
-  bool BeginPresent(bool skip_present) override;
-  void EndPresent() override;
+  bool BeginPresent(bool skip_present, u32 clear_color) override;
+  void EndPresent(bool explicit_present) override;
+  void SubmitPresent() override;
 
   bool SetGPUTimingEnabled(bool enabled) override;
   float GetAndResetAccumulatedGPUTime() override;
 
   void CommitClear(OpenGLTexture* tex);
-  void CommitClear(OpenGLFramebuffer* fb); // Assumes the FB has been bound.
+  void CommitRTClearInFB(OpenGLTexture* tex, u32 idx);
+  void CommitDSClearInFB(OpenGLTexture* tex);
 
-  GLuint LookupProgramCache(const OpenGLPipeline::ProgramCacheKey& key, const GPUPipeline::GraphicsConfig& plconfig);
-  GLuint CompileProgram(const GPUPipeline::GraphicsConfig& plconfig);
+  GLuint LookupProgramCache(const OpenGLPipeline::ProgramCacheKey& key, const GPUPipeline::GraphicsConfig& plconfig, Error* error);
+  GLuint CompileProgram(const GPUPipeline::GraphicsConfig& plconfig, Error* error);
   void PostLinkProgram(const GPUPipeline::GraphicsConfig& plconfig, GLuint program_id);
   void UnrefProgram(const OpenGLPipeline::ProgramCacheKey& key);
 
-  GLuint LookupVAOCache(const OpenGLPipeline::VertexArrayCacheKey& key);
-  GLuint CreateVAO(std::span<const GPUPipeline::VertexAttribute> attributes, u32 stride);
+  OpenGLPipeline::VertexArrayCache::const_iterator LookupVAOCache(const OpenGLPipeline::VertexArrayCacheKey& key, Error* error);
+  GLuint CreateVAO(std::span<const GPUPipeline::VertexAttribute> attributes, u32 stride, Error* error);
   void UnrefVAO(const OpenGLPipeline::VertexArrayCacheKey& key);
 
   void SetActiveTexture(u32 slot);
   void UnbindTexture(GLuint id);
+  void UnbindTexture(OpenGLTexture* tex);
   void UnbindSSBO(GLuint id);
   void UnbindSampler(GLuint id);
-  void UnbindFramebuffer(const OpenGLFramebuffer* fb);
   void UnbindPipeline(const OpenGLPipeline* pl);
 
 protected:
-  bool CreateDevice(const std::string_view& adapter, bool threaded_presentation) override;
+  bool CreateDevice(std::string_view adapter, bool threaded_presentation,
+                    std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features,
+                    Error* error) override;
   void DestroyDevice() override;
 
-  bool ReadPipelineCache(const std::string& filename) override;
+  bool OpenPipelineCache(const std::string& filename) override;
   bool GetPipelineCacheData(DynamicHeapArray<u8>* data) override;
 
 private:
@@ -138,14 +150,17 @@ private:
   static constexpr u32 UNIFORM_BUFFER_SIZE = 2 * 1024 * 1024;
   static constexpr u32 TEXTURE_STREAM_BUFFER_SIZE = 16 * 1024 * 1024;
 
-  bool CheckFeatures(bool* buggy_pbo);
-  bool CreateBuffers(bool buggy_pbo);
+  bool CheckFeatures(FeatureMask disabled_features);
+  bool CreateBuffers();
   void DestroyBuffers();
 
   void SetSwapInterval();
   void RenderBlankFrame();
 
-  std::tuple<s32, s32, s32, s32> GetFlippedViewportScissor(const Common::Rectangle<s32>& rc) const;
+  s32 IsRenderTargetBound(const GPUTexture* tex) const;
+  static GLuint CreateFramebuffer(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds, u32 flags);
+  static void DestroyFramebuffer(GLuint fbo);
+
   void UpdateViewport();
   void UpdateScissor();
 
@@ -164,8 +179,9 @@ private:
   void ApplyDepthState(GPUPipeline::DepthState ds);
   void ApplyBlendState(GPUPipeline::BlendState bs);
 
-  std::unique_ptr<GL::Context> m_gl_context;
-  std::unique_ptr<OpenGLFramebuffer> m_window_framebuffer;
+  void SetVertexBufferOffsets(u32 base_vertex);
+
+  std::unique_ptr<OpenGLContext> m_gl_context;
 
   std::unique_ptr<OpenGLStreamBuffer> m_vertex_buffer;
   std::unique_ptr<OpenGLStreamBuffer> m_index_buffer;
@@ -175,25 +191,30 @@ private:
   // TODO: pass in file instead of blob for pipeline cache
   OpenGLPipeline::VertexArrayCache m_vao_cache;
   OpenGLPipeline::ProgramCache m_program_cache;
+  GPUFramebufferManager<GLuint, CreateFramebuffer, DestroyFramebuffer> m_framebuffer_manager;
 
   // VAO cache - fixed max as key
+  OpenGLPipeline::VertexArrayCache::const_iterator m_last_vao = m_vao_cache.cend();
   GPUPipeline::BlendState m_last_blend_state = {};
   GPUPipeline::RasterizationState m_last_rasterization_state = {};
   GPUPipeline::DepthState m_last_depth_state = {};
   GLuint m_uniform_buffer_alignment = 1;
   GLuint m_last_program = 0;
-  GLuint m_last_vao = 0;
   u32 m_last_texture_unit = 0;
   std::array<std::pair<GLuint, GLuint>, MAX_TEXTURE_SAMPLERS> m_last_samplers = {};
   GLuint m_last_ssbo = 0;
-  Common::Rectangle<s32> m_last_viewport{0, 0, 1, 1};
-  Common::Rectangle<s32> m_last_scissor{0, 0, 1, 1};
+  GSVector4i m_last_viewport = {};
+  GSVector4i m_last_scissor = GSVector4i::cxpr(0, 0, 1, 1);
 
   // Misc framebuffers
   GLuint m_read_fbo = 0;
   GLuint m_write_fbo = 0;
 
-  OpenGLFramebuffer* m_current_framebuffer = nullptr;
+  GLuint m_current_fbo = 0;
+  u32 m_num_current_render_targets = 0;
+  std::array<OpenGLTexture*, MAX_RENDER_TARGETS> m_current_render_targets = {};
+  OpenGLTexture* m_current_depth_target = nullptr;
+
   OpenGLPipeline* m_current_pipeline = nullptr;
 
   std::array<GLuint, NUM_TIMESTAMP_QUERIES> m_timestamp_queries = {};
@@ -207,4 +228,7 @@ private:
   std::string m_pipeline_disk_cache_filename;
   u32 m_pipeline_disk_cache_data_end = 0;
   bool m_pipeline_disk_cache_changed = false;
+
+  bool m_disable_pbo = false;
+  bool m_disable_async_download = false;
 };

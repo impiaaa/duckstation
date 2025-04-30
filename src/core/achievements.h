@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
@@ -74,8 +74,8 @@ void Logout();
 /// Called when the system changes game, or is booting.
 void GameChanged(const std::string& path, CDImage* image);
 
-/// Re-enables hardcode mode if it is enabled in the settings.
-bool ResetHardcoreMode();
+/// Re-enables hardcore mode if it is enabled in the settings.
+bool ResetHardcoreMode(bool is_booting);
 
 /// Forces hardcore mode off until next reset.
 void DisableHardcoreMode();
@@ -118,6 +118,13 @@ const std::string& GetRichPresenceString();
 /// Returns the RetroAchievements title for the current game.
 /// Should be called with the lock held.
 const std::string& GetGameTitle();
+
+/// Returns the logged-in user name.
+const char* GetLoggedInUserName();
+
+/// Returns the path to the user's profile avatar.
+/// Should be called with the lock held.
+std::string GetLoggedInUserBadgePath();
 
 /// Clears all cached state used to render the UI.
 void ClearUIState();

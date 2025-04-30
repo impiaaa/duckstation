@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
@@ -28,7 +28,7 @@ public:
   SmallStringBase(const SmallStringBase& copy);
   SmallStringBase(SmallStringBase&& move);
   SmallStringBase(const std::string& str);
-  SmallStringBase(const std::string_view& sv);
+  SmallStringBase(const std::string_view sv);
 
   // Destructor. Child classes may not have any destructors, as this is not virtual.
   ~SmallStringBase();
@@ -37,7 +37,7 @@ public:
   void assign(const char* str);
   void assign(const char* str, u32 length);
   void assign(const std::string& copy);
-  void assign(const std::string_view& copy);
+  void assign(const std::string_view copy);
   void assign(const SmallStringBase& copy);
   void assign(SmallStringBase&& move);
 
@@ -54,15 +54,15 @@ public:
   void append(const char* appendText);
   void append(const char* str, u32 length);
   void append(const std::string& str);
-  void append(const std::string_view& str);
+  void append(const std::string_view str);
   void append(const SmallStringBase& str);
 
   // append formatted string to this string
-  void append_format(const char* format, ...) printflike(2, 3);
-  void append_format_va(const char* format, va_list ap);
+  void append_sprintf(const char* format, ...) printflike(2, 3);
+  void append_vsprintf(const char* format, va_list ap);
 
   template<typename... T>
-  void append_fmt(fmt::format_string<T...> fmt, T&&... args);
+  void append_format(fmt::format_string<T...> fmt, T&&... args);
 
   // append hex string
   void append_hex(const void* data, size_t len);
@@ -74,53 +74,61 @@ public:
   void prepend(const char* str);
   void prepend(const char* str, u32 length);
   void prepend(const std::string& str);
-  void prepend(const std::string_view& str);
+  void prepend(const std::string_view str);
   void prepend(const SmallStringBase& str);
 
   // append formatted string to this string
-  void prepend_format(const char* format, ...) printflike(2, 3);
-  void prepend_format_va(const char* format, va_list ap);
+  void prepend_sprintf(const char* format, ...) printflike(2, 3);
+  void prepend_vsprintf(const char* format, va_list ap);
 
   template<typename... T>
-  void prepend_fmt(fmt::format_string<T...> fmt, T&&... args);
+  void prepend_format(fmt::format_string<T...> fmt, T&&... args);
 
   // insert a string at the specified offset
   void insert(s32 offset, const char* str);
   void insert(s32 offset, const char* str, u32 length);
   void insert(s32 offset, const std::string& str);
-  void insert(s32 offset, const std::string_view& str);
+  void insert(s32 offset, const std::string_view str);
   void insert(s32 offset, const SmallStringBase& str);
 
   // set to formatted string
-  void format(const char* format, ...) printflike(2, 3);
-  void format_va(const char* format, va_list ap);
+  void sprintf(const char* format, ...) printflike(2, 3);
+  void vsprintf(const char* format, va_list ap);
 
   template<typename... T>
-  void fmt(fmt::format_string<T...> fmt, T&&... args);
+  void format(fmt::format_string<T...> fmt, T&&... args);
+
+  void vformat(fmt::string_view fmt, fmt::format_args args);
 
   // compare one string to another
   bool equals(const char* str) const;
   bool equals(const SmallStringBase& str) const;
-  bool equals(const std::string_view& str) const;
+  bool equals(const std::string_view str) const;
+  bool equals(const std::string& str) const;
   bool iequals(const char* str) const;
   bool iequals(const SmallStringBase& str) const;
-  bool iequals(const std::string_view& str) const;
+  bool iequals(const std::string_view str) const;
+  bool iequals(const std::string& str) const;
 
   // numerical compares
   int compare(const char* str) const;
   int compare(const SmallStringBase& str) const;
-  int compare(const std::string_view& str) const;
+  int compare(const std::string_view str) const;
+  int compare(const std::string& str) const;
   int icompare(const char* str) const;
   int icompare(const SmallStringBase& str) const;
-  int icompare(const std::string_view& str) const;
+  int icompare(const std::string_view str) const;
+  int icompare(const std::string& str) const;
 
   // starts with / ends with
   bool starts_with(const char* str, bool case_sensitive = true) const;
-  bool starts_with(const std::string_view& str, bool case_sensitive = true) const;
   bool starts_with(const SmallStringBase& str, bool case_sensitive = true) const;
+  bool starts_with(const std::string_view str, bool case_sensitive = true) const;
+  bool starts_with(const std::string& str, bool case_sensitive = true) const;
   bool ends_with(const char* str, bool case_sensitive = true) const;
-  bool ends_with(const std::string_view& str, bool case_sensitive = true) const;
   bool ends_with(const SmallStringBase& str, bool case_sensitive = true) const;
+  bool ends_with(const std::string_view str, bool case_sensitive = true) const;
+  bool ends_with(const std::string& str, bool case_sensitive = true) const;
 
   // searches for a character inside a string
   // rfind is the same except it starts at the end instead of the start
@@ -132,6 +140,12 @@ public:
   // rfind is the same except it starts at the end instead of the start
   // returns -1 if it is not found, otherwise the offset in the string
   s32 find(const char* str, u32 offset = 0) const;
+
+  // returns the number of instances of the specified character
+  u32 count(char ch) const;
+
+  // replaces search string with replacement, returns the number of replacements made
+  u32 replace(const char* search, const char* replacement);
 
   // removes characters from string
   void erase(s32 offset, s32 count = std::numeric_limits<s32>::max());
@@ -165,13 +179,24 @@ public:
   ALWAYS_INLINE const char* end_ptr() const { return m_buffer + m_length; }
 
   // STL adapters
+  ALWAYS_INLINE char& front() { return m_buffer[0]; }
+  ALWAYS_INLINE const char& front() const { return m_buffer[0]; }
+  ALWAYS_INLINE char& back() { return m_buffer[m_length - 1]; }
+  ALWAYS_INLINE const char& back() const { return m_buffer[m_length - 1]; }
   ALWAYS_INLINE void push_back(value_type&& val) { append(val); }
+  ALWAYS_INLINE void pop_back() { erase(-1); }
 
   // returns a string view for this string
   std::string_view view() const;
 
   // returns a substring view for this string
   std::string_view substr(s32 offset, s32 count) const;
+
+#ifdef _WIN32
+  // wide string adapters, win32 only
+  void assign(const std::wstring_view wstr);
+  std::wstring wstring() const;
+#endif
 
   // accessor operators
   ALWAYS_INLINE operator const char*() const { return c_str(); }
@@ -181,21 +206,25 @@ public:
   // comparative operators
   ALWAYS_INLINE bool operator==(const char* str) const { return equals(str); }
   ALWAYS_INLINE bool operator==(const SmallStringBase& str) const { return equals(str); }
-  ALWAYS_INLINE bool operator==(const std::string_view& str) const { return equals(str); }
+  ALWAYS_INLINE bool operator==(const std::string_view str) const { return equals(str); }
+  ALWAYS_INLINE bool operator==(const std::string& str) const { return equals(str); }
   ALWAYS_INLINE bool operator!=(const char* str) const { return !equals(str); }
   ALWAYS_INLINE bool operator!=(const SmallStringBase& str) const { return !equals(str); }
-  ALWAYS_INLINE bool operator!=(const std::string_view& str) const { return !equals(str); }
+  ALWAYS_INLINE bool operator!=(const std::string_view str) const { return !equals(str); }
+  ALWAYS_INLINE bool operator!=(const std::string& str) const { return !equals(str); }
   ALWAYS_INLINE bool operator<(const char* str) const { return (compare(str) < 0); }
   ALWAYS_INLINE bool operator<(const SmallStringBase& str) const { return (compare(str) < 0); }
-  ALWAYS_INLINE bool operator<(const std::string_view& str) const { return (compare(str) < 0); }
+  ALWAYS_INLINE bool operator<(const std::string_view str) const { return (compare(str) < 0); }
+  ALWAYS_INLINE bool operator<(const std::string& str) const { return (compare(str) < 0); }
   ALWAYS_INLINE bool operator>(const char* str) const { return (compare(str) > 0); }
   ALWAYS_INLINE bool operator>(const SmallStringBase& str) const { return (compare(str) > 0); }
-  ALWAYS_INLINE bool operator>(const std::string_view& str) const { return (compare(str) > 0); }
+  ALWAYS_INLINE bool operator>(const std::string_view str) const { return (compare(str) > 0); }
+  ALWAYS_INLINE bool operator>(const std::string& str) const { return (compare(str) > 0); }
 
   SmallStringBase& operator=(const SmallStringBase& copy);
   SmallStringBase& operator=(const char* str);
   SmallStringBase& operator=(const std::string& str);
-  SmallStringBase& operator=(const std::string_view& str);
+  SmallStringBase& operator=(const std::string_view str);
   SmallStringBase& operator=(SmallStringBase&& move);
 
 protected:
@@ -243,17 +272,67 @@ public:
     assign(move);
   }
 
-  ALWAYS_INLINE SmallStackString(const std::string_view& sv)
+  ALWAYS_INLINE SmallStackString(const SmallStackString& copy)
+  {
+    init();
+    assign(copy);
+  }
+
+  ALWAYS_INLINE SmallStackString(SmallStackString&& move)
+  {
+    init();
+    assign(move);
+  }
+
+  ALWAYS_INLINE SmallStackString(const std::string_view sv)
   {
     init();
     assign(sv);
   }
 
+  ALWAYS_INLINE SmallStackString& operator=(const SmallStringBase& copy)
+  {
+    assign(copy);
+    return *this;
+  }
+
+  ALWAYS_INLINE SmallStackString& operator=(SmallStringBase&& move)
+  {
+    assign(move);
+    return *this;
+  }
+
+  ALWAYS_INLINE SmallStackString& operator=(const SmallStackString& copy)
+  {
+    assign(copy);
+    return *this;
+  }
+
+  ALWAYS_INLINE SmallStackString& operator=(SmallStackString&& move)
+  {
+    assign(move);
+    return *this;
+  }
+
+  ALWAYS_INLINE SmallStackString& operator=(const std::string_view sv)
+  {
+    assign(sv);
+    return *this;
+  }
+
+  ALWAYS_INLINE SmallStackString& operator=(const char* str)
+  {
+    assign(str);
+    return *this;
+  }
+
   // Override the fromstring method
-  static SmallStackString from_format(const char* format, ...) printflike(1, 2);
+  static SmallStackString from_sprintf(const char* format, ...) printflike(1, 2);
 
   template<typename... T>
-  static SmallStackString from_fmt(fmt::format_string<T...> fmt, T&&... args);
+  static SmallStackString from_format(fmt::format_string<T...> fmt, T&&... args);
+
+  static SmallStackString from_vformat(fmt::string_view fmt, fmt::format_args args);
 
 private:
   char m_stack_buffer[L + 1];
@@ -277,13 +356,13 @@ private:
 #endif
 
 template<u32 L>
-ALWAYS_INLINE SmallStackString<L> SmallStackString<L>::from_format(const char* format, ...)
+SmallStackString<L> SmallStackString<L>::from_sprintf(const char* format, ...)
 {
   std::va_list ap;
   va_start(ap, format);
 
   SmallStackString ret;
-  ret.format_va(format, ap);
+  ret.vsprintf(format, ap);
 
   va_end(ap);
 
@@ -292,10 +371,18 @@ ALWAYS_INLINE SmallStackString<L> SmallStackString<L>::from_format(const char* f
 
 template<u32 L>
 template<typename... T>
-ALWAYS_INLINE SmallStackString<L> SmallStackString<L>::from_fmt(fmt::format_string<T...> fmt, T&&... args)
+ALWAYS_INLINE SmallStackString<L> SmallStackString<L>::from_format(fmt::format_string<T...> fmt, T&&... args)
 {
   SmallStackString<L> ret;
   fmt::vformat_to(std::back_inserter(ret), fmt, fmt::make_format_args(args...));
+  return ret;
+}
+
+template<u32 L>
+ALWAYS_INLINE SmallStackString<L> SmallStackString<L>::from_vformat(fmt::string_view fmt, fmt::format_args args)
+{
+  SmallStackString<L> ret;
+  fmt::vformat_to(std::back_inserter(ret), fmt, args);
   return ret;
 }
 
@@ -305,13 +392,13 @@ using SmallString = SmallStackString<256>;
 using LargeString = SmallStackString<512>;
 
 template<typename... T>
-ALWAYS_INLINE void SmallStringBase::append_fmt(fmt::format_string<T...> fmt, T&&... args)
+ALWAYS_INLINE void SmallStringBase::append_format(fmt::format_string<T...> fmt, T&&... args)
 {
   fmt::vformat_to(std::back_inserter(*this), fmt, fmt::make_format_args(args...));
 }
 
 template<typename... T>
-ALWAYS_INLINE void SmallStringBase::prepend_fmt(fmt::format_string<T...> fmt, T&&... args)
+ALWAYS_INLINE void SmallStringBase::prepend_format(fmt::format_string<T...> fmt, T&&... args)
 {
   TinyString str;
   fmt::vformat_to(std::back_inserter(str), fmt, fmt::make_format_args(args...));
@@ -319,7 +406,7 @@ ALWAYS_INLINE void SmallStringBase::prepend_fmt(fmt::format_string<T...> fmt, T&
 }
 
 template<typename... T>
-ALWAYS_INLINE void SmallStringBase::fmt(fmt::format_string<T...> fmt, T&&... args)
+ALWAYS_INLINE void SmallStringBase::format(fmt::format_string<T...> fmt, T&&... args)
 {
   clear();
   fmt::vformat_to(std::back_inserter(*this), fmt, fmt::make_format_args(args...));
@@ -329,18 +416,25 @@ ALWAYS_INLINE void SmallStringBase::fmt(fmt::format_string<T...> fmt, T&&... arg
 #pragma warning(pop)
 #endif
 
-template<>
-struct fmt::formatter<SmallStringBase>
-{
-  template<typename ParseContext>
-  constexpr auto parse(ParseContext& ctx)
-  {
-    return ctx.begin();
-  }
+#define MAKE_FORMATTER(type)                                                                                           \
+  template<>                                                                                                           \
+  struct fmt::formatter<type>                                                                                          \
+  {                                                                                                                    \
+    template<typename ParseContext>                                                                                    \
+    constexpr auto parse(ParseContext& ctx)                                                                            \
+    {                                                                                                                  \
+      return ctx.begin();                                                                                              \
+    }                                                                                                                  \
+                                                                                                                       \
+    template<typename FormatContext>                                                                                   \
+    auto format(const type& str, FormatContext& ctx)                                                                   \
+    {                                                                                                                  \
+      return fmt::format_to(ctx.out(), "{}", str.view());                                                              \
+    }                                                                                                                  \
+  };
 
-  template<typename FormatContext>
-  auto format(const SmallStringBase& str, FormatContext& ctx)
-  {
-    return fmt::format_to(ctx.out(), "{}", str.view());
-  }
-};
+MAKE_FORMATTER(TinyString);
+MAKE_FORMATTER(SmallString);
+MAKE_FORMATTER(LargeString);
+
+#undef MAKE_FORMATTER

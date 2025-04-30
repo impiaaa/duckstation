@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "cpu_newrec_compiler_aarch64.h"
@@ -7,10 +7,10 @@
 #include "common/log.h"
 #include "common/string_util.h"
 #include "cpu_core_private.h"
+#include "cpu_pgxp.h"
 #include "cpu_recompiler_thunks.h"
 #include "cpu_recompiler_types.h"
 #include "gte.h"
-#include "pgxp.h"
 #include "settings.h"
 #include "timing_event.h"
 #include <limits>
@@ -27,6 +27,7 @@ using namespace vixl::aarch64;
 
 using CPU::Recompiler::armEmitCall;
 using CPU::Recompiler::armEmitCondBranch;
+using CPU::Recompiler::armEmitFarLoad;
 using CPU::Recompiler::armEmitJmp;
 using CPU::Recompiler::armEmitMov;
 using CPU::Recompiler::armGetJumpTrampoline;
@@ -63,10 +64,10 @@ void CPU::NewRec::AArch64Compiler::Reset(CodeCache::Block* block, u8* code_buffe
   armAsm = &m_emitter;
 
 #ifdef VIXL_DEBUG
-  m_emitter_check = std::make_unique<vixl::CodeBufferCheckScope>(m_emitter.get(), code_buffer_space,
+  m_emitter_check = std::make_unique<vixl::CodeBufferCheckScope>(&m_emitter, code_buffer_space,
                                                                  vixl::CodeBufferCheckScope::kDontReserveBufferSpace);
   m_far_emitter_check = std::make_unique<vixl::CodeBufferCheckScope>(
-    m_far_emitter.get(), far_code_space, vixl::CodeBufferCheckScope::kDontReserveBufferSpace);
+    &m_far_emitter, far_code_space, vixl::CodeBufferCheckScope::kDontReserveBufferSpace);
 #endif
 
   // Need to wipe it out so it's correct when toggling fastmem.
@@ -162,7 +163,7 @@ void CPU::NewRec::AArch64Compiler::SwitchToNearCode(bool emit_jump, vixl::aarch6
   armAsm = &m_emitter;
 }
 
-void CPU::NewRec::AArch64Compiler::EmitMov(const vixl::aarch64::WRegister& dst, u32 val)
+void CPU::NewRec::AArch64Compiler::EmitMov(const vixl::aarch64::Register& dst, u32 val)
 {
   armEmitMov(armAsm, dst, val);
 }
@@ -274,13 +275,25 @@ void CPU::NewRec::AArch64Compiler::GenerateBlockProtectCheck(const u8* ram_ptr, 
 
 void CPU::NewRec::AArch64Compiler::GenerateICacheCheckAndUpdate()
 {
-  if (GetSegmentForAddress(m_block->pc) >= Segment::KSEG1)
+  if (!m_block->HasFlag(CodeCache::BlockFlags::IsUsingICache))
   {
-    armAsm->ldr(RWARG1, PTR(&g_state.pending_ticks));
-    armAsm->add(RWARG1, RWARG1, armCheckAddSubConstant(static_cast<u32>(m_block->uncached_fetch_ticks)));
-    armAsm->str(RWARG1, PTR(&g_state.pending_ticks));
+    if (m_block->HasFlag(CodeCache::BlockFlags::NeedsDynamicFetchTicks))
+    {
+      armEmitFarLoad(armAsm, RWARG2, GetFetchMemoryAccessTimePtr());
+      armAsm->ldr(RWARG1, PTR(&g_state.pending_ticks));
+      armEmitMov(armAsm, RWARG3, m_block->size);
+      armAsm->mul(RWARG2, RWARG2, RWARG3);
+      armAsm->add(RWARG1, RWARG1, RWARG2);
+      armAsm->str(RWARG1, PTR(&g_state.pending_ticks));
+    }
+    else
+    {
+      armAsm->ldr(RWARG1, PTR(&g_state.pending_ticks));
+      armAsm->add(RWARG1, RWARG1, armCheckAddSubConstant(static_cast<u32>(m_block->uncached_fetch_ticks)));
+      armAsm->str(RWARG1, PTR(&g_state.pending_ticks));
+    }
   }
-  else
+  else if (m_block->icache_line_count > 0)
   {
     const auto& ticks_reg = RWARG1;
     const auto& current_tag_reg = RWARG2;
@@ -297,7 +310,7 @@ void CPU::NewRec::AArch64Compiler::GenerateICacheCheckAndUpdate()
         continue;
 
       const u32 line = GetICacheLine(current_pc);
-      const u32 offset = offsetof(State, icache_tags) + (line * sizeof(u32));
+      const u32 offset = OFFSETOF(State, icache_tags) + (line * sizeof(u32));
 
       Label cache_hit;
       armAsm->ldr(existing_tag_reg, MemOperand(RSTATE, offset));
@@ -321,9 +334,9 @@ void CPU::NewRec::AArch64Compiler::GenerateCall(const void* func, s32 arg1reg /*
 {
   if (arg1reg >= 0 && arg1reg != static_cast<s32>(RXARG1.GetCode()))
     armAsm->mov(RXARG1, XRegister(arg1reg));
-  if (arg1reg >= 0 && arg2reg != static_cast<s32>(RXARG2.GetCode()))
+  if (arg2reg >= 0 && arg2reg != static_cast<s32>(RXARG2.GetCode()))
     armAsm->mov(RXARG2, XRegister(arg2reg));
-  if (arg1reg >= 0 && arg3reg != static_cast<s32>(RXARG3.GetCode()))
+  if (arg3reg >= 0 && arg3reg != static_cast<s32>(RXARG3.GetCode()))
     armAsm->mov(RXARG3, XRegister(arg3reg));
   EmitCall(func);
 }
@@ -410,7 +423,7 @@ void CPU::NewRec::AArch64Compiler::EndAndLinkBlock(const std::optional<u32>& new
     if (newpc.value() == m_block->pc)
     {
       // Special case: ourselves! No need to backlink then.
-      Log_DebugPrintf("Linking block at %08X to self", m_block->pc);
+      DEBUG_LOG("Linking block at {:08X} to self", m_block->pc);
       armEmitJmp(armAsm, armAsm->GetBuffer()->GetStartAddress<const void*>(), true);
     }
     else
@@ -495,38 +508,39 @@ vixl::aarch64::MemOperand CPU::NewRec::AArch64Compiler::MipsPtr(Reg r) const
   return PTR(&g_state.regs.r[static_cast<u32>(r)]);
 }
 
-vixl::aarch64::WRegister CPU::NewRec::AArch64Compiler::CFGetRegD(CompileFlags cf) const
+vixl::aarch64::Register CPU::NewRec::AArch64Compiler::CFGetRegD(CompileFlags cf) const
 {
   DebugAssert(cf.valid_host_d);
   return WRegister(cf.host_d);
 }
 
-vixl::aarch64::WRegister CPU::NewRec::AArch64Compiler::CFGetRegS(CompileFlags cf) const
+vixl::aarch64::Register CPU::NewRec::AArch64Compiler::CFGetRegS(CompileFlags cf) const
 {
   DebugAssert(cf.valid_host_s);
   return WRegister(cf.host_s);
 }
 
-vixl::aarch64::WRegister CPU::NewRec::AArch64Compiler::CFGetRegT(CompileFlags cf) const
+vixl::aarch64::Register CPU::NewRec::AArch64Compiler::CFGetRegT(CompileFlags cf) const
 {
   DebugAssert(cf.valid_host_t);
   return WRegister(cf.host_t);
 }
 
-vixl::aarch64::WRegister CPU::NewRec::AArch64Compiler::CFGetRegLO(CompileFlags cf) const
+vixl::aarch64::Register CPU::NewRec::AArch64Compiler::CFGetRegLO(CompileFlags cf) const
 {
   DebugAssert(cf.valid_host_lo);
   return WRegister(cf.host_lo);
 }
 
-vixl::aarch64::WRegister CPU::NewRec::AArch64Compiler::CFGetRegHI(CompileFlags cf) const
+vixl::aarch64::Register CPU::NewRec::AArch64Compiler::CFGetRegHI(CompileFlags cf) const
 {
   DebugAssert(cf.valid_host_hi);
   return WRegister(cf.host_hi);
 }
 
-void CPU::NewRec::AArch64Compiler::MoveSToReg(const vixl::aarch64::WRegister& dst, CompileFlags cf)
+void CPU::NewRec::AArch64Compiler::MoveSToReg(const vixl::aarch64::Register& dst, CompileFlags cf)
 {
+  DebugAssert(dst.IsW());
   if (cf.valid_host_s)
   {
     if (cf.host_s != dst.GetCode())
@@ -542,13 +556,14 @@ void CPU::NewRec::AArch64Compiler::MoveSToReg(const vixl::aarch64::WRegister& ds
   }
   else
   {
-    Log_WarningPrintf("Hit memory path in MoveSToReg() for %s", GetRegName(cf.MipsS()));
+    WARNING_LOG("Hit memory path in MoveSToReg() for {}", GetRegName(cf.MipsS()));
     armAsm->ldr(dst, PTR(&g_state.regs.r[cf.mips_s]));
   }
 }
 
-void CPU::NewRec::AArch64Compiler::MoveTToReg(const vixl::aarch64::WRegister& dst, CompileFlags cf)
+void CPU::NewRec::AArch64Compiler::MoveTToReg(const vixl::aarch64::Register& dst, CompileFlags cf)
 {
+  DebugAssert(dst.IsW());
   if (cf.valid_host_t)
   {
     if (cf.host_t != dst.GetCode())
@@ -564,14 +579,14 @@ void CPU::NewRec::AArch64Compiler::MoveTToReg(const vixl::aarch64::WRegister& ds
   }
   else
   {
-    Log_WarningPrintf("Hit memory path in MoveTToReg() for %s", GetRegName(cf.MipsT()));
+    WARNING_LOG("Hit memory path in MoveTToReg() for {}", GetRegName(cf.MipsT()));
     armAsm->ldr(dst, PTR(&g_state.regs.r[cf.mips_t]));
   }
 }
 
-void CPU::NewRec::AArch64Compiler::MoveMIPSRegToReg(const vixl::aarch64::WRegister& dst, Reg reg)
+void CPU::NewRec::AArch64Compiler::MoveMIPSRegToReg(const vixl::aarch64::Register& dst, Reg reg)
 {
-  DebugAssert(reg < Reg::count);
+  DebugAssert(reg < Reg::count && dst.IsW());
   if (const std::optional<u32> hreg = CheckHostReg(0, Compiler::HR_TYPE_CPU_REG, reg))
     armAsm->mov(dst, WRegister(hreg.value()));
   else if (HasConstantReg(reg))
@@ -624,7 +639,7 @@ void CPU::NewRec::AArch64Compiler::Flush(u32 flags)
     // TODO: make it a function?
     armAsm->ldrb(RWARG1, PTR(&g_state.load_delay_reg));
     armAsm->ldr(RWARG2, PTR(&g_state.load_delay_value));
-    EmitMov(RWSCRATCH, offsetof(CPU::State, regs.r[0]));
+    EmitMov(RWSCRATCH, OFFSETOF(CPU::State, regs.r[0]));
     armAsm->add(RWARG1, RWSCRATCH, vixl::aarch64::Operand(RWARG1, LSL, 2));
     armAsm->str(RWARG2, MemOperand(RSTATE, RXARG1));
     EmitMov(RWSCRATCH, static_cast<u8>(Reg::count));
@@ -691,9 +706,11 @@ void CPU::NewRec::AArch64Compiler::Flush(u32 flags)
 
 void CPU::NewRec::AArch64Compiler::Compile_Fallback()
 {
+  WARNING_LOG("Compiling instruction fallback at PC=0x{:08X}, instruction=0x{:08X}", iinfo->pc, inst->bits);
+
   Flush(FLUSH_FOR_INTERPRETER);
 
-  EmitCall(armAsm, &CPU::Recompiler::Thunks::InterpretInstruction);
+  EmitCall(reinterpret_cast<const void*>(&CPU::Recompiler::Thunks::InterpretInstruction));
 
   // TODO: make me less garbage
   // TODO: this is wrong, it flushes the load delay on the same cycle when we return.
@@ -712,8 +729,9 @@ void CPU::NewRec::AArch64Compiler::Compile_Fallback()
   m_load_delay_dirty = EMULATE_LOAD_DELAYS;
 }
 
-void CPU::NewRec::AArch64Compiler::CheckBranchTarget(const vixl::aarch64::WRegister& pcreg)
+void CPU::NewRec::AArch64Compiler::CheckBranchTarget(const vixl::aarch64::Register& pcreg)
 {
+  DebugAssert(pcreg.IsW());
   if (!g_settings.cpu_recompiler_memory_exceptions)
     return;
 
@@ -729,7 +747,7 @@ void CPU::NewRec::AArch64Compiler::CheckBranchTarget(const vixl::aarch64::WRegis
 
 void CPU::NewRec::AArch64Compiler::Compile_jr(CompileFlags cf)
 {
-  const WRegister pcreg = CFGetRegS(cf);
+  const Register pcreg = CFGetRegS(cf);
   CheckBranchTarget(pcreg);
 
   armAsm->str(pcreg, PTR(&g_state.pc));
@@ -740,7 +758,7 @@ void CPU::NewRec::AArch64Compiler::Compile_jr(CompileFlags cf)
 
 void CPU::NewRec::AArch64Compiler::Compile_jalr(CompileFlags cf)
 {
-  const WRegister pcreg = CFGetRegS(cf);
+  const Register pcreg = CFGetRegS(cf);
   if (MipsD() != Reg::zero)
     SetConstantReg(MipsD(), GetBranchReturnAddress(cf));
 
@@ -765,7 +783,7 @@ void CPU::NewRec::AArch64Compiler::Compile_bxx(CompileFlags cf, BranchCondition 
   DebugAssert(cond == BranchCondition::Equal || cond == BranchCondition::NotEqual || cf.MipsT() == Reg::zero);
 
   Label taken;
-  const WRegister rs = CFGetRegS(cf);
+  const Register rs = CFGetRegS(cf);
   switch (cond)
   {
     case BranchCondition::Equal:
@@ -834,8 +852,8 @@ void CPU::NewRec::AArch64Compiler::Compile_bxx(CompileFlags cf, BranchCondition 
 
 void CPU::NewRec::AArch64Compiler::Compile_addi(CompileFlags cf, bool overflow)
 {
-  const WRegister rs = CFGetRegS(cf);
-  const WRegister rt = CFGetRegT(cf);
+  const Register rs = CFGetRegS(cf);
+  const Register rt = CFGetRegT(cf);
   if (const u32 imm = inst->i.imm_sext32(); imm != 0)
   {
     if (!overflow)
@@ -882,7 +900,7 @@ void CPU::NewRec::AArch64Compiler::Compile_slti(CompileFlags cf, bool sign)
 
 void CPU::NewRec::AArch64Compiler::Compile_andi(CompileFlags cf)
 {
-  const WRegister rt = CFGetRegT(cf);
+  const Register rt = CFGetRegT(cf);
   if (const u32 imm = inst->i.imm_zext32(); imm != 0)
     armAsm->and_(rt, CFGetRegS(cf), armCheckLogicalConstant(imm));
   else
@@ -891,8 +909,8 @@ void CPU::NewRec::AArch64Compiler::Compile_andi(CompileFlags cf)
 
 void CPU::NewRec::AArch64Compiler::Compile_ori(CompileFlags cf)
 {
-  const WRegister rt = CFGetRegT(cf);
-  const WRegister rs = CFGetRegS(cf);
+  const Register rt = CFGetRegT(cf);
+  const Register rs = CFGetRegS(cf);
   if (const u32 imm = inst->i.imm_zext32(); imm != 0)
     armAsm->orr(rt, rs, armCheckLogicalConstant(imm));
   else if (rt.GetCode() != rs.GetCode())
@@ -901,8 +919,8 @@ void CPU::NewRec::AArch64Compiler::Compile_ori(CompileFlags cf)
 
 void CPU::NewRec::AArch64Compiler::Compile_xori(CompileFlags cf)
 {
-  const WRegister rt = CFGetRegT(cf);
-  const WRegister rs = CFGetRegS(cf);
+  const Register rt = CFGetRegT(cf);
+  const Register rs = CFGetRegS(cf);
   if (const u32 imm = inst->i.imm_zext32(); imm != 0)
     armAsm->eor(rt, rs, armCheckLogicalConstant(imm));
   else if (rt.GetCode() != rs.GetCode())
@@ -914,8 +932,8 @@ void CPU::NewRec::AArch64Compiler::Compile_shift(CompileFlags cf,
                                                                                       const vixl::aarch64::Register&,
                                                                                       unsigned))
 {
-  const WRegister rd = CFGetRegD(cf);
-  const WRegister rt = CFGetRegT(cf);
+  const Register rd = CFGetRegD(cf);
+  const Register rt = CFGetRegT(cf);
   if (inst->r.shamt > 0)
     (armAsm->*op)(rd, rt, inst->r.shamt);
   else if (rd.GetCode() != rt.GetCode())
@@ -943,12 +961,12 @@ void CPU::NewRec::AArch64Compiler::Compile_variable_shift(
                                        const vixl::aarch64::Register&),
   void (vixl::aarch64::Assembler::*op_const)(const vixl::aarch64::Register&, const vixl::aarch64::Register&, unsigned))
 {
-  const WRegister rd = CFGetRegD(cf);
+  const Register rd = CFGetRegD(cf);
 
   AssertRegOrConstS(cf);
   AssertRegOrConstT(cf);
 
-  const WRegister rt = cf.valid_host_t ? CFGetRegT(cf) : RWARG2;
+  const Register rt = cf.valid_host_t ? CFGetRegT(cf) : RWARG2;
   if (!cf.valid_host_t)
     MoveTToReg(rt, cf);
 
@@ -982,17 +1000,17 @@ void CPU::NewRec::AArch64Compiler::Compile_srav(CompileFlags cf)
 
 void CPU::NewRec::AArch64Compiler::Compile_mult(CompileFlags cf, bool sign)
 {
-  const WRegister rs = cf.valid_host_s ? CFGetRegS(cf) : RWARG1;
+  const Register rs = cf.valid_host_s ? CFGetRegS(cf) : RWARG1;
   if (!cf.valid_host_s)
     MoveSToReg(rs, cf);
 
-  const WRegister rt = cf.valid_host_t ? CFGetRegT(cf) : RWARG2;
+  const Register rt = cf.valid_host_t ? CFGetRegT(cf) : RWARG2;
   if (!cf.valid_host_t)
     MoveTToReg(rt, cf);
 
   // TODO: if lo/hi gets killed, we can use a 32-bit multiply
-  const WRegister lo = CFGetRegLO(cf);
-  const WRegister hi = CFGetRegHI(cf);
+  const Register lo = CFGetRegLO(cf);
+  const Register hi = CFGetRegHI(cf);
 
   (sign) ? armAsm->smull(lo.X(), rs, rt) : armAsm->umull(lo.X(), rs, rt);
   armAsm->lsr(hi.X(), lo.X(), 32);
@@ -1010,16 +1028,16 @@ void CPU::NewRec::AArch64Compiler::Compile_multu(CompileFlags cf)
 
 void CPU::NewRec::AArch64Compiler::Compile_div(CompileFlags cf)
 {
-  const WRegister rs = cf.valid_host_s ? CFGetRegS(cf) : RWARG1;
+  const Register rs = cf.valid_host_s ? CFGetRegS(cf) : RWARG1;
   if (!cf.valid_host_s)
     MoveSToReg(rs, cf);
 
-  const WRegister rt = cf.valid_host_t ? CFGetRegT(cf) : RWARG2;
+  const Register rt = cf.valid_host_t ? CFGetRegT(cf) : RWARG2;
   if (!cf.valid_host_t)
     MoveTToReg(rt, cf);
 
-  const WRegister rlo = CFGetRegLO(cf);
-  const WRegister rhi = CFGetRegHI(cf);
+  const Register rlo = CFGetRegLO(cf);
+  const Register rhi = CFGetRegHI(cf);
 
   // TODO: This could be slightly more optimal
   Label done;
@@ -1055,16 +1073,16 @@ void CPU::NewRec::AArch64Compiler::Compile_div(CompileFlags cf)
 
 void CPU::NewRec::AArch64Compiler::Compile_divu(CompileFlags cf)
 {
-  const WRegister rs = cf.valid_host_s ? CFGetRegS(cf) : RWARG1;
+  const Register rs = cf.valid_host_s ? CFGetRegS(cf) : RWARG1;
   if (!cf.valid_host_s)
     MoveSToReg(rs, cf);
 
-  const WRegister rt = cf.valid_host_t ? CFGetRegT(cf) : RWARG2;
+  const Register rt = cf.valid_host_t ? CFGetRegT(cf) : RWARG2;
   if (!cf.valid_host_t)
     MoveTToReg(rt, cf);
 
-  const WRegister rlo = CFGetRegLO(cf);
-  const WRegister rhi = CFGetRegHI(cf);
+  const Register rlo = CFGetRegLO(cf);
+  const Register rhi = CFGetRegHI(cf);
 
   Label done;
   Label not_divide_by_zero;
@@ -1083,8 +1101,9 @@ void CPU::NewRec::AArch64Compiler::Compile_divu(CompileFlags cf)
   armAsm->bind(&done);
 }
 
-void CPU::NewRec::AArch64Compiler::TestOverflow(const vixl::aarch64::WRegister& result)
+void CPU::NewRec::AArch64Compiler::TestOverflow(const vixl::aarch64::Register& result)
 {
+  DebugAssert(result.IsW());
   SwitchToFarCode(true, vs);
 
   BackupHostState();
@@ -1108,14 +1127,14 @@ void CPU::NewRec::AArch64Compiler::Compile_dst_op(CompileFlags cf,
   AssertRegOrConstS(cf);
   AssertRegOrConstT(cf);
 
-  const WRegister rd = CFGetRegD(cf);
+  const Register rd = CFGetRegD(cf);
   if (cf.valid_host_s && cf.valid_host_t)
   {
     (armAsm->*op)(rd, CFGetRegS(cf), CFGetRegT(cf));
   }
   else if (commutative && (cf.const_s || cf.const_t))
   {
-    const WRegister src = cf.const_s ? CFGetRegT(cf) : CFGetRegS(cf);
+    const Register src = cf.const_s ? CFGetRegT(cf) : CFGetRegS(cf);
     if (const u32 cv = GetConstantRegU32(cf.const_s ? cf.MipsS() : cf.MipsT()); cv != 0)
     {
       (armAsm->*op)(rd, src, logical ? armCheckLogicalConstant(cv) : armCheckAddSubConstant(cv));
@@ -1135,7 +1154,7 @@ void CPU::NewRec::AArch64Compiler::Compile_dst_op(CompileFlags cf,
   }
   else if (cf.const_t)
   {
-    const WRegister rs = CFGetRegS(cf);
+    const Register rs = CFGetRegS(cf);
     if (const u32 cv = GetConstantRegU32(cf.const_s ? cf.MipsS() : cf.MipsT()); cv != 0)
     {
       (armAsm->*op)(rd, rs, logical ? armCheckLogicalConstant(cv) : armCheckAddSubConstant(cv));
@@ -1184,7 +1203,7 @@ void CPU::NewRec::AArch64Compiler::Compile_and(CompileFlags cf)
   AssertRegOrConstT(cf);
 
   // special cases - and with self -> self, and with 0 -> 0
-  const WRegister regd = CFGetRegD(cf);
+  const Register regd = CFGetRegD(cf);
   if (cf.MipsS() == cf.MipsT())
   {
     armAsm->mov(regd, CFGetRegS(cf));
@@ -1205,7 +1224,7 @@ void CPU::NewRec::AArch64Compiler::Compile_or(CompileFlags cf)
   AssertRegOrConstT(cf);
 
   // or/nor with 0 -> no effect
-  const WRegister regd = CFGetRegD(cf);
+  const Register regd = CFGetRegD(cf);
   if (HasConstantRegValue(cf.MipsS(), 0) || HasConstantRegValue(cf.MipsT(), 0) || cf.MipsS() == cf.MipsT())
   {
     cf.const_s ? MoveTToReg(regd, cf) : MoveSToReg(regd, cf);
@@ -1220,7 +1239,7 @@ void CPU::NewRec::AArch64Compiler::Compile_xor(CompileFlags cf)
   AssertRegOrConstS(cf);
   AssertRegOrConstT(cf);
 
-  const WRegister regd = CFGetRegD(cf);
+  const Register regd = CFGetRegD(cf);
   if (cf.MipsS() == cf.MipsT())
   {
     // xor with self -> zero
@@ -1276,16 +1295,16 @@ void CPU::NewRec::AArch64Compiler::Compile_slt(CompileFlags cf, bool sign)
   armAsm->cset(CFGetRegD(cf), sign ? lt : lo);
 }
 
-vixl::aarch64::WRegister
+vixl::aarch64::Register
 CPU::NewRec::AArch64Compiler::ComputeLoadStoreAddressArg(CompileFlags cf,
                                                          const std::optional<VirtualMemoryAddress>& address,
-                                                         const std::optional<const vixl::aarch64::WRegister>& reg)
+                                                         const std::optional<const vixl::aarch64::Register>& reg)
 {
   const u32 imm = inst->i.imm_sext32();
   if (cf.valid_host_s && imm == 0 && !reg.has_value())
     return CFGetRegS(cf);
 
-  const WRegister dst = reg.has_value() ? reg.value() : RWARG1;
+  const Register dst = reg.has_value() ? reg.value() : RWARG1;
   if (address.has_value())
   {
     EmitMov(dst, address.value());
@@ -1294,7 +1313,7 @@ CPU::NewRec::AArch64Compiler::ComputeLoadStoreAddressArg(CompileFlags cf,
   {
     if (cf.valid_host_s)
     {
-      if (const WRegister src = CFGetRegS(cf); src.GetCode() != dst.GetCode())
+      if (const Register src = CFGetRegS(cf); src.GetCode() != dst.GetCode())
         armAsm->mov(dst, CFGetRegS(cf));
     }
     else
@@ -1319,15 +1338,16 @@ CPU::NewRec::AArch64Compiler::ComputeLoadStoreAddressArg(CompileFlags cf,
 }
 
 template<typename RegAllocFn>
-vixl::aarch64::WRegister CPU::NewRec::AArch64Compiler::GenerateLoad(const vixl::aarch64::WRegister& addr_reg,
-                                                                    MemoryAccessSize size, bool sign, bool use_fastmem,
-                                                                    const RegAllocFn& dst_reg_alloc)
+vixl::aarch64::Register CPU::NewRec::AArch64Compiler::GenerateLoad(const vixl::aarch64::Register& addr_reg,
+                                                                   MemoryAccessSize size, bool sign, bool use_fastmem,
+                                                                   const RegAllocFn& dst_reg_alloc)
 {
+  DebugAssert(addr_reg.IsW());
   if (use_fastmem)
   {
     m_cycles += Bus::RAM_READ_TICKS;
 
-    const WRegister dst = dst_reg_alloc();
+    const Register dst = dst_reg_alloc();
 
     if (g_settings.cpu_fastmem_mode == CPUFastmemMode::LUT)
     {
@@ -1410,7 +1430,7 @@ vixl::aarch64::WRegister CPU::NewRec::AArch64Compiler::GenerateLoad(const vixl::
     SwitchToNearCode(false);
   }
 
-  const WRegister dst_reg = dst_reg_alloc();
+  const Register dst_reg = dst_reg_alloc();
   switch (size)
   {
     case MemoryAccessSize::Byte:
@@ -1434,10 +1454,11 @@ vixl::aarch64::WRegister CPU::NewRec::AArch64Compiler::GenerateLoad(const vixl::
   return dst_reg;
 }
 
-void CPU::NewRec::AArch64Compiler::GenerateStore(const vixl::aarch64::WRegister& addr_reg,
-                                                 const vixl::aarch64::WRegister& value_reg, MemoryAccessSize size,
+void CPU::NewRec::AArch64Compiler::GenerateStore(const vixl::aarch64::Register& addr_reg,
+                                                 const vixl::aarch64::Register& value_reg, MemoryAccessSize size,
                                                  bool use_fastmem)
 {
+  DebugAssert(addr_reg.IsW() && value_reg.IsW());
   if (use_fastmem)
   {
     if (g_settings.cpu_fastmem_mode == CPUFastmemMode::LUT)
@@ -1529,8 +1550,8 @@ void CPU::NewRec::AArch64Compiler::Compile_lxx(CompileFlags cf, MemoryAccessSize
     g_settings.gpu_pgxp_enable ? std::optional<WRegister>(WRegister(AllocateTempHostReg(HR_CALLEE_SAVED))) :
                                  std::optional<WRegister>();
   FlushForLoadStore(address, false, use_fastmem);
-  const WRegister addr = ComputeLoadStoreAddressArg(cf, address, addr_reg);
-  const WRegister data = GenerateLoad(addr, size, sign, use_fastmem, [this, cf]() {
+  const Register addr = ComputeLoadStoreAddressArg(cf, address, addr_reg);
+  const Register data = GenerateLoad(addr, size, sign, use_fastmem, [this, cf]() -> Register {
     if (cf.MipsT() == Reg::zero)
       return RWRET;
 
@@ -1555,6 +1576,8 @@ void CPU::NewRec::AArch64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize
                                                const std::optional<VirtualMemoryAddress>& address)
 {
   DebugAssert(size == MemoryAccessSize::Word && !sign);
+
+  const Register addr = WRegister(AllocateTempHostReg(HR_CALLEE_SAVED));
   FlushForLoadStore(address, false, use_fastmem);
 
   // TODO: if address is constant, this can be simplified..
@@ -1564,7 +1587,6 @@ void CPU::NewRec::AArch64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize
     UpdateLoadDelay();
 
   // We'd need to be careful here if we weren't overwriting it..
-  const WRegister addr = WRegister(AllocateHostReg(HR_CALLEE_SAVED, HR_TYPE_TEMP));
   ComputeLoadStoreAddressArg(cf, address, addr);
   armAsm->and_(RWARG1, addr, armCheckLogicalConstant(~0x3u));
   GenerateLoad(RWARG1, MemoryAccessSize::Word, false, use_fastmem, []() { return RWRET; });
@@ -1578,7 +1600,7 @@ void CPU::NewRec::AArch64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize
   // lwl/lwr from a load-delayed value takes the new value, but it itself, is load delayed, so the original value is
   // never written back. NOTE: can't trust T in cf because of the flush
   const Reg rt = inst->r.rt;
-  WRegister value;
+  Register value;
   if (m_load_delay_register == rt)
   {
     const u32 existing_ld_rt = (m_load_delay_value_register == NUM_HOST_REGS) ?
@@ -1615,9 +1637,9 @@ void CPU::NewRec::AArch64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize
   {
     // const u32 mask = UINT32_C(0x00FFFFFF) >> shift;
     // new_value = (value & mask) | (RWRET << (24 - shift));
-    EmitMov(addr, 0xFFFFFFu);
-    armAsm->lsrv(addr, addr, RWARG2);
-    armAsm->and_(value, value, addr);
+    EmitMov(RWSCRATCH, 0xFFFFFFu);
+    armAsm->lsrv(RWSCRATCH, RWSCRATCH, RWARG2);
+    armAsm->and_(value, value, RWSCRATCH);
     armAsm->lslv(RWRET, RWRET, RWARG3);
     armAsm->orr(value, value, RWRET);
   }
@@ -1626,27 +1648,40 @@ void CPU::NewRec::AArch64Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize
     // const u32 mask = UINT32_C(0xFFFFFF00) << (24 - shift);
     // new_value = (value & mask) | (RWRET >> shift);
     armAsm->lsrv(RWRET, RWRET, RWARG2);
-    EmitMov(addr, 0xFFFFFF00u);
-    armAsm->lslv(addr, addr, RWARG3);
-    armAsm->and_(value, value, addr);
+    EmitMov(RWSCRATCH, 0xFFFFFF00u);
+    armAsm->lslv(RWSCRATCH, RWSCRATCH, RWARG3);
+    armAsm->and_(value, value, RWSCRATCH);
     armAsm->orr(value, value, RWRET);
   }
 
   FreeHostReg(addr.GetCode());
+
+  if (g_settings.gpu_pgxp_enable)
+  {
+    Flush(FLUSH_FOR_C_CALL);
+    armAsm->mov(RWARG3, value);
+    armAsm->and_(RWARG2, addr, armCheckLogicalConstant(~0x3u));
+    EmitMov(RWARG1, inst->bits);
+    EmitCall(reinterpret_cast<const void*>(&PGXP::CPU_LW));
+  }
 }
 
 void CPU::NewRec::AArch64Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSize size, bool sign, bool use_fastmem,
                                                 const std::optional<VirtualMemoryAddress>& address)
 {
+  const u32 index = static_cast<u32>(inst->r.rt.GetValue());
+  const auto [ptr, action] = GetGTERegisterPointer(index, true);
   const std::optional<WRegister> addr_reg =
     g_settings.gpu_pgxp_enable ? std::optional<WRegister>(WRegister(AllocateTempHostReg(HR_CALLEE_SAVED))) :
                                  std::optional<WRegister>();
   FlushForLoadStore(address, false, use_fastmem);
-  const WRegister addr = ComputeLoadStoreAddressArg(cf, address, addr_reg);
-  GenerateLoad(addr, MemoryAccessSize::Word, false, use_fastmem, []() { return RWRET; });
+  const Register addr = ComputeLoadStoreAddressArg(cf, address, addr_reg);
+  const Register value = GenerateLoad(addr, MemoryAccessSize::Word, false, use_fastmem, [this, action = action]() {
+    return (action == GTERegisterAccessAction::CallHandler && g_settings.gpu_pgxp_enable) ?
+             WRegister(AllocateTempHostReg(HR_CALLEE_SAVED)) :
+             RWRET;
+  });
 
-  const u32 index = static_cast<u32>(inst->r.rt.GetValue());
-  const auto [ptr, action] = GetGTERegisterPointer(index, true);
   switch (action)
   {
     case GTERegisterAccessAction::Ignore:
@@ -1656,28 +1691,28 @@ void CPU::NewRec::AArch64Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSiz
 
     case GTERegisterAccessAction::Direct:
     {
-      armAsm->str(RWRET, PTR(ptr));
+      armAsm->str(value, PTR(ptr));
       break;
     }
 
     case GTERegisterAccessAction::SignExtend16:
     {
-      armAsm->sxth(RWRET, RWRET);
-      armAsm->str(RWRET, PTR(ptr));
+      armAsm->sxth(RWARG3, value);
+      armAsm->str(RWARG3, PTR(ptr));
       break;
     }
 
     case GTERegisterAccessAction::ZeroExtend16:
     {
-      armAsm->uxth(RWRET, RWRET);
-      armAsm->str(RWRET, PTR(ptr));
+      armAsm->uxth(RWARG3, value);
+      armAsm->str(RWARG3, PTR(ptr));
       break;
     }
 
     case GTERegisterAccessAction::CallHandler:
     {
       Flush(FLUSH_FOR_C_CALL);
-      armAsm->mov(RWARG2, RWRET);
+      armAsm->mov(RWARG2, value);
       EmitMov(RWARG1, index);
       EmitCall(reinterpret_cast<const void*>(&GTE::WriteRegister));
       break;
@@ -1688,12 +1723,12 @@ void CPU::NewRec::AArch64Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSiz
       // SXY0 <- SXY1
       // SXY1 <- SXY2
       // SXY2 <- SXYP
-      DebugAssert(RWRET.GetCode() != RWARG2.GetCode() && RWRET.GetCode() != RWARG3.GetCode());
+      DebugAssert(value.GetCode() != RWARG2.GetCode() && value.GetCode() != RWARG3.GetCode());
       armAsm->ldr(RWARG2, PTR(&g_state.gte_regs.SXY1[0]));
       armAsm->ldr(RWARG3, PTR(&g_state.gte_regs.SXY2[0]));
       armAsm->str(RWARG2, PTR(&g_state.gte_regs.SXY0[0]));
       armAsm->str(RWARG3, PTR(&g_state.gte_regs.SXY1[0]));
-      armAsm->str(RWRET, PTR(&g_state.gte_regs.SXY2[0]));
+      armAsm->str(value, PTR(&g_state.gte_regs.SXY2[0]));
       break;
     }
 
@@ -1707,11 +1742,13 @@ void CPU::NewRec::AArch64Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSiz
   if (g_settings.gpu_pgxp_enable)
   {
     Flush(FLUSH_FOR_C_CALL);
-    armAsm->mov(RWARG3, RWRET);
+    armAsm->mov(RWARG3, value);
+    if (value.GetCode() != RWRET.GetCode())
+      FreeHostReg(value.GetCode());
     armAsm->mov(RWARG2, addr);
+    FreeHostReg(addr_reg.value().GetCode());
     EmitMov(RWARG1, inst->bits);
     EmitCall(reinterpret_cast<const void*>(&PGXP::CPU_LWC2));
-    FreeHostReg(addr_reg.value().GetCode());
   }
 }
 
@@ -1725,8 +1762,8 @@ void CPU::NewRec::AArch64Compiler::Compile_sxx(CompileFlags cf, MemoryAccessSize
     g_settings.gpu_pgxp_enable ? std::optional<WRegister>(WRegister(AllocateTempHostReg(HR_CALLEE_SAVED))) :
                                  std::optional<WRegister>();
   FlushForLoadStore(address, true, use_fastmem);
-  const WRegister addr = ComputeLoadStoreAddressArg(cf, address, addr_reg);
-  const WRegister data = cf.valid_host_t ? CFGetRegT(cf) : RWARG2;
+  const Register addr = ComputeLoadStoreAddressArg(cf, address, addr_reg);
+  const Register data = cf.valid_host_t ? CFGetRegT(cf) : RWARG2;
   if (!cf.valid_host_t)
     MoveTToReg(RWARG2, cf);
 
@@ -1747,28 +1784,29 @@ void CPU::NewRec::AArch64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize
                                                const std::optional<VirtualMemoryAddress>& address)
 {
   DebugAssert(size == MemoryAccessSize::Word && !sign);
+
+  // TODO: this can take over rt's value if it's no longer needed
+  // NOTE: can't trust T in cf because of the alloc
+  const Register addr = WRegister(AllocateTempHostReg(HR_CALLEE_SAVED));
+  const Register value = g_settings.gpu_pgxp_enable ? WRegister(AllocateTempHostReg(HR_CALLEE_SAVED)) : RWARG2;
+  if (g_settings.gpu_pgxp_enable)
+    MoveMIPSRegToReg(value, inst->r.rt);
+
   FlushForLoadStore(address, true, use_fastmem);
 
   // TODO: if address is constant, this can be simplified..
   // We'd need to be careful here if we weren't overwriting it..
-  const WRegister addr = WRegister(AllocateHostReg(HR_CALLEE_SAVED, HR_TYPE_TEMP));
   ComputeLoadStoreAddressArg(cf, address, addr);
   armAsm->and_(RWARG1, addr, armCheckLogicalConstant(~0x3u));
   GenerateLoad(RWARG1, MemoryAccessSize::Word, false, use_fastmem, []() { return RWRET; });
 
-  // TODO: this can take over rt's value if it's no longer needed
-  // NOTE: can't trust T in cf because of the flush
-  const Reg rt = inst->r.rt;
-  const WRegister value = RWARG2;
-  if (const std::optional<u32> rtreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rt); rtreg.has_value())
-    armAsm->mov(value, WRegister(rtreg.value()));
-  else if (HasConstantReg(rt))
-    EmitMov(value, GetConstantRegU32(rt));
-  else
-    armAsm->ldr(value, MipsPtr(rt));
-
   armAsm->and_(RWSCRATCH, addr, 3);
   armAsm->lsl(RWSCRATCH, RWSCRATCH, 3); // *8
+  armAsm->and_(addr, addr, armCheckLogicalConstant(~0x3u));
+
+  // Need to load down here for PGXP-off, because it's in a volatile reg that can get overwritten by flush.
+  if (!g_settings.gpu_pgxp_enable)
+    MoveMIPSRegToReg(value, inst->r.rt);
 
   if (inst->op == InstructionOp::swl)
   {
@@ -1797,24 +1835,42 @@ void CPU::NewRec::AArch64Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize
     armAsm->orr(value, value, RWRET);
   }
 
-  FreeHostReg(addr.GetCode());
+  if (!g_settings.gpu_pgxp_enable)
+  {
+    GenerateStore(addr, value, MemoryAccessSize::Word, use_fastmem);
+    FreeHostReg(addr.GetCode());
+  }
+  else
+  {
+    GenerateStore(addr, value, MemoryAccessSize::Word, use_fastmem);
 
-  armAsm->and_(RWARG1, addr, armCheckLogicalConstant(~0x3u));
-  GenerateStore(RWARG1, value, MemoryAccessSize::Word, use_fastmem);
+    Flush(FLUSH_FOR_C_CALL);
+    armAsm->mov(RWARG3, value);
+    FreeHostReg(value.GetCode());
+    armAsm->mov(RWARG2, addr);
+    FreeHostReg(addr.GetCode());
+    EmitMov(RWARG1, inst->bits);
+    EmitCall(reinterpret_cast<const void*>(&PGXP::CPU_SW));
+  }
 }
 
 void CPU::NewRec::AArch64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSize size, bool sign, bool use_fastmem,
                                                 const std::optional<VirtualMemoryAddress>& address)
 {
-  FlushForLoadStore(address, true, use_fastmem);
-
   const u32 index = static_cast<u32>(inst->r.rt.GetValue());
   const auto [ptr, action] = GetGTERegisterPointer(index, false);
+  const Register addr = (g_settings.gpu_pgxp_enable || action == GTERegisterAccessAction::CallHandler) ?
+                          WRegister(AllocateTempHostReg(HR_CALLEE_SAVED)) :
+                          RWARG1;
+  const Register data = g_settings.gpu_pgxp_enable ? WRegister(AllocateTempHostReg(HR_CALLEE_SAVED)) : RWARG2;
+  FlushForLoadStore(address, true, use_fastmem);
+  ComputeLoadStoreAddressArg(cf, address, addr);
+
   switch (action)
   {
     case GTERegisterAccessAction::Direct:
     {
-      armAsm->ldr(RWARG2, PTR(ptr));
+      armAsm->ldr(data, PTR(ptr));
     }
     break;
 
@@ -1824,7 +1880,7 @@ void CPU::NewRec::AArch64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSiz
       Flush(FLUSH_FOR_C_CALL);
       EmitMov(RWARG1, index);
       EmitCall(reinterpret_cast<const void*>(&GTE::ReadRegister));
-      armAsm->mov(RWARG2, RWRET);
+      armAsm->mov(data, RWRET);
     }
     break;
 
@@ -1835,29 +1891,23 @@ void CPU::NewRec::AArch64Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSiz
     break;
   }
 
-  // PGXP makes this a giant pain.
+  GenerateStore(addr, data, size, use_fastmem);
   if (!g_settings.gpu_pgxp_enable)
   {
-    const WRegister addr = ComputeLoadStoreAddressArg(cf, address);
-    GenerateStore(addr, RWARG2, size, use_fastmem);
-    return;
+    if (addr.GetCode() != RWARG1.GetCode())
+      FreeHostReg(addr.GetCode());
   }
-
-  // TODO: This can be simplified because we don't need to validate in PGXP..
-  const WRegister addr_reg = WRegister(AllocateTempHostReg(HR_CALLEE_SAVED));
-  const WRegister data_backup = WRegister(AllocateTempHostReg(HR_CALLEE_SAVED));
-  FlushForLoadStore(address, true, use_fastmem);
-  ComputeLoadStoreAddressArg(cf, address, addr_reg);
-  armAsm->mov(data_backup, RWARG2);
-  GenerateStore(addr_reg, RWARG2, size, use_fastmem);
-
-  Flush(FLUSH_FOR_C_CALL);
-  armAsm->mov(RWARG3, data_backup);
-  armAsm->mov(RWARG2, addr_reg);
-  EmitMov(RWARG1, inst->bits);
-  EmitCall(reinterpret_cast<const void*>(&PGXP::CPU_SWC2));
-  FreeHostReg(addr_reg.GetCode());
-  FreeHostReg(data_backup.GetCode());
+  else
+  {
+    // TODO: This can be simplified because we don't need to validate in PGXP..
+    Flush(FLUSH_FOR_C_CALL);
+    armAsm->mov(RWARG3, data);
+    FreeHostReg(data.GetCode());
+    armAsm->mov(RWARG2, addr);
+    FreeHostReg(addr.GetCode());
+    EmitMov(RWARG1, inst->bits);
+    EmitCall(reinterpret_cast<const void*>(&PGXP::CPU_SWC2));
+  }
 }
 
 void CPU::NewRec::AArch64Compiler::Compile_mtc0(CompileFlags cf)
@@ -1877,16 +1927,16 @@ void CPU::NewRec::AArch64Compiler::Compile_mtc0(CompileFlags cf)
   if (mask == 0)
   {
     // if it's a read-only register, ignore
-    Log_DebugPrintf("Ignoring write to read-only cop0 reg %u", static_cast<u32>(reg));
+    DEBUG_LOG("Ignoring write to read-only cop0 reg {}", static_cast<u32>(reg));
     return;
   }
 
   // for some registers, we need to test certain bits
   const bool needs_bit_test = (reg == Cop0Reg::SR);
-  const WRegister new_value = RWARG1;
-  const WRegister old_value = RWARG2;
-  const WRegister changed_bits = RWARG3;
-  const WRegister mask_reg = RWSCRATCH;
+  const Register new_value = RWARG1;
+  const Register old_value = RWARG2;
+  const Register changed_bits = RWARG3;
+  const Register mask_reg = RWSCRATCH;
 
   // Load old value
   armAsm->ldr(old_value, PTR(ptr));
@@ -1932,7 +1982,7 @@ void CPU::NewRec::AArch64Compiler::Compile_mtc0(CompileFlags cf)
   if (reg == Cop0Reg::DCIC && g_settings.cpu_recompiler_memory_exceptions)
   {
     // TODO: DCIC handling for debug breakpoints
-    Log_WarningPrintf("TODO: DCIC handling for debug breakpoints");
+    WARNING_LOG("TODO: DCIC handling for debug breakpoints");
   }
 }
 
@@ -1946,8 +1996,10 @@ void CPU::NewRec::AArch64Compiler::Compile_rfe(CompileFlags cf)
   TestInterrupts(RWARG1);
 }
 
-void CPU::NewRec::AArch64Compiler::TestInterrupts(const vixl::aarch64::WRegister& sr)
+void CPU::NewRec::AArch64Compiler::TestInterrupts(const vixl::aarch64::Register& sr)
 {
+  DebugAssert(sr.IsW());
+
   // if Iec == 0 then goto no_interrupt
   Label no_interrupt;
   armAsm->tbz(sr, 0, &no_interrupt);

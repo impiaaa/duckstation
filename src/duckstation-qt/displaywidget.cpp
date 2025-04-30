@@ -1,14 +1,19 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "displaywidget.h"
-#include "common/assert.h"
-#include "common/bitutils.h"
-#include "common/log.h"
 #include "mainwindow.h"
 #include "qthost.h"
 #include "qtutils.h"
+
+#include "core/fullscreen_ui.h"
+
 #include "util/imgui_manager.h"
+
+#include "common/assert.h"
+#include "common/bitutils.h"
+#include "common/log.h"
+
 #include <QtCore/QDebug>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QKeyEvent>
@@ -39,13 +44,7 @@ DisplayWidget::DisplayWidget(QWidget* parent) : QWidget(parent)
   setMouseTracking(true);
 }
 
-DisplayWidget::~DisplayWidget()
-{
-#ifdef _WIN32
-  if (m_clip_mouse_enabled)
-    ClipCursor(nullptr);
-#endif
-}
+DisplayWidget::~DisplayWidget() = default;
 
 int DisplayWidget::scaledWindowWidth() const
 {
@@ -79,7 +78,7 @@ void DisplayWidget::updateRelativeMode(bool enabled)
   if (m_relative_mouse_enabled == enabled && m_clip_mouse_enabled == clip_cursor)
     return;
 
-  Log_InfoPrintf("updateRelativeMode(): relative=%s, clip=%s", enabled ? "yes" : "no", clip_cursor ? "yes" : "no");
+  INFO_LOG("updateRelativeMode(): relative={}, clip={}", enabled ? "yes" : "no", clip_cursor ? "yes" : "no");
 
   if (!clip_cursor && m_clip_mouse_enabled)
   {
@@ -90,16 +89,14 @@ void DisplayWidget::updateRelativeMode(bool enabled)
   if (m_relative_mouse_enabled == enabled)
     return;
 
-  Log_InfoPrintf("updateRelativeMode(): relative=%s", enabled ? "yes" : "no");
+  INFO_LOG("updateRelativeMode(): relative={}", enabled ? "yes" : "no");
 #endif
 
   if (enabled)
   {
-#ifdef _WIN32
-    m_relative_mouse_enabled = !clip_cursor;
-    m_clip_mouse_enabled = clip_cursor;
-#else
     m_relative_mouse_enabled = true;
+#ifdef _WIN32
+    m_clip_mouse_enabled = clip_cursor;
 #endif
     m_relative_mouse_start_pos = QCursor::pos();
     updateCenterPos();
@@ -121,38 +118,43 @@ void DisplayWidget::updateCursor(bool hidden)
   m_cursor_hidden = hidden;
   if (hidden)
   {
-    Log_DevPrintf("updateCursor(): Cursor is now hidden");
+    DEV_LOG("updateCursor(): Cursor is now hidden");
     setCursor(Qt::BlankCursor);
   }
   else
   {
-    Log_DevPrintf("updateCursor(): Cursor is now shown");
+    DEV_LOG("updateCursor(): Cursor is now shown");
     unsetCursor();
   }
 }
 
 void DisplayWidget::handleCloseEvent(QCloseEvent* event)
 {
+  event->ignore();
+
   // Closing the separate widget will either cancel the close, or trigger shutdown.
   // In the latter case, it's going to destroy us, so don't let Qt do it first.
   // Treat a close event while fullscreen as an exit, that way ALT+F4 closes DuckStation,
   // rather than just the game.
   if (QtHost::IsSystemValid() && !isActuallyFullscreen())
   {
-    QMetaObject::invokeMethod(g_main_window, "requestShutdown", Q_ARG(bool, true), Q_ARG(bool, true),
-                              Q_ARG(bool, false));
+    QMetaObject::invokeMethod(g_main_window, "requestShutdown", Qt::QueuedConnection, Q_ARG(bool, true),
+                              Q_ARG(bool, true), Q_ARG(bool, false));
   }
   else
   {
-    QMetaObject::invokeMethod(g_main_window, "requestExit");
+    QMetaObject::invokeMethod(g_main_window, "requestExit", Qt::QueuedConnection);
   }
-
-  event->ignore();
 }
 
 void DisplayWidget::destroy()
 {
   m_destroying = true;
+
+#ifdef _WIN32
+  if (m_clip_mouse_enabled)
+    ClipCursor(nullptr);
+#endif
 
 #ifdef __APPLE__
   // See Qt documentation, entire application is in full screen state, and the main
@@ -258,12 +260,10 @@ bool DisplayWidget::event(QEvent* event)
 
     case QEvent::MouseMove:
     {
-      const QMouseEvent* mouse_event = static_cast<QMouseEvent*>(event);
-
       if (!m_relative_mouse_enabled)
       {
         const qreal dpr = QtUtils::GetDevicePixelRatioForWidget(this);
-        const QPoint mouse_pos = mouse_event->pos();
+        const QPoint mouse_pos = static_cast<QMouseEvent*>(event)->pos();
 
         const float scaled_x = static_cast<float>(static_cast<qreal>(mouse_pos.x()) * dpr);
         const float scaled_y = static_cast<float>(static_cast<qreal>(mouse_pos.y()) * dpr);
@@ -293,10 +293,13 @@ bool DisplayWidget::event(QEvent* event)
         }
 #endif
 
-        if (dx != 0.0f)
-          InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::X, dx);
-        if (dy != 0.0f)
-          InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::Y, dy);
+        if (!InputManager::IsUsingRawInput())
+        {
+          if (dx != 0.0f)
+            InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::X, dx);
+          if (dy != 0.0f)
+            InputManager::UpdatePointerRelativeDelta(0, InputPointerAxis::Y, dy);
+        }
       }
 
       return true;
@@ -306,14 +309,20 @@ bool DisplayWidget::event(QEvent* event)
     case QEvent::MouseButtonDblClick:
     case QEvent::MouseButtonRelease:
     {
-      const u32 button_index = CountTrailingZeros(static_cast<u32>(static_cast<const QMouseEvent*>(event)->button()));
-      emit windowMouseButtonEvent(static_cast<int>(button_index), event->type() != QEvent::MouseButtonRelease);
+      if (!m_relative_mouse_enabled || !InputManager::IsUsingRawInput())
+      {
+        const u32 button_index = CountTrailingZeros(static_cast<u32>(static_cast<const QMouseEvent*>(event)->button()));
+        emit windowMouseButtonEvent(static_cast<int>(button_index), event->type() != QEvent::MouseButtonRelease);
+      }
 
       // don't toggle fullscreen when we're bound.. that wouldn't end well.
       if (event->type() == QEvent::MouseButtonDblClick &&
-          static_cast<const QMouseEvent*>(event)->button() == Qt::LeftButton &&
-          !InputManager::HasAnyBindingsForKey(InputManager::MakePointerButtonKey(0, 0)) && QtHost::IsSystemValid() &&
-          !QtHost::IsSystemPaused() && Host::GetBoolSettingValue("Main", "DoubleClickTogglesFullscreen", true))
+          static_cast<const QMouseEvent*>(event)->button() == Qt::LeftButton && QtHost::IsSystemValid() &&
+          !FullscreenUI::HasActiveWindow() &&
+          ((!QtHost::IsSystemPaused() &&
+            !InputManager::HasAnyBindingsForKey(InputManager::MakePointerButtonKey(0, 0))) ||
+           (QtHost::IsSystemPaused() && !ImGuiManager::WantsMouseInput())) &&
+          Host::GetBoolSettingValue("Main", "DoubleClickTogglesFullscreen", true))
       {
         g_emu_thread->toggleFullscreen();
       }

@@ -1,9 +1,12 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
+
 #include "common/bitfield.h"
+
 #include "types.h"
+
 #include <optional>
 #include <string>
 #include <vector>
@@ -204,22 +207,22 @@ class MemoryScan
 public:
   enum class Operator
   {
-    Equal,
-    NotEqual,
-    GreaterThan,
-    GreaterEqual,
-    LessThan,
-    LessEqual,
-    IncreasedBy,
-    DecreasedBy,
-    ChangedBy,
-    EqualLast,
-    NotEqualLast,
-    GreaterThanLast,
-    GreaterEqualLast,
+    Any,
     LessThanLast,
     LessEqualLast,
-    Any
+    GreaterThanLast,
+    GreaterEqualLast,
+    NotEqualLast,
+    EqualLast,
+    DecreasedBy,
+    IncreasedBy,
+    ChangedBy,
+    Equal,
+    NotEqual,
+    LessThan,
+    LessEqual,
+    GreaterThan,
+    GreaterEqual
   };
 
   struct Result

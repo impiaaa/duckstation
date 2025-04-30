@@ -21,6 +21,7 @@ enum class MemoryAccessSize : u32
 };
 
 using TickCount = s32;
+using GlobalTicks = u64;
 
 enum class ConsoleRegion
 {
@@ -77,6 +78,15 @@ enum class GPURenderer : u8
   Count
 };
 
+enum class DisplayDeinterlacingMode : u8
+{
+  Disabled,
+  Weave,
+  Blend,
+  Adaptive,
+  Count
+};
+
 enum class GPUTextureFilter : u8
 {
   Nearest,
@@ -103,6 +113,15 @@ enum class GPUWireframeMode : u8
   OverlayWireframe,
   OnlyWireframe,
   Count,
+};
+
+enum class GPULineDetectMode : u8
+{
+  Disabled,
+  Quads,
+  BasicTriangles,
+  AggressiveTriangles,
+  Count
 };
 
 enum class DisplayCropMode : u8
@@ -134,32 +153,50 @@ enum class DisplayAlignment : u8
   Count
 };
 
+enum class DisplayRotation : u8
+{
+  Normal,
+  Rotate90,
+  Rotate180,
+  Rotate270,
+  Count
+};
+
 enum class DisplayScalingMode : u8
 {
   Nearest,
-  BilinearSmooth,
   NearestInteger,
+  BilinearSmooth,
   BilinearSharp,
+  BilinearInteger,
   Count
 };
 
-enum class AudioBackend : u8
+enum class DisplayExclusiveFullscreenControl : u8
 {
-  Null,
-#ifdef ENABLE_CUBEB
-  Cubeb,
-#endif
-#ifdef _WIN32
-  XAudio2,
-#endif
-#ifdef __ANDROID__
-  AAudio,
-  OpenSLES,
-#endif
+  Automatic,
+  Disallowed,
+  Allowed,
   Count
 };
 
-enum class ControllerType
+enum class DisplayScreenshotMode : u8
+{
+  ScreenResolution,
+  InternalResolution,
+  UncorrectedInternalResolution,
+  Count
+};
+
+enum class DisplayScreenshotFormat : u8
+{
+  PNG,
+  JPEG,
+  WebP,
+  Count
+};
+
+enum class ControllerType : u8
 {
   None,
   DigitalController,
@@ -168,6 +205,8 @@ enum class ControllerType
   GunCon,
   PlayStationMouse,
   NeGcon,
+  NeGconRumble,
+  Justifier,
   Count
 };
 
@@ -197,7 +236,7 @@ enum : u32
   NUM_MULTITAPS = 2
 };
 
-enum class CPUFastmemMode
+enum class CPUFastmemMode : u8
 {
   Disabled,
   MMap,
@@ -220,6 +259,19 @@ enum class CDROMMechaconVersion : u8
   VC3A,
   VC3B,
   VC3C,
+
+  Count,
+};
+
+enum class SaveStateCompressionMode : u8
+{
+  Uncompressed,
+  DeflateLow,
+  DeflateDefault,
+  DeflateHigh,
+  ZstLow,
+  ZstDefault,
+  ZstHigh,
 
   Count,
 };

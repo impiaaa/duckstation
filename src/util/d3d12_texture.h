@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
@@ -37,13 +37,12 @@ public:
   ALWAYS_INLINE DXGI_FORMAT GetDXGIFormat() const { return m_dxgi_format; }
   ALWAYS_INLINE ID3D12Resource* GetResource() const { return m_resource.Get(); }
 
-  bool IsValid() const override { return static_cast<bool>(m_resource); }
   bool Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch, u32 layer = 0, u32 level = 0) override;
   bool Map(void** map, u32* map_stride, u32 x, u32 y, u32 width, u32 height, u32 layer = 0, u32 level = 0) override;
   void Unmap() override;
   void MakeReadyForSampling() override;
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
   void TransitionToState(D3D12_RESOURCE_STATES state);
   void CommitClear();
@@ -116,32 +115,12 @@ public:
 
   ALWAYS_INLINE const D3D12DescriptorHandle& GetDescriptor() const { return m_descriptor; }
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
 private:
   D3D12Sampler(D3D12DescriptorHandle descriptor);
 
   D3D12DescriptorHandle m_descriptor;
-};
-
-class D3D12Framebuffer final : public GPUFramebuffer
-{
-  friend D3D12Device;
-
-public:
-  ~D3D12Framebuffer() override;
-
-  ALWAYS_INLINE const D3D12DescriptorHandle& GetRTV() const { return m_rtv; }
-  ALWAYS_INLINE const D3D12DescriptorHandle& GetDSV() const { return m_dsv; }
-
-  void SetDebugName(const std::string_view& name) override;
-
-private:
-  D3D12Framebuffer(GPUTexture* rt, GPUTexture* ds, u32 width, u32 height, D3D12DescriptorHandle rtv,
-                   D3D12DescriptorHandle dsv);
-
-  D3D12DescriptorHandle m_rtv;
-  D3D12DescriptorHandle m_dsv;
 };
 
 class D3D12TextureBuffer final : public GPUTextureBuffer
@@ -161,9 +140,40 @@ public:
   void* Map(u32 required_elements) override;
   void Unmap(u32 used_elements) override;
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
 private:
   D3D12StreamBuffer m_buffer;
   D3D12DescriptorHandle m_descriptor;
+};
+
+class D3D12DownloadTexture final : public GPUDownloadTexture
+{
+public:
+  template<typename T>
+  using ComPtr = Microsoft::WRL::ComPtr<T>;
+
+  ~D3D12DownloadTexture() override;
+
+  static std::unique_ptr<D3D12DownloadTexture> Create(u32 width, u32 height, GPUTexture::Format format);
+
+  void CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width, u32 height,
+                       u32 src_layer, u32 src_level, bool use_transfer_pitch) override;
+
+  bool Map(u32 x, u32 y, u32 width, u32 height) override;
+  void Unmap() override;
+
+  void Flush() override;
+
+  void SetDebugName(std::string_view name) override;
+
+private:
+  D3D12DownloadTexture(u32 width, u32 height, GPUTexture::Format format, ComPtr<D3D12MA::Allocation> allocation,
+                       ComPtr<ID3D12Resource> buffer, size_t buffer_size);
+
+  ComPtr<D3D12MA::Allocation> m_allocation;
+  ComPtr<ID3D12Resource> m_buffer;
+
+  u64 m_copy_fence_value = 0;
+  size_t m_buffer_size = 0;
 };

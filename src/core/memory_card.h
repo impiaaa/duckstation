@@ -1,16 +1,18 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
-#include "common/bitfield.h"
+
 #include "controller.h"
 #include "memory_card_image.h"
+#include "timing_event.h"
+
+#include "common/bitfield.h"
+
 #include <array>
 #include <memory>
 #include <string>
 #include <string_view>
-
-class TimingEvent;
 
 class MemoryCard final
 {
@@ -19,8 +21,6 @@ public:
   ~MemoryCard();
 
   static constexpr u32 STATE_SIZE = 1 + 1 + 2 + 1 + 1 + 1 + MemoryCardImage::DATA_SIZE + 1;
-
-  static std::string SanitizeGameTitleForFileName(const std::string_view& name);
 
   static std::unique_ptr<MemoryCard> Create();
   static std::unique_ptr<MemoryCard> Open(std::string_view filename);
@@ -32,9 +32,12 @@ public:
 
   void Reset();
   bool DoState(StateWrapper& sw);
+  void CopyState(const MemoryCard* src);
 
   void ResetTransferState();
   bool Transfer(const u8 data_in, u8* data_out);
+
+  bool IsOrWasRecentlyWriting() const;
 
   void Format();
 
@@ -79,15 +82,21 @@ private:
     WriteACK1,
     WriteACK2,
     WriteEnd,
+
+    GetIDCardID1,
+    GetIDCardID2,
+    GetIDACK1,
+    GetIDACK2,
+    GetID1,
+    GetID2,
+    GetID3,
+    GetID4,
   };
 
   static TickCount GetSaveDelayInTicks();
 
-  bool LoadFromFile();
   bool SaveIfChanged(bool display_osd_message);
   void QueueFileSave();
-
-  std::unique_ptr<TimingEvent> m_save_event;
 
   State m_state = State::Idle;
   FLAG m_FLAG = {};
@@ -97,7 +106,8 @@ private:
   u8 m_last_byte = 0;
   bool m_changed = false;
 
-  MemoryCardImage::DataArray m_data{};
-
+  TimingEvent m_save_event;
   std::string m_filename;
+
+  MemoryCardImage::DataArray m_data{};
 };

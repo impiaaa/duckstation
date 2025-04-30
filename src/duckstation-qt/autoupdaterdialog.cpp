@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "autoupdaterdialog.h"
@@ -11,6 +11,8 @@
 
 #include "util/http_downloader.h"
 
+#include "common/assert.h"
+#include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/minizip_helpers.h"
@@ -25,20 +27,26 @@
 #include <QtCore/QJsonValue>
 #include <QtCore/QProcess>
 #include <QtCore/QString>
+#include <QtCore/QTimer>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QProgressDialog>
+#include <QtWidgets/QPushButton>
 
 // Interval at which HTTP requests are polled.
 static constexpr u32 HTTP_POLL_INTERVAL = 10;
 
-#ifdef __APPLE__
+#if defined(_WIN32)
+#include "common/windows_headers.h"
+#include <shellapi.h>
+#elif defined(__APPLE__)
 #include "common/cocoa_tools.h"
 #endif
 
 // Logic to detect whether we can use the auto updater.
 // Requires that the channel be defined by the buildbot.
-#if defined(__has_include) && __has_include("scmversion/tag.h")
+#if __has_include("scmversion/tag.h")
 #include "scmversion/tag.h"
 #ifdef SCM_RELEASE_TAGS
 #define AUTO_UPDATER_SUPPORTED
@@ -70,7 +78,7 @@ AutoUpdaterDialog::AutoUpdaterDialog(QWidget* parent /* = nullptr */) : QDialog(
 
   m_http = HTTPDownloader::Create(Host::GetHTTPUserAgent());
   if (!m_http)
-    Log_ErrorPrint("Failed to create HTTP downloader, auto updater will not be available.");
+    ERROR_LOG("Failed to create HTTP downloader, auto updater will not be available.");
 }
 
 AutoUpdaterDialog::~AutoUpdaterDialog() = default;
@@ -82,7 +90,7 @@ bool AutoUpdaterDialog::isSupported()
   // For Linux, we need to check whether we're running from the appimage.
   if (!std::getenv("APPIMAGE"))
   {
-    Log_InfoPrintf("We're a CI release, but not running from an AppImage. Disabling automatic updater.");
+    INFO_LOG("We're a CI release, but not running from an AppImage. Disabling automatic updater.");
     return false;
   }
 
@@ -93,6 +101,100 @@ bool AutoUpdaterDialog::isSupported()
 #endif
 #else
   return false;
+#endif
+}
+
+bool AutoUpdaterDialog::isOfficialBuild()
+{
+#if !__has_include("scmversion/tag.h")
+  return false;
+#else
+  return true;
+#endif
+}
+
+bool AutoUpdaterDialog::warnAboutUnofficialBuild()
+{
+  //
+  // To those distributing their own builds or packages of DuckStation, and seeing this message:
+  //
+  // This message is here for a reason. Under the terms of the license, you are within your rights to distribute your
+  // own builds of my application. However, it is a headache for me, as users run into broken functionality, or end up
+  // on untested/preview commits that have not been adequately tested, and I cannot resolve their issues. I provide
+  // builds for a range of platforms that covers almost all use cases, and can guarantee quality of these builds.
+  //
+  // If you must distribute builds/packages, per the GPL, modified builds should be clearly marked as such.
+  // This message is thus one way of meeting the requirement. See Section 5 of the GPLv3:
+  // https://www.gnu.org/licenses/gpl-3.0.en.html#section5
+  //
+  // This includes building the binary with any method that does not match the official release, including dependencies,
+  // as it is not uncommon for differing dependency versions to create issues I cannot reproduce.
+  //
+  // You should also provide user support for your package, and not direct them to upstream, as any users that ask for
+  // community help will be instructed to download a supported release instead.
+  //
+#if !__has_include("scmversion/tag.h") && !defined(_DEBUG)
+  constexpr const char* CONFIG_SECTION = "UI";
+  constexpr const char* CONFIG_KEY = "UnofficialBuildWarningConfirmed";
+  if (Host::GetBaseBoolSettingValue(CONFIG_SECTION, CONFIG_KEY, false))
+    return true;
+
+  constexpr int DELAY_SECONDS = 5;
+
+  const QString message = QStringLiteral(
+    "<h1>You are not using an official release!</h1><h3>If you continue to use this build, expect to run into "
+    "issues.</h3><p><strong>No assistance will be provided by the developers or community</strong>, as we cannot fix "
+    "broken functionality in builds we do not control.</p><p>We <strong>strongly recommend</strong> downloading an "
+    "official release from <a href=\"https://www.duckstation.org/\">duckstation.org</a>.</p><p>Do you want to exit and "
+    "open this page now?</p>");
+
+  QMessageBox mbox;
+  mbox.setIcon(QMessageBox::Warning);
+  mbox.setWindowTitle(QStringLiteral("Unofficial Build Warning"));
+  mbox.setWindowIcon(QtHost::GetAppIcon());
+  mbox.setTextFormat(Qt::RichText);
+  mbox.setText(message);
+
+  mbox.addButton(QMessageBox::Yes);
+  QPushButton* no = mbox.addButton(QMessageBox::No);
+  const QString orig_no_text = no->text();
+  no->setEnabled(false);
+
+  QCheckBox* cb = new QCheckBox(&mbox);
+  cb->setText(tr("Do not show again"));
+  mbox.setCheckBox(cb);
+
+  int remaining_time = DELAY_SECONDS;
+  no->setText(QStringLiteral("%1 [%2]").arg(orig_no_text).arg(remaining_time));
+
+  QTimer* timer = new QTimer(&mbox);
+  connect(timer, &QTimer::timeout, &mbox, [no, timer, &remaining_time, &orig_no_text]() {
+    remaining_time--;
+    if (remaining_time == 0)
+    {
+      no->setText(orig_no_text);
+      no->setEnabled(true);
+      timer->stop();
+    }
+    else
+    {
+      no->setText(QStringLiteral("%1 [%2]").arg(orig_no_text).arg(remaining_time));
+    }
+  });
+  timer->start(1000);
+
+  if (mbox.exec() == QMessageBox::Yes)
+  {
+    QtUtils::OpenURL(nullptr, "https://duckstation.org/");
+    return false;
+  }
+
+  if (cb->isChecked())
+    Host::SetBaseBoolSettingValue(CONFIG_SECTION, CONFIG_KEY, true);
+
+  return true;
+#else
+  return true;
 #endif
 }
 
@@ -123,14 +225,9 @@ std::string AutoUpdaterDialog::getCurrentUpdateTag() const
 #endif
 }
 
-void AutoUpdaterDialog::reportError(const char* msg, ...)
+void AutoUpdaterDialog::reportError(const std::string_view msg)
 {
-  std::va_list ap;
-  va_start(ap, msg);
-  std::string full_msg = StringUtil::StdStringFromFormatV(msg, ap);
-  va_end(ap);
-
-  QMessageBox::critical(this, tr("Updater Error"), QString::fromStdString(full_msg));
+  QMessageBox::critical(this, tr("Updater Error"), QtUtils::StringViewToQString(msg));
 }
 
 bool AutoUpdaterDialog::ensureHttpReady()
@@ -161,7 +258,7 @@ void AutoUpdaterDialog::httpPollTimerPoll()
 
   if (!m_http->HasAnyRequests())
   {
-    Log_VerbosePrint("All HTTP requests done.");
+    VERBOSE_LOG("All HTTP requests done.");
     m_http_poll_timer->stop();
   }
 }
@@ -241,7 +338,7 @@ void AutoUpdaterDialog::getLatestTagComplete(s32 status_code, std::vector<u8> re
       }
 
       if (m_display_messages)
-        reportError("%s release not found in JSON", selected_tag.c_str());
+        reportError(fmt::format("{} release not found in JSON", selected_tag));
     }
     else
     {
@@ -252,7 +349,7 @@ void AutoUpdaterDialog::getLatestTagComplete(s32 status_code, std::vector<u8> re
   else
   {
     if (m_display_messages)
-      reportError("Failed to download latest tag info: HTTP %d", status_code);
+      reportError(fmt::format("Failed to download latest tag info: HTTP {}", status_code));
   }
 
   emit updateCheckCompleted();
@@ -310,8 +407,10 @@ void AutoUpdaterDialog::getLatestReleaseComplete(s32 status_code, std::vector<u8
   }
   else
   {
-    reportError("Failed to download latest release info: HTTP %d", status_code);
+    reportError(fmt::format("Failed to download latest release info: HTTP {}", status_code));
   }
+
+  emit updateCheckCompleted();
 #endif
 }
 
@@ -396,7 +495,7 @@ void AutoUpdaterDialog::getChangesComplete(s32 status_code, std::vector<u8> resp
   }
   else
   {
-    reportError("Failed to download change list: HTTP %d", status_code);
+    reportError(fmt::format("Failed to download change list: HTTP {}", status_code));
   }
 #endif
 }
@@ -420,7 +519,7 @@ void AutoUpdaterDialog::downloadUpdateClicked()
 
       if (status_code != HTTPDownloader::HTTP_STATUS_OK)
       {
-        reportError("Download failed: %d", status_code);
+        reportError(fmt::format("Download failed: HTTP status code {}", status_code));
         download_result = false;
         return;
       }
@@ -435,6 +534,10 @@ void AutoUpdaterDialog::downloadUpdateClicked()
       download_result = processUpdate(response);
     },
     &progress);
+
+  // Since we're going to block, don't allow the timer to poll, otherwise the progress callback can cause the timer to
+  // run, and recursively poll again.
+  m_http_poll_timer->stop();
 
   // Block until completion.
   while (m_http->HasAnyRequests())
@@ -455,16 +558,16 @@ bool AutoUpdaterDialog::updateNeeded() const
 {
   QString last_checked_sha = QString::fromStdString(Host::GetBaseStringSettingValue("AutoUpdater", "LastVersion"));
 
-  Log_InfoPrintf("Current SHA: %s", g_scm_hash_str);
-  Log_InfoPrintf("Latest SHA: %s", m_latest_sha.toUtf8().constData());
-  Log_InfoPrintf("Last Checked SHA: %s", last_checked_sha.toUtf8().constData());
+  INFO_LOG("Current SHA: {}", g_scm_hash_str);
+  INFO_LOG("Latest SHA: {}", m_latest_sha.toUtf8().constData());
+  INFO_LOG("Last Checked SHA: {}", last_checked_sha.toUtf8().constData());
   if (m_latest_sha == g_scm_hash_str || m_latest_sha == last_checked_sha)
   {
-    Log_InfoPrintf("No update needed.");
+    INFO_LOG("No update needed.");
     return false;
   }
 
-  Log_InfoPrintf("Update needed.");
+  INFO_LOG("Update needed.");
   return true;
 }
 
@@ -482,67 +585,71 @@ void AutoUpdaterDialog::remindMeLaterClicked()
 
 #ifdef _WIN32
 
-bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& update_data)
+static constexpr char UPDATER_EXECUTABLE[] = "updater.exe";
+static constexpr char UPDATER_ARCHIVE_NAME[] = "update.zip";
+
+bool AutoUpdaterDialog::doesUpdaterNeedElevation(const std::string& application_dir) const
 {
-  const QString update_directory = QCoreApplication::applicationDirPath();
-  const QString update_zip_path = update_directory + QStringLiteral("\\update.zip");
-  const QString updater_path = update_directory + QStringLiteral("\\updater.exe");
+  // Try to create a dummy text file in the PCSX2 updater directory. If it fails, we probably won't have write
+  // permission.
+  const std::string dummy_path = Path::Combine(application_dir, "update.txt");
+  auto fp = FileSystem::OpenManagedCFile(dummy_path.c_str(), "wb");
+  if (!fp)
+    return true;
 
-  Q_ASSERT(!update_zip_path.isEmpty() && !updater_path.isEmpty() && !update_directory.isEmpty());
-  if ((QFile::exists(update_zip_path) && !QFile::remove(update_zip_path)) ||
-      (QFile::exists(updater_path) && !QFile::remove(updater_path)))
-  {
-    reportError("Removing existing update zip/updater failed");
-    return false;
-  }
-
-  {
-    QFile update_zip_file(update_zip_path);
-    if (!update_zip_file.open(QIODevice::WriteOnly) ||
-        update_zip_file.write(reinterpret_cast<const char*>(update_data.data()),
-                              static_cast<qint64>(update_data.size())) != static_cast<qint64>(update_data.size()))
-    {
-      reportError("Writing update zip to '%s' failed", update_zip_path.toUtf8().constData());
-      return false;
-    }
-    update_zip_file.close();
-  }
-
-  if (!extractUpdater(update_zip_path, updater_path))
-  {
-    reportError("Extracting updater failed");
-    return false;
-  }
-
-  if (!doUpdate(update_zip_path, updater_path, update_directory))
-  {
-    reportError("Launching updater failed");
-    return false;
-  }
-
-  return true;
+  fp.reset();
+  FileSystem::DeleteFile(dummy_path.c_str());
+  return false;
 }
 
-bool AutoUpdaterDialog::extractUpdater(const QString& zip_path, const QString& destination_path)
+bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& update_data)
 {
-  unzFile zf = MinizipHelpers::OpenUnzFile(zip_path.toUtf8().constData());
+  const std::string& application_dir = EmuFolders::AppRoot;
+  const std::string update_zip_path = Path::Combine(EmuFolders::DataRoot, UPDATER_ARCHIVE_NAME);
+  const std::string updater_path = Path::Combine(EmuFolders::DataRoot, UPDATER_EXECUTABLE);
+
+  if ((FileSystem::FileExists(update_zip_path.c_str()) && !FileSystem::DeleteFile(update_zip_path.c_str())))
+  {
+    reportError("Removing existing update zip failed");
+    return false;
+  }
+
+  if (!FileSystem::WriteBinaryFile(update_zip_path.c_str(), update_data.data(), update_data.size()))
+  {
+    reportError(fmt::format("Writing update zip to '{}' failed", update_zip_path));
+    return false;
+  }
+
+  Error updater_extract_error;
+  if (!extractUpdater(update_zip_path.c_str(), updater_path.c_str(), &updater_extract_error))
+  {
+    reportError(fmt::format("Extracting updater failed: {}", updater_extract_error.GetDescription()));
+    return false;
+  }
+
+  return doUpdate(application_dir, update_zip_path, updater_path);
+}
+
+bool AutoUpdaterDialog::extractUpdater(const std::string& zip_path, const std::string& destination_path, Error* error)
+{
+  unzFile zf = MinizipHelpers::OpenUnzFile(zip_path.c_str());
   if (!zf)
   {
     reportError("Failed to open update zip");
     return false;
   }
 
-  if (unzLocateFile(zf, "updater.exe", 0) != UNZ_OK || unzOpenCurrentFile(zf) != UNZ_OK)
+  if (unzLocateFile(zf, UPDATER_EXECUTABLE, 0) != UNZ_OK || unzOpenCurrentFile(zf) != UNZ_OK)
   {
-    reportError("Failed to locate updater.exe");
+    Error::SetString(error, "Failed to locate updater.exe");
     unzClose(zf);
     return false;
   }
 
-  QFile updater_exe(destination_path);
-  if (!updater_exe.open(QIODevice::WriteOnly))
+  auto fp = FileSystem::OpenManagedCFile(destination_path.c_str(), "wb", error);
+  if (!fp)
   {
-    reportError("Failed to open updater.exe for writing");
+    Error::SetString(error, "Failed to open updater.exe for writing");
     unzClose(zf);
     return false;
   }
@@ -554,10 +661,10 @@ bool AutoUpdaterDialog::extractUpdater(const QString& zip_path, const QString& d
     int size = unzReadCurrentFile(zf, chunk, CHUNK_SIZE);
     if (size < 0)
     {
-      reportError("Failed to decompress updater exe");
+      Error::SetString(error, "Failed to decompress updater exe");
       unzClose(zf);
-      updater_exe.close();
-      updater_exe.remove();
+      fp.reset();
+      FileSystem::DeleteFile(destination_path.c_str());
       return false;
     }
     else if (size == 0)
@@ -565,44 +672,48 @@ bool AutoUpdaterDialog::extractUpdater(const QString& zip_path, const QString& d
       break;
     }
 
-    if (updater_exe.write(chunk, size) != size)
+    if (std::fwrite(chunk, size, 1, fp.get()) != 1)
     {
-      reportError("Failed to write updater exe");
+      Error::SetString(error, "Failed to write updater exe");
       unzClose(zf);
-      updater_exe.close();
-      updater_exe.remove();
+      fp.reset();
+      FileSystem::DeleteFile(destination_path.c_str());
       return false;
     }
   }
 
   unzClose(zf);
-  updater_exe.close();
   return true;
 }
 
-bool AutoUpdaterDialog::doUpdate(const QString& zip_path, const QString& updater_path, const QString& destination_path)
+bool AutoUpdaterDialog::doUpdate(const std::string& application_dir, const std::string& zip_path,
+                                 const std::string& updater_path)
 {
-  const QString program_path = QCoreApplication::applicationFilePath();
-  if (program_path.isEmpty())
+  const std::string program_path = QDir::toNativeSeparators(QCoreApplication::applicationFilePath()).toStdString();
+  if (program_path.empty())
   {
     reportError("Failed to get current application path");
     return false;
   }
 
-  QStringList arguments;
-  arguments << QString::number(QCoreApplication::applicationPid());
-  arguments << destination_path;
-  arguments << zip_path;
-  arguments << program_path;
+  const std::wstring wupdater_path = StringUtil::UTF8StringToWideString(updater_path);
+  const std::wstring wapplication_dir = StringUtil::UTF8StringToWideString(application_dir);
+  const std::wstring arguments = StringUtil::UTF8StringToWideString(fmt::format(
+    "{} \"{}\" \"{}\" \"{}\"", QCoreApplication::applicationPid(), application_dir, zip_path, program_path));
 
-  // this will leak, but not sure how else to handle it...
-  QProcess* updater_process = new QProcess();
-  updater_process->setProgram(updater_path);
-  updater_process->setArguments(arguments);
-  updater_process->start(QIODevice::NotOpen);
-  if (!updater_process->waitForStarted())
+  const bool needs_elevation = doesUpdaterNeedElevation(application_dir);
+
+  SHELLEXECUTEINFOW sei = {};
+  sei.cbSize = sizeof(sei);
+  sei.lpVerb = needs_elevation ? L"runas" : nullptr; // needed to trigger elevation
+  sei.lpFile = wupdater_path.c_str();
+  sei.lpParameters = arguments.c_str();
+  sei.lpDirectory = wapplication_dir.c_str();
+  sei.nShow = SW_SHOWNORMAL;
+  if (!ShellExecuteExW(&sei))
   {
-    reportError("Failed to start updater");
+    reportError(fmt::format("Failed to start {}: {}", needs_elevation ? "elevated updater" : "updater",
+                            Error::CreateWin32(GetLastError()).GetDescription()));
     return false;
   }
 
@@ -611,6 +722,19 @@ bool AutoUpdaterDialog::doUpdate(const QString& zip_path, const QString& updater
 
 void AutoUpdaterDialog::cleanupAfterUpdate()
 {
+  // If we weren't portable, then updater executable gets left in the application directory.
+  if (EmuFolders::AppRoot == EmuFolders::DataRoot)
+    return;
+
+  const std::string updater_path = Path::Combine(EmuFolders::DataRoot, UPDATER_EXECUTABLE);
+  if (!FileSystem::FileExists(updater_path.c_str()))
+    return;
+
+  if (!FileSystem::DeleteFile(updater_path.c_str()))
+  {
+    QMessageBox::critical(nullptr, tr("Updater Error"), tr("Failed to remove updater exe after update."));
+    return;
+  }
 }
 
 #elif defined(__APPLE__)
@@ -627,12 +751,13 @@ bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& update_data)
   QFileInfo info(QString::fromStdString(bundle_path.value()));
   if (!info.isBundle())
   {
-    reportError("Application %s isn't a bundle.", bundle_path->c_str());
+    reportError(fmt::format("Application {} isn't a bundle.", bundle_path.value()));
     return false;
   }
   if (info.suffix() != QStringLiteral("app"))
   {
-    reportError("Unexpected application suffix %s on %s.", info.suffix().toUtf8().constData(), bundle_path->c_str());
+    reportError(
+      fmt::format("Unexpected application suffix {} on {}.", info.suffix().toStdString(), bundle_path.value()));
     return false;
   }
 
@@ -640,7 +765,7 @@ bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& update_data)
   const std::string updater_app = Path::Combine(bundle_path.value(), "Contents/Resources/Updater.app");
   if (!FileSystem::DirectoryExists(updater_app.c_str()))
   {
-    reportError("Failed to find updater at %s.", updater_app.c_str());
+    reportError(fmt::format("Failed to find updater at {}.", updater_app));
     return false;
   }
 
@@ -660,14 +785,14 @@ bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& update_data)
         zip_file.write(reinterpret_cast<const char*>(update_data.data()), static_cast<qint64>(update_data.size())) !=
           static_cast<qint64>(update_data.size()))
     {
-      reportError("Writing update zip to '%s' failed", zip_path.c_str());
+      reportError(fmt::format("Writing update zip to '{}' failed", zip_path));
       return false;
     }
     zip_file.close();
   }
 
-  Log_InfoFmt("Beginning update:\nUpdater path: {}\nZip path: {}\nStaging directory: {}\nOutput directory: {}",
-              updater_app, zip_path, staging_directory, bundle_path.value());
+  INFO_LOG("Beginning update:\nUpdater path: {}\nZip path: {}\nStaging directory: {}\nOutput directory: {}",
+           updater_app, zip_path, staging_directory, bundle_path.value());
 
   const std::string_view args[] = {
     zip_path,
@@ -682,9 +807,6 @@ bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& update_data)
 
 void AutoUpdaterDialog::cleanupAfterUpdate()
 {
-  const QString zip_path = QString::fromStdString(Path::Combine(EmuFolders::DataRoot, "update.zip"));
-  if (QFile::exists(zip_path))
-    QFile::remove(zip_path);
 }
 
 #elif defined(__linux__)
@@ -701,25 +823,25 @@ bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& update_data)
   const QString qappimage_path(QString::fromUtf8(appimage_path));
   if (!QFile::exists(qappimage_path))
   {
-    reportError("Current AppImage does not exist: %s", appimage_path);
+    reportError(fmt::format("Current AppImage does not exist: {}", appimage_path));
     return false;
   }
 
   const QString new_appimage_path(qappimage_path + QStringLiteral(".new"));
   const QString backup_appimage_path(qappimage_path + QStringLiteral(".backup"));
-  Log_InfoPrintf("APPIMAGE = %s", appimage_path);
-  Log_InfoPrintf("Backup AppImage path = %s", backup_appimage_path.toUtf8().constData());
-  Log_InfoPrintf("New AppImage path = %s", new_appimage_path.toUtf8().constData());
+  INFO_LOG("APPIMAGE = {}", appimage_path);
+  INFO_LOG("Backup AppImage path = {}", backup_appimage_path.toStdString());
+  INFO_LOG("New AppImage path = {}", new_appimage_path.toStdString());
 
   // Remove old "new" appimage and existing backup appimage.
   if (QFile::exists(new_appimage_path) && !QFile::remove(new_appimage_path))
   {
-    reportError("Failed to remove old destination AppImage: %s", new_appimage_path.toUtf8().constData());
+    reportError(fmt::format("Failed to remove old destination AppImage: {}", new_appimage_path.toStdString()));
     return false;
   }
   if (QFile::exists(backup_appimage_path) && !QFile::remove(backup_appimage_path))
   {
-    reportError("Failed to remove old backup AppImage: %s", new_appimage_path.toUtf8().constData());
+    reportError(fmt::format("Failed to remove old backup AppImage: {}", new_appimage_path.toStdString()));
     return false;
   }
 
@@ -735,7 +857,7 @@ bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& update_data)
         !new_file.setPermissions(old_permissions))
     {
       QFile::remove(new_appimage_path);
-      reportError("Failed to write new destination AppImage: %s", new_appimage_path.toUtf8().constData());
+      reportError(fmt::format("Failed to write new destination AppImage: {}", new_appimage_path.toStdString()));
       return false;
     }
   }
@@ -743,7 +865,7 @@ bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& update_data)
   // Rename "old" appimage.
   if (!QFile::rename(qappimage_path, backup_appimage_path))
   {
-    reportError("Failed to rename old AppImage to %s", backup_appimage_path.toUtf8().constData());
+    reportError(fmt::format("Failed to rename old AppImage to {}", backup_appimage_path.toStdString()));
     QFile::remove(new_appimage_path);
     return false;
   }
@@ -751,7 +873,7 @@ bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& update_data)
   // Rename "new" appimage.
   if (!QFile::rename(new_appimage_path, qappimage_path))
   {
-    reportError("Failed to rename new AppImage to %s", qappimage_path.toUtf8().constData());
+    reportError(fmt::format("Failed to rename new AppImage to {}", qappimage_path.toStdString()));
     return false;
   }
 
@@ -781,11 +903,10 @@ void AutoUpdaterDialog::cleanupAfterUpdate()
   if (!QFile::exists(backup_appimage_path))
     return;
 
-  Log_InfoPrint(QStringLiteral("Removing backup AppImage %1").arg(backup_appimage_path).toStdString().c_str());
+  INFO_LOG(QStringLiteral("Removing backup AppImage %1").arg(backup_appimage_path).toStdString().c_str());
   if (!QFile::remove(backup_appimage_path))
   {
-    Log_ErrorPrint(
-      QStringLiteral("Failed to remove backup AppImage %1").arg(backup_appimage_path).toStdString().c_str());
+    ERROR_LOG(QStringLiteral("Failed to remove backup AppImage %1").arg(backup_appimage_path).toStdString().c_str());
   }
 }
 

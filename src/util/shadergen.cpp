@@ -1,12 +1,15 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "shadergen.h"
+
 #include "common/assert.h"
 #include "common/bitutils.h"
 #include "common/log.h"
+
 #include <cstdio>
 #include <cstring>
+#include <iomanip>
 
 #ifdef ENABLE_OPENGL
 #include "opengl_loader.h"
@@ -14,38 +17,65 @@
 
 Log_SetChannel(ShaderGen);
 
-ShaderGen::ShaderGen(RenderAPI render_api, bool supports_dual_source_blend, bool supports_framebuffer_fetch)
-  : m_render_api(render_api), m_glsl(render_api != RenderAPI::D3D11 && render_api != RenderAPI::D3D12),
-    m_spirv(render_api == RenderAPI::Vulkan || render_api == RenderAPI::Metal),
-    m_supports_dual_source_blend(supports_dual_source_blend), m_supports_framebuffer_fetch(supports_framebuffer_fetch),
-    m_use_glsl_interface_blocks(false)
+ShaderGen::ShaderGen(RenderAPI render_api, GPUShaderLanguage shader_language, bool supports_dual_source_blend,
+                     bool supports_framebuffer_fetch)
+  : m_render_api(render_api), m_shader_language(shader_language),
+    m_glsl(shader_language == GPUShaderLanguage::GLSL || shader_language == GPUShaderLanguage::GLSLES ||
+           shader_language == GPUShaderLanguage::GLSLVK),
+    m_spirv(shader_language == GPUShaderLanguage::GLSLVK), m_supports_dual_source_blend(supports_dual_source_blend),
+    m_supports_framebuffer_fetch(supports_framebuffer_fetch)
 {
-#if defined(ENABLE_OPENGL) || defined(ENABLE_VULKAN) || defined(__APPLE__)
   if (m_glsl)
   {
 #ifdef ENABLE_OPENGL
     if (m_render_api == RenderAPI::OpenGL || m_render_api == RenderAPI::OpenGLES)
-      SetGLSLVersionString();
+      m_glsl_version_string = GetGLSLVersionString(m_render_api, GetGLSLVersion(render_api));
 
-    m_use_glsl_interface_blocks = (IsVulkan() || IsMetal() || GLAD_GL_ES_VERSION_3_2 || GLAD_GL_VERSION_3_2);
-    m_use_glsl_binding_layout = (IsVulkan() || IsMetal() || UseGLSLBindingLayout());
+    m_use_glsl_interface_blocks =
+      (shader_language == GPUShaderLanguage::GLSLVK || GLAD_GL_ES_VERSION_3_2 || GLAD_GL_VERSION_3_2);
+    m_use_glsl_binding_layout = (shader_language == GPUShaderLanguage::GLSLVK || UseGLSLBindingLayout());
 
-    if (m_render_api == RenderAPI::OpenGL)
+#ifdef _WIN32
+    if (m_shader_language == GPUShaderLanguage::GLSL)
     {
       // SSAA with interface blocks is broken on AMD's OpenGL driver.
       const char* gl_vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
       if (std::strcmp(gl_vendor, "ATI Technologies Inc.") == 0)
         m_use_glsl_interface_blocks = false;
     }
+#endif
 #else
     m_use_glsl_interface_blocks = true;
     m_use_glsl_binding_layout = true;
 #endif
   }
-#endif
 }
 
 ShaderGen::~ShaderGen() = default;
+
+GPUShaderLanguage ShaderGen::GetShaderLanguageForAPI(RenderAPI api)
+{
+  switch (api)
+  {
+    case RenderAPI::D3D11:
+    case RenderAPI::D3D12:
+      return GPUShaderLanguage::HLSL;
+
+    case RenderAPI::Vulkan:
+    case RenderAPI::Metal:
+      return GPUShaderLanguage::GLSLVK;
+
+    case RenderAPI::OpenGL:
+      return GPUShaderLanguage::GLSL;
+
+    case RenderAPI::OpenGLES:
+      return GPUShaderLanguage::GLSLES;
+
+    case RenderAPI::None:
+    default:
+      return GPUShaderLanguage::None;
+  }
+}
 
 bool ShaderGen::UseGLSLBindingLayout()
 {
@@ -69,10 +99,10 @@ void ShaderGen::DefineMacro(std::stringstream& ss, const char* name, s32 value)
 }
 
 #ifdef ENABLE_OPENGL
-void ShaderGen::SetGLSLVersionString()
+u32 ShaderGen::GetGLSLVersion(RenderAPI render_api)
 {
   const char* glsl_version = reinterpret_cast<const char*>(glGetString(GL_SHADING_LANGUAGE_VERSION));
-  const bool glsl_es = (m_render_api == RenderAPI::OpenGLES);
+  const bool glsl_es = (render_api == RenderAPI::OpenGLES);
   Assert(glsl_version != nullptr);
 
   // Skip any strings in front of the version code.
@@ -97,32 +127,47 @@ void ShaderGen::SetGLSLVersionString()
   }
   else
   {
-    Log_ErrorPrintf("Invalid GLSL version string: '%s' ('%s')", glsl_version, glsl_version_start);
+    ERROR_LOG("Invalid GLSL version string: '{}' ('{}')", glsl_version, glsl_version_start);
     if (glsl_es)
     {
       major_version = 3;
       minor_version = 0;
     }
-    m_glsl_version_string = glsl_es ? "300" : "130";
   }
 
-  char buf[128];
-  std::snprintf(buf, sizeof(buf), "#version %d%02d%s", major_version, minor_version,
-                (glsl_es && major_version >= 3) ? " es" : "");
-  m_glsl_version_string = buf;
+  return (static_cast<u32>(major_version) * 100) + static_cast<u32>(minor_version);
+}
+
+TinyString ShaderGen::GetGLSLVersionString(RenderAPI render_api, u32 version)
+{
+  const bool glsl_es = (render_api == RenderAPI::OpenGLES);
+  const u32 major_version = (version / 100);
+  const u32 minor_version = (version % 100);
+
+  return TinyString::from_format("#version {}{:02d}{}", major_version, minor_version,
+                                 (glsl_es && major_version >= 3) ? " es" : "");
 }
 #endif
 
-void ShaderGen::WriteHeader(std::stringstream& ss)
+void ShaderGen::WriteHeader(std::stringstream& ss, bool enable_rov /* = false */)
 {
-  if (m_render_api == RenderAPI::OpenGL || m_render_api == RenderAPI::OpenGLES)
+  if (m_shader_language == GPUShaderLanguage::GLSL || m_shader_language == GPUShaderLanguage::GLSLES)
     ss << m_glsl_version_string << "\n\n";
   else if (m_spirv)
     ss << "#version 450 core\n\n";
 
+#ifdef __APPLE__
+  // TODO: Do this for Vulkan as well.
+  if (m_render_api == RenderAPI::Metal)
+  {
+    if (!m_supports_framebuffer_fetch)
+      ss << "#extension GL_EXT_samplerless_texture_functions : require\n";
+  }
+#endif
+
 #ifdef ENABLE_OPENGL
   // Extension enabling for OpenGL.
-  if (m_render_api == RenderAPI::OpenGL || m_render_api == RenderAPI::OpenGLES)
+  if (m_shader_language == GPUShaderLanguage::GLSL || m_shader_language == GPUShaderLanguage::GLSLES)
   {
     if (GLAD_GL_EXT_shader_framebuffer_fetch)
       ss << "#extension GL_EXT_shader_framebuffer_fetch : require\n";
@@ -130,7 +175,7 @@ void ShaderGen::WriteHeader(std::stringstream& ss)
       ss << "#extension GL_ARM_shader_framebuffer_fetch : require\n";
   }
 
-  if (m_render_api == RenderAPI::OpenGLES)
+  if (m_shader_language == GPUShaderLanguage::GLSLES)
   {
     // Enable EXT_blend_func_extended for dual-source blend on OpenGL ES.
     if (GLAD_GL_EXT_blend_func_extended)
@@ -149,7 +194,7 @@ void ShaderGen::WriteHeader(std::stringstream& ss)
       ss << "#define DRIVER_POWERVR 1\n";
     }
   }
-  else if (m_render_api == RenderAPI::OpenGL)
+  else if (m_shader_language == GPUShaderLanguage::GLSL)
   {
     // Need extensions for binding layout if GL<4.3.
     if (m_use_glsl_binding_layout && !GLAD_GL_VERSION_4_3)
@@ -166,6 +211,11 @@ void ShaderGen::WriteHeader(std::stringstream& ss)
     if (!GLAD_GL_VERSION_4_3 && !GLAD_GL_ES_VERSION_3_1 && GLAD_GL_ARB_shader_storage_buffer_object)
       ss << "#extension GL_ARB_shader_storage_buffer_object : require\n";
   }
+  else if (m_shader_language == GPUShaderLanguage::GLSLVK)
+  {
+    if (enable_rov)
+      ss << "#extension GL_ARB_fragment_shader_interlock : require\n";
+  }
 #endif
 
   DefineMacro(ss, "API_OPENGL", m_render_api == RenderAPI::OpenGL);
@@ -176,11 +226,13 @@ void ShaderGen::WriteHeader(std::stringstream& ss)
   DefineMacro(ss, "API_METAL", m_render_api == RenderAPI::Metal);
 
 #ifdef ENABLE_OPENGL
-  if (m_render_api == RenderAPI::OpenGLES)
+  if (m_shader_language == GPUShaderLanguage::GLSLES)
   {
     ss << "precision highp float;\n";
     ss << "precision highp int;\n";
     ss << "precision highp sampler2D;\n";
+    ss << "precision highp isampler2D;\n";
+    ss << "precision highp usampler2D;\n";
 
     if (GLAD_GL_ES_VERSION_3_1)
       ss << "precision highp sampler2DMS;\n";
@@ -288,9 +340,9 @@ void ShaderGen::WriteHeader(std::stringstream& ss)
 
 void ShaderGen::WriteUniformBufferDeclaration(std::stringstream& ss, bool push_constant_on_vulkan)
 {
-  if (IsVulkan())
+  if (m_shader_language == GPUShaderLanguage::GLSLVK)
   {
-    if (push_constant_on_vulkan)
+    if (m_render_api == RenderAPI::Vulkan && push_constant_on_vulkan)
     {
       ss << "layout(push_constant) uniform PushConstants\n";
     }
@@ -300,15 +352,10 @@ void ShaderGen::WriteUniformBufferDeclaration(std::stringstream& ss, bool push_c
       m_has_uniform_buffer = true;
     }
   }
-  else if (IsMetal())
-  {
-    ss << "layout(std140, set = 0, binding = 0) uniform UBOBlock\n";
-    m_has_uniform_buffer = true;
-  }
   else if (m_glsl)
   {
     if (m_use_glsl_binding_layout)
-      ss << "layout(std140, binding = 1) uniform UBOBlock\n";
+      ss << "layout(std140, binding = 0) uniform UBOBlock\n";
     else
       ss << "layout(std140) uniform UBOBlock\n";
 
@@ -332,20 +379,23 @@ void ShaderGen::DeclareUniformBuffer(std::stringstream& ss, const std::initializ
   ss << "};\n\n";
 }
 
-void ShaderGen::DeclareTexture(std::stringstream& ss, const char* name, u32 index, bool multisampled /* = false */)
+void ShaderGen::DeclareTexture(std::stringstream& ss, const char* name, u32 index, bool multisampled /* = false */,
+                               bool is_int /* = false */, bool is_unsigned /* = false */)
 {
   if (m_glsl)
   {
-    if (IsVulkan())
-      ss << "layout(set = " << (m_has_uniform_buffer ? 1 : 0) << ", binding = " << index << ") ";
+    if (m_spirv)
+      ss << "layout(set = " << ((m_has_uniform_buffer || IsMetal()) ? 1 : 0) << ", binding = " << index << ") ";
     else if (m_use_glsl_binding_layout)
       ss << "layout(binding = " << index << ") ";
 
-    ss << "uniform " << (multisampled ? "sampler2DMS " : "sampler2D ") << name << ";\n";
+    ss << "uniform " << (is_int ? (is_unsigned ? "u" : "i") : "") << (multisampled ? "sampler2DMS " : "sampler2D ")
+       << name << ";\n";
   }
   else
   {
-    ss << (multisampled ? "Texture2DMS<float4> " : "Texture2D ") << name << " : register(t" << index << ");\n";
+    ss << (multisampled ? "Texture2DMS<" : "Texture2D<") << (is_int ? (is_unsigned ? "uint4" : "int4") : "float4")
+       << "> " << name << " : register(t" << index << ");\n";
     ss << "SamplerState " << name << "_ss : register(s" << index << ");\n";
   }
 }
@@ -354,8 +404,8 @@ void ShaderGen::DeclareTextureBuffer(std::stringstream& ss, const char* name, u3
 {
   if (m_glsl)
   {
-    if (IsVulkan())
-      ss << "layout(set = 0, binding = " << index << ") ";
+    if (m_spirv)
+      ss << "layout(set = " << ((m_has_uniform_buffer || IsMetal()) ? 1 : 0) << ", binding = " << index << ") ";
     else if (m_use_glsl_binding_layout)
       ss << "layout(binding = " << index << ") ";
 
@@ -365,6 +415,27 @@ void ShaderGen::DeclareTextureBuffer(std::stringstream& ss, const char* name, u3
   {
     ss << "Buffer<" << (is_int ? (is_unsigned ? "uint4" : "int4") : "float4") << "> " << name << " : register(t"
        << index << ");\n";
+  }
+}
+
+void ShaderGen::DeclareImage(std::stringstream& ss, const char* name, u32 index, bool is_float /* = false */,
+                             bool is_int /* = false */, bool is_unsigned /* = false */)
+{
+  if (m_glsl)
+  {
+    if (m_spirv)
+      ss << "layout(set = " << (m_has_uniform_buffer ? 2 : 1) << ", binding = " << index;
+    else
+      ss << "layout(binding = " << index;
+
+    ss << ", " << (is_int ? (is_unsigned ? "rgba8ui" : "rgba8i") : "rgba8") << ") "
+       << "uniform restrict coherent image2D " << name << ";\n";
+  }
+  else
+  {
+    ss << "RasterizerOrderedTexture2D<"
+       << (is_int ? (is_unsigned ? "uint4" : "int4") : (is_float ? "float4" : "unorm float4")) << "> " << name
+       << " : register(u" << index << ");\n";
   }
 }
 
@@ -497,10 +568,11 @@ void ShaderGen::DeclareVertexEntryPoint(
 
 void ShaderGen::DeclareFragmentEntryPoint(
   std::stringstream& ss, u32 num_color_inputs, u32 num_texcoord_inputs,
-  const std::initializer_list<std::pair<const char*, const char*>>& additional_inputs,
-  bool declare_fragcoord /* = false */, u32 num_color_outputs /* = 1 */, bool depth_output /* = false */,
-  bool msaa /* = false */, bool ssaa /* = false */, bool declare_sample_id /* = false */,
-  bool noperspective_color /* = false */, bool framebuffer_fetch /* = false */)
+  const std::initializer_list<std::pair<const char*, const char*>>& additional_inputs /* =  */,
+  bool declare_fragcoord /* = false */, u32 num_color_outputs /* = 1 */, bool dual_source_output /* = false */,
+  bool depth_output /* = false */, bool msaa /* = false */, bool ssaa /* = false */,
+  bool declare_sample_id /* = false */, bool noperspective_color /* = false */, bool feedback_loop /* = false */,
+  bool rov /* = false */)
 {
   if (m_glsl)
   {
@@ -555,25 +627,67 @@ void ShaderGen::DeclareFragmentEntryPoint(
       ss << "#define o_depth gl_FragDepth\n";
 
     const char* target_0_qualifier = "out";
-#ifdef ENABLE_OPENGL
-    if ((m_render_api == RenderAPI::OpenGL || m_render_api == RenderAPI::OpenGLES) && m_supports_framebuffer_fetch &&
-        framebuffer_fetch)
+
+    if (feedback_loop)
     {
-      if (GLAD_GL_EXT_shader_framebuffer_fetch)
+      Assert(!rov);
+
+#ifdef ENABLE_OPENGL
+      if (m_render_api == RenderAPI::OpenGL || m_render_api == RenderAPI::OpenGLES)
       {
-        target_0_qualifier = "inout";
-        ss << "#define LAST_FRAG_COLOR o_col0\n";
+        Assert(m_supports_framebuffer_fetch);
+        if (GLAD_GL_EXT_shader_framebuffer_fetch)
+        {
+          target_0_qualifier = "inout";
+          ss << "#define LAST_FRAG_COLOR o_col0\n";
+        }
+        else if (GLAD_GL_ARM_shader_framebuffer_fetch)
+        {
+          ss << "#define LAST_FRAG_COLOR gl_LastFragColorARM\n";
+        }
       }
-      else if (GLAD_GL_ARM_shader_framebuffer_fetch)
-      {
-        ss << "#define LAST_FRAG_COLOR gl_LastFragColorARM\n";
-      }
-    }
 #endif
+#ifdef ENABLE_VULKAN
+      if (m_render_api == RenderAPI::Vulkan)
+      {
+        ss << "layout(input_attachment_index = 0, set = 2, binding = 0) uniform "
+           << (msaa ? "subpassInputMS" : "subpassInput") << " u_input_rt; \n";
+        ss << "#define LAST_FRAG_COLOR " << (msaa ? "subpassLoad(u_input_rt, gl_SampleID)" : "subpassLoad(u_input_rt)")
+           << "\n";
+      }
+#endif
+#ifdef __APPLE__
+      if (m_render_api == RenderAPI::Metal)
+      {
+        if (m_supports_framebuffer_fetch)
+        {
+          // Set doesn't matter, because it's transformed to color0.
+          ss << "layout(input_attachment_index = 0, set = 2, binding = 0) uniform "
+             << (msaa ? "subpassInputMS" : "subpassInput") << " u_input_rt; \n";
+          ss << "#define LAST_FRAG_COLOR "
+             << (msaa ? "subpassLoad(u_input_rt, gl_SampleID)" : "subpassLoad(u_input_rt)") << "\n";
+        }
+        else
+        {
+          ss << "layout(set = 2, binding = 0) uniform " << (msaa ? "texture2DMS" : "texture2D") << " u_input_rt;\n";
+          ss << "#define LAST_FRAG_COLOR texelFetch(u_input_rt, int2(gl_FragCoord.xy), " << (msaa ? "gl_SampleID" : "0")
+             << ")\n";
+        }
+      }
+#endif
+    }
+    else if (rov)
+    {
+      ss << "layout(pixel_interlock_ordered) in;\n";
+      ss << "#define ROV_LOAD(name, coords) imageLoad(name, ivec2(coords))\n";
+      ss << "#define ROV_STORE(name, coords, value) imageStore(name, ivec2(coords), value)\n";
+      ss << "#define BEGIN_ROV_REGION beginInvocationInterlockARB()\n";
+      ss << "#define END_ROV_REGION endInvocationInterlockARB()\n";
+    }
 
     if (m_use_glsl_binding_layout)
     {
-      if (m_supports_dual_source_blend)
+      if (dual_source_output && m_supports_dual_source_blend && num_color_outputs > 1)
       {
         for (u32 i = 0; i < num_color_outputs; i++)
         {
@@ -583,8 +697,11 @@ void ShaderGen::DeclareFragmentEntryPoint(
       }
       else
       {
-        Assert(num_color_outputs <= 1);
-        ss << "layout(location = 0) " << target_0_qualifier << " float4 o_col0;\n";
+        for (u32 i = 0; i < num_color_outputs; i++)
+        {
+          ss << "layout(location = " << i << ") " << ((i == 0) ? target_0_qualifier : "out") << " float4 o_col" << i
+             << ";\n";
+        }
       }
     }
     else
@@ -599,65 +716,79 @@ void ShaderGen::DeclareFragmentEntryPoint(
   }
   else
   {
+    if (rov)
+    {
+      ss << "#define ROV_LOAD(name, coords) name[uint2(coords)]\n";
+      ss << "#define ROV_STORE(name, coords, value) name[uint2(coords)] = value\n";
+      ss << "#define BEGIN_ROV_REGION\n";
+      ss << "#define END_ROV_REGION\n";
+    }
+
     const char* qualifier = GetInterpolationQualifier(false, msaa, ssaa, false);
 
     ss << "void main(\n";
 
+    bool first = true;
     for (u32 i = 0; i < num_color_inputs; i++)
-      ss << "  " << qualifier << (noperspective_color ? "noperspective " : "") << "in float4 v_col" << i << " : COLOR"
-         << i << ",\n";
+    {
+      ss << (first ? "" : ",\n") << "  " << qualifier << (noperspective_color ? "noperspective " : "")
+         << "in float4 v_col" << i << " : COLOR" << i;
+      first = false;
+    }
 
     for (u32 i = 0; i < num_texcoord_inputs; i++)
-      ss << "  " << qualifier << "in float2 v_tex" << i << " : TEXCOORD" << i << ",\n";
+    {
+      ss << (first ? "" : ",\n") << "  " << qualifier << "in float2 v_tex" << i << " : TEXCOORD" << i;
+      first = false;
+    }
 
     u32 additional_counter = num_texcoord_inputs;
     for (const auto& [qualifiers, name] : additional_inputs)
     {
       const char* qualifier_to_use = (std::strlen(qualifiers) > 0) ? qualifiers : qualifier;
-      ss << "  " << qualifier_to_use << " in " << name << " : TEXCOORD" << additional_counter << ",\n";
+      ss << (first ? "" : ",\n") << "  " << qualifier_to_use << " in " << name << " : TEXCOORD" << additional_counter;
       additional_counter++;
+      first = false;
     }
 
     if (declare_fragcoord)
-      ss << "  in float4 v_pos : SV_Position,\n";
+    {
+      ss << (first ? "" : ",\n") << "  in float4 v_pos : SV_Position";
+      first = false;
+    }
     if (declare_sample_id)
-      ss << "  in uint f_sample_index : SV_SampleIndex,\n";
+    {
+      ss << (first ? "" : ",\n") << "  in uint f_sample_index : SV_SampleIndex";
+      first = false;
+    }
 
     if (depth_output)
     {
-      ss << "  out float o_depth : SV_Depth";
-      if (num_color_outputs > 0)
-        ss << ",\n";
-      else
-        ss << ")\n";
+      ss << (first ? "" : ",\n") << "  out float o_depth : SV_Depth";
+      first = false;
     }
-
     for (u32 i = 0; i < num_color_outputs; i++)
     {
-      ss << "  out float4 o_col" << i << " : SV_Target" << i;
-
-      if (i == (num_color_outputs - 1))
-        ss << ")\n";
-      else
-        ss << ",\n";
+      ss << (first ? "" : ",\n") << "  out float4 o_col" << i << " : SV_Target" << i;
+      first = false;
     }
+
+    ss << ")";
   }
 }
 
-std::string ShaderGen::GenerateScreenQuadVertexShader()
+std::string ShaderGen::GenerateScreenQuadVertexShader(float z /* = 0.0f */)
 {
   std::stringstream ss;
   WriteHeader(ss);
   DeclareVertexEntryPoint(ss, {}, 0, 1, {}, true);
-  ss << R"(
-{
-  v_tex0 = float2(float((v_id << 1) & 2u), float(v_id & 2u));
-  v_pos = float4(v_tex0 * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
-  #if API_OPENGL || API_OPENGL_ES || API_VULKAN
-    v_pos.y = -v_pos.y;
-  #endif
-}
-)";
+  ss << "{\n";
+  ss << "  v_tex0 = float2(float((v_id << 1) & 2u), float(v_id & 2u));\n";
+  ss << "  v_pos = float4(v_tex0 * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), " << std::fixed << z << "f, 1.0f);\n";
+  ss << "  #if API_OPENGL || API_OPENGL_ES || API_VULKAN\n";
+  ss << "    v_pos.y = -v_pos.y;\n";
+  ss << "  #endif\n";
+  ss << "}\n";
 
   return ss.str();
 }
@@ -687,12 +818,11 @@ std::string ShaderGen::GenerateFillFragmentShader()
   std::stringstream ss;
   WriteHeader(ss);
   DeclareUniformBuffer(ss, {"float4 u_fill_color"}, true);
-  DeclareFragmentEntryPoint(ss, 0, 1, {}, false, 1, true);
+  DeclareFragmentEntryPoint(ss, 0, 1);
 
   ss << R"(
 {
   o_col0 = u_fill_color;
-  o_depth = u_fill_color.a;
 }
 )";
 
@@ -705,7 +835,7 @@ std::string ShaderGen::GenerateCopyFragmentShader()
   WriteHeader(ss);
   DeclareUniformBuffer(ss, {"float4 u_src_rect"}, true);
   DeclareTexture(ss, "samp0", 0);
-  DeclareFragmentEntryPoint(ss, 0, 1, {}, false, 1);
+  DeclareFragmentEntryPoint(ss, 0, 1);
 
   ss << R"(
 {
@@ -742,7 +872,7 @@ std::string ShaderGen::GenerateImGuiFragmentShader()
   std::stringstream ss;
   WriteHeader(ss);
   DeclareTexture(ss, "samp0", 0);
-  DeclareFragmentEntryPoint(ss, 1, 1, {}, false, 1);
+  DeclareFragmentEntryPoint(ss, 1, 1);
 
   ss << R"(
 {

@@ -1,18 +1,25 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
-#include "common/timer.h"
+
 #include "settings.h"
-#include "timing_event.h"
 #include "types.h"
+
+#include "util/image.h"
+
 #include <memory>
 #include <optional>
 #include <string>
 
 class ByteStream;
 class CDImage;
+class Error;
+class SmallStringBase;
 class StateWrapper;
+class SocketMultiplexer;
+
+enum class GPUVSyncMode : u8;
 
 class Controller;
 
@@ -20,11 +27,10 @@ struct CheatCode;
 class CheatList;
 
 class GPUTexture;
-class GrowableMemoryByteStream;
+class MediaCapture;
 
 namespace BIOS {
 struct ImageInfo;
-struct Hash;
 } // namespace BIOS
 
 namespace GameDatabase {
@@ -42,15 +48,14 @@ struct SystemBootParameters
   std::string filename;
   std::string save_state;
   std::string override_exe;
-  std::string override_bios;
   std::optional<bool> override_fast_boot;
   std::optional<bool> override_fullscreen;
   std::optional<bool> override_start_paused;
   u32 media_playlist_index = 0;
   bool load_image_to_ram = false;
   bool force_software_renderer = false;
-  bool fast_forward_to_first_frame = false;
   bool disable_achievements_hardcore_mode = false;
+  bool start_media_capture = false;
 };
 
 struct SaveStateInfo
@@ -68,18 +73,10 @@ struct ExtendedSaveStateInfo
   std::string media_path;
   std::time_t timestamp;
 
-  u32 screenshot_width;
-  u32 screenshot_height;
-  std::vector<u32> screenshot_data;
+  RGBA8Image screenshot;
 };
 
 namespace System {
-
-enum : u32
-{
-  // 5 megabytes is sufficient for now, at the moment they're around 4.3MB, or 10.3MB with 8MB RAM enabled.
-  MAX_SAVE_STATE_SIZE = 11 * 1024 * 1024,
-};
 
 enum : s32
 {
@@ -101,21 +98,30 @@ enum class State
   Stopping,
 };
 
+enum class BootMode
+{
+  None,
+  FullBoot,
+  FastBoot,
+  BootEXE,
+  BootPSF,
+};
+
 using GameHash = u64;
 
 extern TickCount g_ticks_per_second;
 
 /// Returns true if the filename is a PlayStation executable we can inject.
-bool IsExeFileName(const std::string_view& path);
+bool IsExeFileName(std::string_view path);
 
 /// Returns true if the filename is a Portable Sound Format file we can uncompress/load.
-bool IsPsfFileName(const std::string_view& path);
+bool IsPsfFileName(std::string_view path);
 
 /// Returns true if the filename is one we can load.
-bool IsLoadableFilename(const std::string_view& path);
+bool IsLoadableFilename(std::string_view path);
 
 /// Returns true if the filename is a save state.
-bool IsSaveStateFilename(const std::string_view& path);
+bool IsSaveStateFilename(std::string_view path);
 
 /// Returns the preferred console type for a disc.
 ConsoleRegion GetConsoleRegionForDiscRegion(DiscRegion region);
@@ -125,23 +131,22 @@ bool ReadExecutableFromImage(CDImage* cdi, std::string* out_executable_name, std
 
 std::string GetGameHashId(GameHash hash);
 bool GetGameDetailsFromImage(CDImage* cdi, std::string* out_id, GameHash* out_hash);
-DiscRegion GetRegionForSerial(std::string_view serial);
+GameHash GetGameHashFromFile(const char* path);
+DiscRegion GetRegionForSerial(const std::string_view serial);
 DiscRegion GetRegionFromSystemArea(CDImage* cdi);
 DiscRegion GetRegionForImage(CDImage* cdi);
 DiscRegion GetRegionForExe(const char* path);
 DiscRegion GetRegionForPsf(const char* path);
-std::optional<DiscRegion> GetRegionForPath(const char* image_path);
 
 /// Returns the path for the game settings ini file for the specified serial.
-std::string GetGameSettingsPath(const std::string_view& game_serial);
+std::string GetGameSettingsPath(std::string_view game_serial);
 
 /// Returns the path for the input profile ini file with the specified name (may not exist).
-std::string GetInputProfilePath(const std::string_view& name);
+std::string GetInputProfilePath(std::string_view name);
 
 State GetState();
 void SetState(State new_state);
 bool IsRunning();
-bool IsExecutionInterrupted();
 bool IsPaused();
 bool IsShutdown();
 bool IsValid();
@@ -186,10 +191,7 @@ ALWAYS_INLINE_RELEASE TickCount UnscaleTicksToOverclock(TickCount ticks, TickCou
 TickCount GetMaxSliceTicks();
 void UpdateOverclock();
 
-/// Injects a PS-EXE into memory at its specified load location. If patch_loader is set, the BIOS will be patched to
-/// direct execution to this executable.
-bool InjectEXEFromBuffer(const void* buffer, u32 buffer_size, bool patch_loader = true);
-
+GlobalTicks GetGlobalTickCounter();
 u32 GetFrameNumber();
 u32 GetInternalFrameNumber();
 void IncrementInternalFrameNumber();
@@ -198,18 +200,17 @@ void FrameDone();
 const std::string& GetDiscPath();
 const std::string& GetGameSerial();
 const std::string& GetGameTitle();
+const std::string& GetExeOverride();
 const GameDatabase::Entry* GetGameDatabaseEntry();
 GameHash GetGameHash();
 bool IsRunningUnknownGame();
-bool WasFastBooted();
+BootMode GetBootMode();
 
 /// Returns the time elapsed in the current play session.
 u64 GetSessionPlayedTime();
 
 const BIOS::ImageInfo* GetBIOSImageInfo();
-const BIOS::Hash& GetBIOSHash();
 
-// TODO: Move to PerformanceMetrics
 static constexpr u32 NUM_FRAME_TIME_SAMPLES = 150;
 using FrameTimeHistory = std::array<float, NUM_FRAME_TIME_SAMPLES>;
 
@@ -228,6 +229,7 @@ float GetGPUUsage();
 float GetGPUAverageTime();
 const FrameTimeHistory& GetFrameTimeHistory();
 u32 GetFrameTimeHistoryPos();
+void FormatLatencyStats(SmallStringBase& str);
 
 /// Loads global settings (i.e. EmuConfig).
 void LoadSettings(bool display_osd_messages);
@@ -239,67 +241,44 @@ void ApplySettings(bool display_osd_messages);
 /// Reloads game specific settings, and applys any changes present.
 bool ReloadGameSettings(bool display_osd_messages);
 
-bool BootSystem(SystemBootParameters parameters);
+/// Reloads input sources.
+void ReloadInputSources();
+
+/// Reloads input bindings.
+void ReloadInputBindings();
+
+/// Reloads only controller settings.
+void UpdateControllerSettings();
+
+bool BootSystem(SystemBootParameters parameters, Error* error);
 void PauseSystem(bool paused);
 void ResetSystem();
 
-/// Loads state from the specified filename.
-bool LoadState(const char* filename);
-bool SaveState(const char* filename, bool backup_existing_save);
-bool SaveResumeState();
-
-/// Memory save states - only for internal use.
-struct MemorySaveState
-{
-  std::unique_ptr<GPUTexture> vram_texture;
-  std::unique_ptr<GrowableMemoryByteStream> state_stream;
-};
-bool SaveMemoryState(MemorySaveState* mss);
-bool LoadMemoryState(const MemorySaveState& mss);
-bool LoadStateFromStream(ByteStream* stream, bool update_display, bool ignore_media = false);
-bool SaveStateToStream(ByteStream* state, u32 screenshot_size = 256, u32 compression_method = 0,
-                       bool ignore_media = false);
+/// Loads state from the specified path.
+bool LoadState(const char* path, Error* error, bool save_undo_state);
+bool SaveState(const char* path, Error* error, bool backup_existing_save);
+bool SaveResumeState(Error* error);
 
 /// Runs the VM until the CPU execution is canceled.
 void Execute();
-
-/// Switches the GPU renderer by saving state, recreating the display window, and restoring state (if needed).
-void RecreateSystem();
-
-/// Recreates the GPU component, saving/loading the state so it is preserved. Call when the GPU renderer changes.
-bool RecreateGPU(GPURenderer renderer, bool force_recreate_device = false, bool update_display = true);
 
 void SingleStepCPU();
 
 /// Sets target emulation speed.
 float GetTargetSpeed();
+float GetAudioNominalRate();
 
 /// Adjusts the throttle frequency, i.e. how many times we should sleep per second.
 void SetThrottleFrequency(float frequency);
 
-/// Updates the throttle period, call when target emulation speed changes.
-void UpdateThrottlePeriod();
-void ResetThrottler();
-
-void UpdatePerformanceCounters();
-void ResetPerformanceCounters();
-
-/// Resets vsync/max present fps state.
-void UpdateDisplaySync();
-
 // Access controllers for simulating input.
 Controller* GetController(u32 slot);
-void UpdateControllers();
-void UpdateControllerSettings();
-void ResetControllers();
 void UpdateMemoryCardTypes();
-void UpdatePerGameMemoryCards();
 bool HasMemoryCard(u32 slot);
+bool IsSavingMemoryCards();
 
 /// Swaps memory cards in slot 1/2.
 void SwapMemoryCards();
-
-void UpdateMultitaps();
 
 /// Dumps RAM to a file.
 bool DumpRAM(const char* filename);
@@ -325,7 +304,7 @@ u32 GetMediaSubImageCount();
 u32 GetMediaSubImageIndex();
 
 /// Returns the index of the specified path in the playlist, or UINT32_MAX if it does not exist.
-u32 GetMediaSubImageIndexForTitle(const std::string_view& title);
+u32 GetMediaSubImageIndexForTitle(std::string_view title);
 
 /// Returns the path to the specified playlist index.
 std::string GetMediaSubImageTitle(u32 index);
@@ -344,9 +323,6 @@ void ApplyCheatCode(const CheatCode& code);
 
 /// Sets or clears the provided cheat list, applying every frame.
 void SetCheatList(std::unique_ptr<CheatList> cheats);
-
-/// Checks for settings changes, std::move() the old settings away for comparing beforehand.
-void CheckForSettingsChanges(const Settings& old_settings);
 
 /// Updates throttler.
 void UpdateSpeedLimiterState();
@@ -367,7 +343,7 @@ void DoFrameStep();
 void DoToggleCheats();
 
 /// Returns the path to a save state file. Specifying an index of -1 is the "resume" save state.
-std::string GetGameSaveStateFileName(const std::string_view& serial, s32 slot);
+std::string GetGameSaveStateFileName(std::string_view serial, s32 slot);
 
 /// Returns the path to a save state file. Specifying an index of -1 is the "resume" save state.
 std::string GetGlobalSaveStateFileName(s32 slot);
@@ -402,37 +378,42 @@ std::optional<ExtendedSaveStateInfo> GetExtendedSaveStateInfo(const char* path);
 /// Deletes save states for the specified game code. If resume is set, the resume state is deleted too.
 void DeleteSaveStates(const char* serial, bool resume);
 
+/// Returns the path to the memory card for the specified game, considering game settings.
+std::string GetGameMemoryCardPath(std::string_view serial, std::string_view path, u32 slot,
+                                  MemoryCardType* out_type = nullptr);
+
 /// Returns intended output volume considering fast forwarding.
 s32 GetAudioOutputVolume();
 void UpdateVolume();
 
-/// Returns true if currently dumping audio.
-bool IsDumpingAudio();
+/// Saves a screenshot to the specified file. If no file name is provided, one will be generated automatically.
+bool SaveScreenshot(const char* filename = nullptr, DisplayScreenshotMode mode = g_settings.display_screenshot_mode,
+                    DisplayScreenshotFormat format = g_settings.display_screenshot_format,
+                    u8 quality = g_settings.display_screenshot_quality, bool compress_on_thread = true);
 
-/// Starts dumping audio to a file. If no file name is provided, one will be generated automatically.
-bool StartDumpingAudio(const char* filename = nullptr);
+#ifndef __ANDROID__
 
-/// Stops dumping audio to file if it has been started.
-void StopDumpingAudio();
+/// Returns the path that a new media capture would be saved to by default. Safe to call from any thread.
+std::string GetNewMediaCapturePath(const std::string_view title, const std::string_view container);
 
-/// Saves a screenshot to the specified file. IF no file name is provided, one will be generated automatically.
-bool SaveScreenshot(const char* filename = nullptr, bool full_resolution = true, bool apply_aspect_ratio = true,
-                    bool compress_on_thread = true);
+/// Current media capture (if active).
+MediaCapture* GetMediaCapture();
 
-/// Loads the cheat list from the specified file.
-bool LoadCheatList(const char* filename);
+/// Media capture (video and/or audio). If no path is provided, one will be generated automatically.
+bool StartMediaCapture(std::string path = {});
+bool StartMediaCapture(std::string path, bool capture_video, bool capture_audio);
+void StopMediaCapture();
+
+#endif
 
 /// Loads the cheat list for the current game title from the user directory.
-bool LoadCheatListFromGameTitle();
+bool LoadCheatList();
 
 /// Loads the cheat list for the current game code from the built-in code database.
 bool LoadCheatListFromDatabase();
 
 /// Saves the current cheat list to the game title's file.
 bool SaveCheatList();
-
-/// Saves the current cheat list to the specified file.
-bool SaveCheatList(const char* filename);
 
 /// Deletes the cheat list, if present.
 bool DeleteCheatList();
@@ -441,7 +422,7 @@ bool DeleteCheatList();
 void ClearCheatList(bool save_to_file);
 
 /// Enables/disabled the specified cheat code.
-void SetCheatCodeState(u32 index, bool enabled, bool save_to_file);
+void SetCheatCodeState(u32 index, bool enabled);
 
 /// Immediately applies the specified cheat code.
 void ApplyCheatCode(u32 index);
@@ -453,7 +434,8 @@ void ToggleWidescreen();
 bool IsRunningAtNonStandardSpeed();
 
 /// Returns true if vsync should be used.
-bool ShouldUseVSync();
+GPUVSyncMode GetEffectiveVSyncMode();
+bool ShouldAllowPresentThrottle();
 
 /// Quick switch between software and hardware rendering.
 void ToggleSoftwareRendering();
@@ -466,29 +448,38 @@ void RequestDisplaySize(float scale = 0.0f);
 void HostDisplayResized();
 
 /// Renders the display.
-bool PresentDisplay(bool allow_skip_present);
+bool PresentDisplay(bool skip_present, bool explicit_present);
 void InvalidateDisplay();
 
 //////////////////////////////////////////////////////////////////////////
 // Memory Save States (Rewind and Runahead)
 //////////////////////////////////////////////////////////////////////////
-void CalculateRewindMemoryUsage(u32 num_saves, u64* ram_usage, u64* vram_usage);
+void CalculateRewindMemoryUsage(u32 num_saves, u32 resolution_scale, u64* ram_usage, u64* vram_usage);
 void ClearMemorySaveStates();
-void UpdateMemorySaveStateSettings();
-bool LoadRewindState(u32 skip_saves = 0, bool consume_state = true);
 void SetRunaheadReplayFlag();
 
-#ifdef ENABLE_DISCORD_PRESENCE
+/// Shared socket multiplexer, used by PINE/GDB/etc.
+SocketMultiplexer* GetSocketMultiplexer();
+void ReleaseSocketMultiplexer();
+
 /// Called when rich presence changes.
-void UpdateDiscordPresence();
-#endif
+void UpdateRichPresence(bool update_session_time);
 
 namespace Internal {
-/// Called on process startup.
-void ProcessStartup();
+/// Performs mandatory hardware checks.
+bool PerformEarlyHardwareChecks(Error* error);
+
+/// Called on process startup, as early as possible.
+bool ProcessStartup(Error* error);
 
 /// Called on process shutdown.
 void ProcessShutdown();
+
+/// Called on CPU thread initialization.
+bool CPUThreadInitialize(Error* error);
+
+/// Called on CPU thread shutdown.
+void CPUThreadShutdown();
 
 /// Polls input, updates subsystems which are present while paused/inactive.
 void IdlePollUpdate();
@@ -518,11 +509,18 @@ void OnSystemPaused();
 /// Called when the VM is resumed after being paused.
 void OnSystemResumed();
 
+/// Called when the pause state changes, or fullscreen UI opens.
+void OnIdleStateChanged();
+
 /// Called when performance metrics are updated, approximately once a second.
 void OnPerformanceCountersUpdated();
 
 /// Provided by the host; called when the running executable changes.
 void OnGameChanged(const std::string& disc_path, const std::string& game_serial, const std::string& game_name);
+
+/// Called when media capture starts/stops.
+void OnMediaCaptureStarted();
+void OnMediaCaptureStopped();
 
 /// Provided by the host; called once per frame at guest vsync.
 void PumpMessagesOnCPUThread();

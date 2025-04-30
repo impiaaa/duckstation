@@ -127,7 +127,7 @@ bool XInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex
   }
   if (!m_xinput_module)
   {
-    Log_ErrorPrintf("Failed to load XInput module.");
+    ERROR_LOG("Failed to load XInput module.");
     return false;
   }
 
@@ -146,7 +146,7 @@ bool XInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex
 
   if (!m_xinput_get_state || !m_xinput_set_state || !m_xinput_get_capabilities)
   {
-    Log_ErrorPrintf("Failed to get XInput function pointers.");
+    ERROR_LOG("Failed to get XInput function pointers.");
     return false;
   }
 
@@ -227,7 +227,7 @@ void XInputSource::PollEvents()
     else
     {
       if (result != ERROR_DEVICE_NOT_CONNECTED)
-        Log_WarningPrintf("XInputGetState(%u) failed: 0x%08X / 0x%08X", i, result, GetLastError());
+        WARNING_LOG("XInputGetState({}) failed: 0x{:08X} / 0x{:08X}", i, result, GetLastError());
 
       if (was_connected)
         HandleControllerDisconnection(i);
@@ -250,10 +250,9 @@ std::vector<std::pair<std::string, std::string>> XInputSource::EnumerateDevices(
   return ret;
 }
 
-std::optional<InputBindingKey> XInputSource::ParseKeyString(const std::string_view& device,
-                                                            const std::string_view& binding)
+std::optional<InputBindingKey> XInputSource::ParseKeyString(std::string_view device, std::string_view binding)
 {
-  if (!StringUtil::StartsWith(device, "XInput-") || binding.empty())
+  if (!device.starts_with("XInput-") || binding.empty())
     return std::nullopt;
 
   const std::optional<s32> player_id = StringUtil::FromChars<s32>(device.substr(7));
@@ -264,7 +263,7 @@ std::optional<InputBindingKey> XInputSource::ParseKeyString(const std::string_vi
   key.source_type = InputSourceType::XInput;
   key.source_index = static_cast<u32>(player_id.value());
 
-  if (StringUtil::EndsWith(binding, "Motor"))
+  if (binding.ends_with("Motor"))
   {
     key.source_subtype = InputSubclass::ControllerMotor;
     if (binding == "LargeMotor")
@@ -325,15 +324,15 @@ TinyString XInputSource::ConvertKeyToString(InputBindingKey key)
     if (key.source_subtype == InputSubclass::ControllerAxis && key.data < std::size(s_axis_names))
     {
       const char modifier = key.modifier == InputModifier::Negate ? '-' : '+';
-      ret.fmt("XInput-{}/{}{}", static_cast<u32>(key.source_index), modifier, s_axis_names[key.data]);
+      ret.format("XInput-{}/{}{}", static_cast<u32>(key.source_index), modifier, s_axis_names[key.data]);
     }
     else if (key.source_subtype == InputSubclass::ControllerButton && key.data < std::size(s_button_names))
     {
-      ret.fmt("XInput-{}/{}", static_cast<u32>(key.source_index), s_button_names[key.data]);
+      ret.format("XInput-{}/{}", static_cast<u32>(key.source_index), s_button_names[key.data]);
     }
     else if (key.source_subtype == InputSubclass::ControllerMotor)
     {
-      ret.fmt("XInput-{}/{}Motor", static_cast<u32>(key.source_index), key.data ? "Large" : "Small");
+      ret.format("XInput-{}/{}Motor", static_cast<u32>(key.source_index), key.data ? "Large" : "Small");
     }
   }
 
@@ -350,14 +349,14 @@ TinyString XInputSource::ConvertKeyToIcon(InputBindingKey key)
     {
       if (key.data < std::size(s_axis_icons) && key.modifier != InputModifier::FullAxis)
       {
-        ret.fmt("XInput-{}  {}", static_cast<u32>(key.source_index),
-                s_axis_icons[key.data][key.modifier == InputModifier::None]);
+        ret.format("XInput-{}  {}", static_cast<u32>(key.source_index),
+                   s_axis_icons[key.data][key.modifier == InputModifier::None]);
       }
     }
     else if (key.source_subtype == InputSubclass::ControllerButton)
     {
       if (key.data < std::size(s_button_icons))
-        ret.fmt("XInput-{}  {}", static_cast<u32>(key.source_index), s_button_icons[key.data]);
+        ret.format("XInput-{}  {}", static_cast<u32>(key.source_index), s_button_icons[key.data]);
     }
   }
 
@@ -384,9 +383,9 @@ std::vector<InputBindingKey> XInputSource::EnumerateMotors()
   return ret;
 }
 
-bool XInputSource::GetGenericBindingMapping(const std::string_view& device, GenericInputBindingMapping* mapping)
+bool XInputSource::GetGenericBindingMapping(std::string_view device, GenericInputBindingMapping* mapping)
 {
-  if (!StringUtil::StartsWith(device, "XInput-"))
+  if (!device.starts_with("XInput-"))
     return false;
 
   const std::optional<s32> player_id = StringUtil::FromChars<s32>(device.substr(7));
@@ -425,11 +424,11 @@ bool XInputSource::GetGenericBindingMapping(const std::string_view& device, Gene
 
 void XInputSource::HandleControllerConnection(u32 index)
 {
-  Log_InfoPrintf("XInput controller %u connected.", index);
+  INFO_LOG("XInput controller {} connected.", index);
 
   XINPUT_CAPABILITIES caps = {};
   if (m_xinput_get_capabilities(index, 0, &caps) != ERROR_SUCCESS)
-    Log_WarningPrintf("Failed to get XInput capabilities for controller %u", index);
+    WARNING_LOG("Failed to get XInput capabilities for controller {}", index);
 
   ControllerData& cd = m_controllers[index];
   cd.connected = true;
@@ -442,8 +441,13 @@ void XInputSource::HandleControllerConnection(u32 index)
 
 void XInputSource::HandleControllerDisconnection(u32 index)
 {
-  Log_InfoPrintf("XInput controller %u disconnected.", index);
-  InputManager::OnInputDeviceDisconnected(fmt::format("XInput-{}", index));
+  INFO_LOG("XInput controller {} disconnected.", index);
+
+  InputManager::OnInputDeviceDisconnected({{
+                                            .source_type = InputSourceType::XInput,
+                                            .source_index = index,
+                                          }},
+                                          fmt::format("XInput-{}", index));
   m_controllers[index] = {};
 }
 

@@ -1,15 +1,17 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
+
+#include "gpu_types.h"
+
 #include "common/heap_array.h"
 #include "common/threading.h"
-#include "gpu_types.h"
+
 #include <atomic>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
-#include <thread>
 
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -22,18 +24,18 @@ public:
   GPUBackend();
   virtual ~GPUBackend();
 
-  ALWAYS_INLINE u16* GetVRAM() const { return m_vram_ptr; }
   ALWAYS_INLINE const Threading::Thread* GetThread() const { return m_use_gpu_thread ? &m_gpu_thread : nullptr; }
 
   virtual bool Initialize(bool force_thread);
   virtual void UpdateSettings();
-  virtual void Reset(bool clear_vram);
+  virtual void Reset();
   virtual void Shutdown();
 
   GPUBackendFillVRAMCommand* NewFillVRAMCommand();
   GPUBackendUpdateVRAMCommand* NewUpdateVRAMCommand(u32 num_words);
   GPUBackendCopyVRAMCommand* NewCopyVRAMCommand();
   GPUBackendSetDrawingAreaCommand* NewSetDrawingAreaCommand();
+  GPUBackendUpdateCLUTCommand* NewUpdateCLUTCommand();
   GPUBackendDrawPolygonCommand* NewDrawPolygonCommand(u32 num_vertices);
   GPUBackendDrawRectangleCommand* NewDrawRectangleCommand();
   GPUBackendDrawLineCommand* NewDrawLineCommand(u32 num_vertices);
@@ -60,13 +62,10 @@ protected:
   virtual void DrawRectangle(const GPUBackendDrawRectangleCommand* cmd) = 0;
   virtual void DrawLine(const GPUBackendDrawLineCommand* cmd) = 0;
   virtual void FlushRender() = 0;
-  virtual void DrawingAreaChanged() = 0;
+  virtual void DrawingAreaChanged(const GPUDrawingArea& new_drawing_area, const GSVector4i clamped_drawing_area) = 0;
+  virtual void UpdateCLUT(GPUTexturePaletteReg reg, bool clut_is_8bit) = 0;
 
   void HandleCommand(const GPUBackendCommand* cmd);
-
-  u16* m_vram_ptr = nullptr;
-
-  Common::Rectangle<u32> m_drawing_area{};
 
   Threading::KernelSemaphore m_sync_semaphore;
   std::atomic_bool m_gpu_thread_sleeping{false};
@@ -86,8 +85,8 @@ protected:
   };
 
   FixedHeapArray<u8, COMMAND_QUEUE_SIZE> m_command_fifo_data;
-  alignas(64) std::atomic<u32> m_command_fifo_read_ptr{0};
-  alignas(64) std::atomic<u32> m_command_fifo_write_ptr{0};
+  alignas(HOST_CACHE_LINE_SIZE) std::atomic<u32> m_command_fifo_read_ptr{0};
+  alignas(HOST_CACHE_LINE_SIZE) std::atomic<u32> m_command_fifo_write_ptr{0};
 };
 
 #ifdef _MSC_VER

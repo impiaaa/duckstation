@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
@@ -9,12 +9,14 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include <QtCore/QDateTime>
 #include <QtCore/QStringList>
 #include <QtCore/QTimer>
 #include <QtWidgets/QDialog>
 
+class Error;
 class HTTPDownloader;
 
 class EmuThread;
@@ -31,6 +33,8 @@ public:
   static QStringList getTagList();
   static std::string getDefaultTag();
   static void cleanupAfterUpdate();
+  static bool isOfficialBuild();
+  static bool warnAboutUnofficialBuild();
 
 Q_SIGNALS:
   void updateCheckCompleted();
@@ -47,7 +51,7 @@ private Q_SLOTS:
   void remindMeLaterClicked();
 
 private:
-  void reportError(const char* msg, ...);
+  void reportError(const std::string_view msg);
 
   bool ensureHttpReady();
 
@@ -60,12 +64,12 @@ private:
   void queueGetChanges();
   void getChangesComplete(s32 status_code, std::vector<u8> response);
 
+  bool processUpdate(const std::vector<u8>& update_data);
+
 #ifdef _WIN32
-  bool processUpdate(const std::vector<u8>& update_data);
-  bool extractUpdater(const QString& zip_path, const QString& destination_path);
-  bool doUpdate(const QString& zip_path, const QString& updater_path, const QString& destination_path);
-#else
-  bool processUpdate(const std::vector<u8>& update_data);
+  bool doesUpdaterNeedElevation(const std::string& application_dir) const;
+  bool doUpdate(const std::string& application_dir, const std::string& zip_path, const std::string& updater_path);
+  bool extractUpdater(const std::string& zip_path, const std::string& destination_path, Error* error);
 #endif
 
   Ui::AutoUpdaterDialog m_ui;

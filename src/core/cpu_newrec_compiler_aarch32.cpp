@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "cpu_newrec_compiler_aarch32.h"
@@ -7,10 +7,10 @@
 #include "common/log.h"
 #include "common/string_util.h"
 #include "cpu_core_private.h"
+#include "cpu_pgxp.h"
 #include "cpu_recompiler_thunks.h"
 #include "cpu_recompiler_types.h"
 #include "gte.h"
-#include "pgxp.h"
 #include "settings.h"
 #include "timing_event.h"
 #include <limits>
@@ -28,6 +28,7 @@ using namespace vixl::aarch32;
 
 using CPU::Recompiler::armEmitCall;
 using CPU::Recompiler::armEmitCondBranch;
+using CPU::Recompiler::armEmitFarLoad;
 using CPU::Recompiler::armEmitJmp;
 using CPU::Recompiler::armEmitMov;
 using CPU::Recompiler::armGetJumpTrampoline;
@@ -81,8 +82,8 @@ void CPU::NewRec::AArch32Compiler::Reset(CodeCache::Block* block, u8* code_buffe
   {
     HostRegAlloc& ra = m_host_regs[i];
 
-    if (i == RARG1.GetCode() || i == RARG1.GetCode() || i == RARG2.GetCode() || i == RARG3.GetCode() ||
-        i == RSCRATCH.GetCode() || i == RSTATE.GetCode() || i == membase_idx || i == sp.GetCode() || i == pc.GetCode())
+    if (i == RARG1.GetCode() || i == RARG2.GetCode() || i == RARG3.GetCode() || i == RSCRATCH.GetCode() ||
+        i == RSTATE.GetCode() || i == membase_idx || i == sp.GetCode() || i == pc.GetCode())
     {
       continue;
     }
@@ -284,8 +285,8 @@ bool foo(const void* a, const void* b)
   while (size >= 4)
   {
     armAsm->ldr(RARG3, MemOperand(RARG1, offset));
-    armAsm->ldr(RARG4, MemOperand(RARG2, offset));
-    armAsm->cmp(RARG3, RARG4);
+    armAsm->ldr(RSCRATCH, MemOperand(RARG2, offset));
+    armAsm->cmp(RARG3, RSCRATCH);
     armAsm->b(ne, &block_changed);
     offset += 4;
     size -= 4;
@@ -302,13 +303,25 @@ bool foo(const void* a, const void* b)
 
 void CPU::NewRec::AArch32Compiler::GenerateICacheCheckAndUpdate()
 {
-  if (GetSegmentForAddress(m_block->pc) >= Segment::KSEG1)
+  if (!m_block->HasFlag(CodeCache::BlockFlags::IsUsingICache))
   {
-    armAsm->ldr(RARG1, PTR(&g_state.pending_ticks));
-    armAsm->add(RARG1, RARG1, armCheckAddSubConstant(static_cast<u32>(m_block->uncached_fetch_ticks)));
-    armAsm->str(RARG1, PTR(&g_state.pending_ticks));
+    if (m_block->HasFlag(CodeCache::BlockFlags::NeedsDynamicFetchTicks))
+    {
+      armEmitFarLoad(armAsm, RARG2, GetFetchMemoryAccessTimePtr());
+      armAsm->ldr(RARG1, PTR(&g_state.pending_ticks));
+      armEmitMov(armAsm, RARG3, m_block->size);
+      armAsm->mul(RARG2, RARG2, RARG3);
+      armAsm->add(RARG1, RARG1, RARG2);
+      armAsm->str(RARG1, PTR(&g_state.pending_ticks));
+    }
+    else
+    {
+      armAsm->ldr(RARG1, PTR(&g_state.pending_ticks));
+      armAsm->add(RARG1, RARG1, armCheckAddSubConstant(static_cast<u32>(m_block->uncached_fetch_ticks)));
+      armAsm->str(RARG1, PTR(&g_state.pending_ticks));
+    }
   }
-  else
+  else if (m_block->icache_line_count > 0)
   {
     const auto& ticks_reg = RARG1;
     const auto& current_tag_reg = RARG2;
@@ -325,7 +338,7 @@ void CPU::NewRec::AArch32Compiler::GenerateICacheCheckAndUpdate()
         continue;
 
       const u32 line = GetICacheLine(current_pc);
-      const u32 offset = offsetof(State, icache_tags) + (line * sizeof(u32));
+      const u32 offset = OFFSETOF(State, icache_tags) + (line * sizeof(u32));
 
       Label cache_hit;
       armAsm->ldr(existing_tag_reg, MemOperand(RSTATE, offset));
@@ -349,9 +362,9 @@ void CPU::NewRec::AArch32Compiler::GenerateCall(const void* func, s32 arg1reg /*
 {
   if (arg1reg >= 0 && arg1reg != static_cast<s32>(RARG1.GetCode()))
     armAsm->mov(RARG1, Register(arg1reg));
-  if (arg1reg >= 0 && arg2reg != static_cast<s32>(RARG2.GetCode()))
+  if (arg2reg >= 0 && arg2reg != static_cast<s32>(RARG2.GetCode()))
     armAsm->mov(RARG2, Register(arg2reg));
-  if (arg1reg >= 0 && arg3reg != static_cast<s32>(RARG3.GetCode()))
+  if (arg3reg >= 0 && arg3reg != static_cast<s32>(RARG3.GetCode()))
     armAsm->mov(RARG3, Register(arg3reg));
   EmitCall(func);
 }
@@ -438,7 +451,7 @@ void CPU::NewRec::AArch32Compiler::EndAndLinkBlock(const std::optional<u32>& new
     if (newpc.value() == m_block->pc)
     {
       // Special case: ourselves! No need to backlink then.
-      Log_DebugPrintf("Linking block at %08X to self", m_block->pc);
+      DEBUG_LOG("Linking block at {:08X} to self", m_block->pc);
       armEmitJmp(armAsm, armAsm->GetBuffer()->GetStartAddress<const void*>(), true);
     }
     else
@@ -575,7 +588,7 @@ void CPU::NewRec::AArch32Compiler::MoveSToReg(const vixl::aarch32::Register& dst
   }
   else
   {
-    Log_WarningPrintf("Hit memory path in MoveSToReg() for %s", GetRegName(cf.MipsS()));
+    WARNING_LOG("Hit memory path in MoveSToReg() for {}", GetRegName(cf.MipsS()));
     armAsm->ldr(dst, PTR(&g_state.regs.r[cf.mips_s]));
   }
 }
@@ -594,7 +607,7 @@ void CPU::NewRec::AArch32Compiler::MoveTToReg(const vixl::aarch32::Register& dst
   }
   else
   {
-    Log_WarningPrintf("Hit memory path in MoveTToReg() for %s", GetRegName(cf.MipsT()));
+    WARNING_LOG("Hit memory path in MoveTToReg() for {}", GetRegName(cf.MipsT()));
     armAsm->ldr(dst, PTR(&g_state.regs.r[cf.mips_t]));
   }
 }
@@ -654,7 +667,7 @@ void CPU::NewRec::AArch32Compiler::Flush(u32 flags)
     // TODO: make it a function?
     armAsm->ldrb(RARG1, PTR(&g_state.load_delay_reg));
     armAsm->ldr(RARG2, PTR(&g_state.load_delay_value));
-    EmitMov(RSCRATCH, offsetof(CPU::State, regs.r[0]));
+    EmitMov(RSCRATCH, OFFSETOF(CPU::State, regs.r[0]));
     armAsm->add(RARG1, RSCRATCH, vixl::aarch32::Operand(RARG1, LSL, 2));
     armAsm->str(RARG2, MemOperand(RSTATE, RARG1));
     EmitMov(RSCRATCH, static_cast<u8>(Reg::count));
@@ -721,9 +734,11 @@ void CPU::NewRec::AArch32Compiler::Flush(u32 flags)
 
 void CPU::NewRec::AArch32Compiler::Compile_Fallback()
 {
+  WARNING_LOG("Compiling instruction fallback at PC=0x{:08X}, instruction=0x{:08X}", iinfo->pc, inst->bits);
+
   Flush(FLUSH_FOR_INTERPRETER);
 
-  EmitCall(armAsm, reinterpret_cast<const void*>(&CPU::Recompiler::Thunks::InterpretInstruction));
+  EmitCall(reinterpret_cast<const void*>(&CPU::Recompiler::Thunks::InterpretInstruction));
 
   // TODO: make me less garbage
   // TODO: this is wrong, it flushes the load delay on the same cycle when we return.
@@ -1576,6 +1591,8 @@ void CPU::NewRec::AArch32Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize
                                                const std::optional<VirtualMemoryAddress>& address)
 {
   DebugAssert(size == MemoryAccessSize::Word && !sign);
+
+  const Register addr = Register(AllocateTempHostReg(HR_CALLEE_SAVED));
   FlushForLoadStore(address, false, use_fastmem);
 
   // TODO: if address is constant, this can be simplified..
@@ -1585,9 +1602,8 @@ void CPU::NewRec::AArch32Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize
     UpdateLoadDelay();
 
   // We'd need to be careful here if we weren't overwriting it..
-  const Register addr = Register(AllocateHostReg(HR_CALLEE_SAVED, HR_TYPE_TEMP));
   ComputeLoadStoreAddressArg(cf, address, addr);
-  armAsm->and_(RARG1, addr, armCheckLogicalConstant(~0x3u));
+  armAsm->bic(RARG1, addr, 3);
   GenerateLoad(RARG1, MemoryAccessSize::Word, false, use_fastmem, []() { return RRET; });
 
   if (inst->r.rt == Reg::zero)
@@ -1636,9 +1652,9 @@ void CPU::NewRec::AArch32Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize
   {
     // const u32 mask = UINT32_C(0x00FFFFFF) >> shift;
     // new_value = (value & mask) | (RWRET << (24 - shift));
-    EmitMov(addr, 0xFFFFFFu);
-    armAsm->lsr(addr, addr, RARG2);
-    armAsm->and_(value, value, addr);
+    EmitMov(RSCRATCH, 0xFFFFFFu);
+    armAsm->lsr(RSCRATCH, RSCRATCH, RARG2);
+    armAsm->and_(value, value, RSCRATCH);
     armAsm->lsl(RRET, RRET, RARG3);
     armAsm->orr(value, value, RRET);
   }
@@ -1647,27 +1663,40 @@ void CPU::NewRec::AArch32Compiler::Compile_lwx(CompileFlags cf, MemoryAccessSize
     // const u32 mask = UINT32_C(0xFFFFFF00) << (24 - shift);
     // new_value = (value & mask) | (RWRET >> shift);
     armAsm->lsr(RRET, RRET, RARG2);
-    EmitMov(addr, 0xFFFFFF00u);
-    armAsm->lsl(addr, addr, RARG3);
-    armAsm->and_(value, value, addr);
+    EmitMov(RSCRATCH, 0xFFFFFF00u);
+    armAsm->lsl(RSCRATCH, RSCRATCH, RARG3);
+    armAsm->and_(value, value, RSCRATCH);
     armAsm->orr(value, value, RRET);
   }
 
   FreeHostReg(addr.GetCode());
+
+  if (g_settings.gpu_pgxp_enable)
+  {
+    Flush(FLUSH_FOR_C_CALL);
+    armAsm->mov(RARG3, value);
+    armAsm->bic(RARG2, addr, 3);
+    EmitMov(RARG1, inst->bits);
+    EmitCall(reinterpret_cast<const void*>(&PGXP::CPU_LW));
+  }
 }
 
 void CPU::NewRec::AArch32Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSize size, bool sign, bool use_fastmem,
                                                 const std::optional<VirtualMemoryAddress>& address)
 {
+  const u32 index = static_cast<u32>(inst->r.rt.GetValue());
+  const auto [ptr, action] = GetGTERegisterPointer(index, true);
   const std::optional<Register> addr_reg = g_settings.gpu_pgxp_enable ?
                                              std::optional<Register>(Register(AllocateTempHostReg(HR_CALLEE_SAVED))) :
                                              std::optional<Register>();
   FlushForLoadStore(address, false, use_fastmem);
   const Register addr = ComputeLoadStoreAddressArg(cf, address, addr_reg);
-  GenerateLoad(addr, MemoryAccessSize::Word, false, use_fastmem, []() { return RRET; });
+  const Register value = GenerateLoad(addr, MemoryAccessSize::Word, false, use_fastmem, [this, action = action]() {
+    return (action == GTERegisterAccessAction::CallHandler && g_settings.gpu_pgxp_enable) ?
+             Register(AllocateTempHostReg(HR_CALLEE_SAVED)) :
+             RRET;
+  });
 
-  const u32 index = static_cast<u32>(inst->r.rt.GetValue());
-  const auto [ptr, action] = GetGTERegisterPointer(index, true);
   switch (action)
   {
     case GTERegisterAccessAction::Ignore:
@@ -1677,28 +1706,28 @@ void CPU::NewRec::AArch32Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSiz
 
     case GTERegisterAccessAction::Direct:
     {
-      armAsm->str(RRET, PTR(ptr));
+      armAsm->str(value, PTR(ptr));
       break;
     }
 
     case GTERegisterAccessAction::SignExtend16:
     {
-      armAsm->sxth(RRET, RRET);
-      armAsm->str(RRET, PTR(ptr));
+      armAsm->sxth(RARG3, value);
+      armAsm->str(RARG3, PTR(ptr));
       break;
     }
 
     case GTERegisterAccessAction::ZeroExtend16:
     {
-      armAsm->uxth(RRET, RRET);
-      armAsm->str(RRET, PTR(ptr));
+      armAsm->uxth(RARG3, value);
+      armAsm->str(RARG3, PTR(ptr));
       break;
     }
 
     case GTERegisterAccessAction::CallHandler:
     {
       Flush(FLUSH_FOR_C_CALL);
-      armAsm->mov(RARG2, RRET);
+      armAsm->mov(RARG2, value);
       EmitMov(RARG1, index);
       EmitCall(reinterpret_cast<const void*>(&GTE::WriteRegister));
       break;
@@ -1709,12 +1738,12 @@ void CPU::NewRec::AArch32Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSiz
       // SXY0 <- SXY1
       // SXY1 <- SXY2
       // SXY2 <- SXYP
-      DebugAssert(RRET.GetCode() != RARG2.GetCode() && RRET.GetCode() != RARG3.GetCode());
+      DebugAssert(value.GetCode() != RARG2.GetCode() && value.GetCode() != RARG3.GetCode());
       armAsm->ldr(RARG2, PTR(&g_state.gte_regs.SXY1[0]));
       armAsm->ldr(RARG3, PTR(&g_state.gte_regs.SXY2[0]));
       armAsm->str(RARG2, PTR(&g_state.gte_regs.SXY0[0]));
       armAsm->str(RARG3, PTR(&g_state.gte_regs.SXY1[0]));
-      armAsm->str(RRET, PTR(&g_state.gte_regs.SXY2[0]));
+      armAsm->str(value, PTR(&g_state.gte_regs.SXY2[0]));
       break;
     }
 
@@ -1728,11 +1757,13 @@ void CPU::NewRec::AArch32Compiler::Compile_lwc2(CompileFlags cf, MemoryAccessSiz
   if (g_settings.gpu_pgxp_enable)
   {
     Flush(FLUSH_FOR_C_CALL);
-    armAsm->mov(RARG3, RRET);
+    armAsm->mov(RARG3, value);
+    if (value.GetCode() != RRET.GetCode())
+      FreeHostReg(value.GetCode());
     armAsm->mov(RARG2, addr);
+    FreeHostReg(addr_reg.value().GetCode());
     EmitMov(RARG1, inst->bits);
     EmitCall(reinterpret_cast<const void*>(&PGXP::CPU_LWC2));
-    FreeHostReg(addr_reg.value().GetCode());
   }
 }
 
@@ -1768,28 +1799,29 @@ void CPU::NewRec::AArch32Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize
                                                const std::optional<VirtualMemoryAddress>& address)
 {
   DebugAssert(size == MemoryAccessSize::Word && !sign);
+
+  // TODO: this can take over rt's value if it's no longer needed
+  // NOTE: can't trust T in cf because of the alloc
+  const Register addr = Register(AllocateTempHostReg(HR_CALLEE_SAVED));
+  const Register value = g_settings.gpu_pgxp_enable ? Register(AllocateTempHostReg(HR_CALLEE_SAVED)) : RARG2;
+  if (g_settings.gpu_pgxp_enable)
+    MoveMIPSRegToReg(value, inst->r.rt);
+
   FlushForLoadStore(address, true, use_fastmem);
 
   // TODO: if address is constant, this can be simplified..
   // We'd need to be careful here if we weren't overwriting it..
-  const Register addr = Register(AllocateHostReg(HR_CALLEE_SAVED, HR_TYPE_TEMP));
   ComputeLoadStoreAddressArg(cf, address, addr);
-  armAsm->and_(RARG1, addr, armCheckLogicalConstant(~0x3u));
+  armAsm->bic(RARG1, addr, 3);
   GenerateLoad(RARG1, MemoryAccessSize::Word, false, use_fastmem, []() { return RRET; });
-
-  // TODO: this can take over rt's value if it's no longer needed
-  // NOTE: can't trust T in cf because of the flush
-  const Reg rt = inst->r.rt;
-  const Register value = RARG2;
-  if (const std::optional<u32> rtreg = CheckHostReg(HR_MODE_READ, HR_TYPE_CPU_REG, rt); rtreg.has_value())
-    armAsm->mov(value, Register(rtreg.value()));
-  else if (HasConstantReg(rt))
-    EmitMov(value, GetConstantRegU32(rt));
-  else
-    armAsm->ldr(value, MipsPtr(rt));
 
   armAsm->and_(RSCRATCH, addr, 3);
   armAsm->lsl(RSCRATCH, RSCRATCH, 3); // *8
+  armAsm->bic(addr, addr, 3);
+
+  // Need to load down here for PGXP-off, because it's in a volatile reg that can get overwritten by flush.
+  if (!g_settings.gpu_pgxp_enable)
+    MoveMIPSRegToReg(value, inst->r.rt);
 
   if (inst->op == InstructionOp::swl)
   {
@@ -1818,24 +1850,42 @@ void CPU::NewRec::AArch32Compiler::Compile_swx(CompileFlags cf, MemoryAccessSize
     armAsm->orr(value, value, RRET);
   }
 
-  FreeHostReg(addr.GetCode());
+  if (!g_settings.gpu_pgxp_enable)
+  {
+    GenerateStore(addr, value, MemoryAccessSize::Word, use_fastmem);
+    FreeHostReg(addr.GetCode());
+  }
+  else
+  {
+    GenerateStore(addr, value, MemoryAccessSize::Word, use_fastmem);
 
-  armAsm->and_(RARG1, addr, armCheckLogicalConstant(~0x3u));
-  GenerateStore(RARG1, value, MemoryAccessSize::Word, use_fastmem);
+    Flush(FLUSH_FOR_C_CALL);
+    armAsm->mov(RARG3, value);
+    FreeHostReg(value.GetCode());
+    armAsm->mov(RARG2, addr);
+    FreeHostReg(addr.GetCode());
+    EmitMov(RARG1, inst->bits);
+    EmitCall(reinterpret_cast<const void*>(&PGXP::CPU_SW));
+  }
 }
 
 void CPU::NewRec::AArch32Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSize size, bool sign, bool use_fastmem,
                                                 const std::optional<VirtualMemoryAddress>& address)
 {
-  FlushForLoadStore(address, true, use_fastmem);
-
   const u32 index = static_cast<u32>(inst->r.rt.GetValue());
   const auto [ptr, action] = GetGTERegisterPointer(index, false);
+  const Register addr = (g_settings.gpu_pgxp_enable || action == GTERegisterAccessAction::CallHandler) ?
+                          Register(AllocateTempHostReg(HR_CALLEE_SAVED)) :
+                          RARG1;
+  const Register data = g_settings.gpu_pgxp_enable ? Register(AllocateTempHostReg(HR_CALLEE_SAVED)) : RARG2;
+  FlushForLoadStore(address, true, use_fastmem);
+  ComputeLoadStoreAddressArg(cf, address, addr);
+
   switch (action)
   {
     case GTERegisterAccessAction::Direct:
     {
-      armAsm->ldr(RARG2, PTR(ptr));
+      armAsm->ldr(data, PTR(ptr));
     }
     break;
 
@@ -1845,7 +1895,7 @@ void CPU::NewRec::AArch32Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSiz
       Flush(FLUSH_FOR_C_CALL);
       EmitMov(RARG1, index);
       EmitCall(reinterpret_cast<const void*>(&GTE::ReadRegister));
-      armAsm->mov(RARG2, RRET);
+      armAsm->mov(data, RRET);
     }
     break;
 
@@ -1856,29 +1906,23 @@ void CPU::NewRec::AArch32Compiler::Compile_swc2(CompileFlags cf, MemoryAccessSiz
     break;
   }
 
-  // PGXP makes this a giant pain.
+  GenerateStore(addr, data, size, use_fastmem);
   if (!g_settings.gpu_pgxp_enable)
   {
-    const Register addr = ComputeLoadStoreAddressArg(cf, address);
-    GenerateStore(addr, RARG2, size, use_fastmem);
-    return;
+    if (addr.GetCode() != RARG1.GetCode())
+      FreeHostReg(addr.GetCode());
   }
-
-  // TODO: This can be simplified because we don't need to validate in PGXP..
-  const Register addr_reg = Register(AllocateTempHostReg(HR_CALLEE_SAVED));
-  const Register data_backup = Register(AllocateTempHostReg(HR_CALLEE_SAVED));
-  FlushForLoadStore(address, true, use_fastmem);
-  ComputeLoadStoreAddressArg(cf, address, addr_reg);
-  armAsm->mov(data_backup, RARG2);
-  GenerateStore(addr_reg, RARG2, size, use_fastmem);
-
-  Flush(FLUSH_FOR_C_CALL);
-  armAsm->mov(RARG3, data_backup);
-  armAsm->mov(RARG2, addr_reg);
-  EmitMov(RARG1, inst->bits);
-  EmitCall(reinterpret_cast<const void*>(&PGXP::CPU_SWC2));
-  FreeHostReg(addr_reg.GetCode());
-  FreeHostReg(data_backup.GetCode());
+  else
+  {
+    // TODO: This can be simplified because we don't need to validate in PGXP..
+    Flush(FLUSH_FOR_C_CALL);
+    armAsm->mov(RARG3, data);
+    FreeHostReg(data.GetCode());
+    armAsm->mov(RARG2, addr);
+    FreeHostReg(addr.GetCode());
+    EmitMov(RARG1, inst->bits);
+    EmitCall(reinterpret_cast<const void*>(&PGXP::CPU_SWC2));
+  }
 }
 
 void CPU::NewRec::AArch32Compiler::Compile_mtc0(CompileFlags cf)
@@ -1898,7 +1942,7 @@ void CPU::NewRec::AArch32Compiler::Compile_mtc0(CompileFlags cf)
   if (mask == 0)
   {
     // if it's a read-only register, ignore
-    Log_DebugPrintf("Ignoring write to read-only cop0 reg %u", static_cast<u32>(reg));
+    DEBUG_LOG("Ignoring write to read-only cop0 reg {}", static_cast<u32>(reg));
     return;
   }
 
@@ -1955,7 +1999,7 @@ void CPU::NewRec::AArch32Compiler::Compile_mtc0(CompileFlags cf)
   if (reg == Cop0Reg::DCIC && g_settings.cpu_recompiler_memory_exceptions)
   {
     // TODO: DCIC handling for debug breakpoints
-    Log_WarningPrintf("TODO: DCIC handling for debug breakpoints");
+    WARNING_LOG("TODO: DCIC handling for debug breakpoints");
   }
 }
 

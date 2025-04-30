@@ -5,10 +5,8 @@
     <ClInclude Include="types.h" />
     <ClInclude Include="fifo_queue.h" />
     <ClInclude Include="heap_array.h" />
-    <ClInclude Include="rectangle.h" />
     <ClInclude Include="log.h" />
     <ClInclude Include="small_string.h" />
-    <ClInclude Include="byte_stream.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="assert.h" />
     <ClInclude Include="align.h" />
@@ -19,7 +17,6 @@
     <ClInclude Include="progress_callback.h" />
     <ClInclude Include="bitutils.h" />
     <ClInclude Include="dimensional_array.h" />
-    <ClInclude Include="image.h" />
     <ClInclude Include="minizip_helpers.h" />
     <ClInclude Include="thirdparty\StackWalker.h">
       <Filter>thirdparty</Filter>
@@ -42,10 +39,19 @@
     <ClInclude Include="memmap.h" />
     <ClInclude Include="intrin.h" />
     <ClInclude Include="perf_scope.h" />
+    <ClInclude Include="thirdparty\SmallVector.h">
+      <Filter>thirdparty</Filter>
+    </ClInclude>
+    <ClInclude Include="dynamic_library.h" />
+    <ClInclude Include="binary_reader_writer.h" />
+    <ClInclude Include="gsvector_sse.h" />
+    <ClInclude Include="gsvector_neon.h" />
+    <ClInclude Include="gsvector.h" />
+    <ClInclude Include="gsvector_formatter.h" />
+    <ClInclude Include="gsvector_nosimd.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="small_string.cpp" />
-    <ClCompile Include="byte_stream.cpp" />
     <ClCompile Include="log.cpp" />
     <ClCompile Include="timer.cpp" />
     <ClCompile Include="assert.cpp" />
@@ -53,8 +59,6 @@
     <ClCompile Include="string_util.cpp" />
     <ClCompile Include="md5_digest.cpp" />
     <ClCompile Include="progress_callback.cpp" />
-    <ClCompile Include="image.cpp" />
-    <ClCompile Include="minizip_helpers.cpp" />
     <ClCompile Include="thirdparty\StackWalker.cpp">
       <Filter>thirdparty</Filter>
     </ClCompile>
@@ -67,9 +71,19 @@
     <ClCompile Include="fastjmp.cpp" />
     <ClCompile Include="memmap.cpp" />
     <ClCompile Include="perf_scope.cpp" />
+    <ClCompile Include="thirdparty\SmallVector.cpp">
+      <Filter>thirdparty</Filter>
+    </ClCompile>
+    <ClCompile Include="dynamic_library.cpp" />
+    <ClCompile Include="binary_reader_writer.cpp" />
+    <ClCompile Include="gsvector.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="bitfield.natvis" />
+    <Natvis Include="thirdparty\llvm.natvis">
+      <Filter>thirdparty</Filter>
+    </Natvis>
+    <Natvis Include="gsvector.natvis" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="thirdparty">

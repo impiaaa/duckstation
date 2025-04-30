@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "vulkan_pipeline.h"
-#include "spirv_compiler.h"
 #include "vulkan_builders.h"
 #include "vulkan_device.h"
 
 #include "common/assert.h"
+#include "common/error.h"
 #include "common/log.h"
 
 Log_SetChannel(VulkanDevice);
@@ -20,12 +20,13 @@ VulkanShader::~VulkanShader()
   vkDestroyShaderModule(VulkanDevice::GetInstance().GetVulkanDevice(), m_module, nullptr);
 }
 
-void VulkanShader::SetDebugName(const std::string_view& name)
+void VulkanShader::SetDebugName(std::string_view name)
 {
   Vulkan::SetObjectName(VulkanDevice::GetInstance().GetVulkanDevice(), m_module, name);
 }
 
-std::unique_ptr<GPUShader> VulkanDevice::CreateShaderFromBinary(GPUShaderStage stage, std::span<const u8> data)
+std::unique_ptr<GPUShader> VulkanDevice::CreateShaderFromBinary(GPUShaderStage stage, std::span<const u8> data,
+                                                                Error* error)
 {
   VkShaderModule mod;
 
@@ -35,45 +36,45 @@ std::unique_ptr<GPUShader> VulkanDevice::CreateShaderFromBinary(GPUShaderStage s
   if (res != VK_SUCCESS)
   {
     LOG_VULKAN_ERROR(res, "vkCreateShaderModule() failed: ");
+    Error::SetStringFmt(error, "vkCreateShaderModule() failed: {}", Vulkan::VkResultToString(res));
     return {};
   }
 
   return std::unique_ptr<GPUShader>(new VulkanShader(stage, mod));
 }
 
-std::unique_ptr<GPUShader> VulkanDevice::CreateShaderFromSource(GPUShaderStage stage, const std::string_view& source,
-                                                                const char* entry_point,
-                                                                DynamicHeapArray<u8>* out_binary)
+std::unique_ptr<GPUShader> VulkanDevice::CreateShaderFromSource(GPUShaderStage stage, GPUShaderLanguage language,
+                                                                std::string_view source, const char* entry_point,
+                                                                DynamicHeapArray<u8>* out_binary, Error* error)
 {
-  if (std::strcmp(entry_point, "main") != 0)
+  if (language == GPUShaderLanguage::SPV)
   {
-    Log_ErrorPrintf("Entry point must be 'main', but got '%s' instead.", entry_point);
+    if (out_binary)
+      out_binary->assign(reinterpret_cast<const u8*>(source.data()), source.length());
+
+    return CreateShaderFromBinary(
+      stage, std::span<const u8>(reinterpret_cast<const u8*>(source.data()), source.length()), error);
+  }
+
+  DynamicHeapArray<u8> local_binary;
+  DynamicHeapArray<u8>* dest_binary = out_binary ? out_binary : &local_binary;
+  if (!CompileGLSLShaderToVulkanSpv(stage, language, source, entry_point, !m_debug_device,
+                                    m_optional_extensions.vk_khr_shader_non_semantic_info, dest_binary, error))
+  {
     return {};
   }
 
-  const u32 options = (m_debug_device ? SPIRVCompiler::DebugInfo : 0) | SPIRVCompiler::VulkanRules;
+  AssertMsg((dest_binary->size() % 4) == 0, "Compile result should be 4 byte aligned.");
 
-  std::optional<SPIRVCompiler::SPIRVCodeVector> spirv = SPIRVCompiler::CompileShader(stage, source, options);
-  if (!spirv.has_value())
-  {
-    Log_ErrorPrintf("Failed to compile shader to SPIR-V.");
-    return {};
-  }
-
-  const size_t spirv_size = spirv->size() * sizeof(SPIRVCompiler::SPIRVCodeType);
-  if (out_binary)
-  {
-    out_binary->resize(spirv_size);
-    std::memcpy(out_binary->data(), spirv->data(), spirv_size);
-  }
-
-  return CreateShaderFromBinary(stage, std::span<const u8>(reinterpret_cast<const u8*>(spirv->data()), spirv_size));
+  return CreateShaderFromBinary(stage, dest_binary->cspan(), error);
 }
 
 //////////////////////////////////////////////////////////////////////////
 
-VulkanPipeline::VulkanPipeline(VkPipeline pipeline, Layout layout)
-  : GPUPipeline(), m_pipeline(pipeline), m_layout(layout)
+VulkanPipeline::VulkanPipeline(VkPipeline pipeline, Layout layout, u8 vertices_per_primitive,
+                               RenderPassFlag render_pass_flags)
+  : GPUPipeline(), m_pipeline(pipeline), m_layout(layout), m_vertices_per_primitive(vertices_per_primitive),
+    m_render_pass_flags(render_pass_flags)
 {
 }
 
@@ -82,19 +83,20 @@ VulkanPipeline::~VulkanPipeline()
   VulkanDevice::GetInstance().DeferPipelineDestruction(m_pipeline);
 }
 
-void VulkanPipeline::SetDebugName(const std::string_view& name)
+void VulkanPipeline::SetDebugName(std::string_view name)
 {
   Vulkan::SetObjectName(VulkanDevice::GetInstance().GetVulkanDevice(), m_pipeline, name);
 }
 
-std::unique_ptr<GPUPipeline> VulkanDevice::CreatePipeline(const GPUPipeline::GraphicsConfig& config)
+std::unique_ptr<GPUPipeline> VulkanDevice::CreatePipeline(const GPUPipeline::GraphicsConfig& config, Error* error)
 {
-  static constexpr std::array<VkPrimitiveTopology, static_cast<u32>(GPUPipeline::Primitive::MaxCount)> primitives = {{
-    VK_PRIMITIVE_TOPOLOGY_POINT_LIST,     // Points
-    VK_PRIMITIVE_TOPOLOGY_LINE_LIST,      // Lines
-    VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  // Triangles
-    VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, // TriangleStrips
-  }};
+  static constexpr std::array<std::pair<VkPrimitiveTopology, u32>, static_cast<u32>(GPUPipeline::Primitive::MaxCount)>
+    primitives = {{
+      {VK_PRIMITIVE_TOPOLOGY_POINT_LIST, 1},     // Points
+      {VK_PRIMITIVE_TOPOLOGY_LINE_LIST, 2},      // Lines
+      {VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 3},  // Triangles
+      {VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 3}, // TriangleStrips
+    }};
 
   static constexpr u32 MAX_COMPONENTS = 4;
   static constexpr const VkFormat format_mapping[static_cast<u8>(
@@ -139,8 +141,8 @@ std::unique_ptr<GPUPipeline> VulkanDevice::CreatePipeline(const GPUPipeline::Gra
     VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA,     // InvSrcAlpha1
     VK_BLEND_FACTOR_DST_ALPHA,                // DstAlpha
     VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,      // InvDstAlpha
-    VK_BLEND_FACTOR_CONSTANT_ALPHA,           // ConstantAlpha
-    VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA, // InvConstantAlpha
+    VK_BLEND_FACTOR_CONSTANT_COLOR,           // ConstantAlpha
+    VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR, // InvConstantAlpha
   }};
 
   static constexpr std::array<VkBlendOp, static_cast<u32>(GPUPipeline::BlendOp::MaxCount)> op_mapping = {{
@@ -171,7 +173,8 @@ std::unique_ptr<GPUPipeline> VulkanDevice::CreatePipeline(const GPUPipeline::Gra
     }
   }
 
-  gpb.SetPrimitiveTopology(primitives[static_cast<u8>(config.primitive)]);
+  const auto [vk_topology, vertices_per_primitive] = primitives[static_cast<u8>(config.primitive)];
+  gpb.SetPrimitiveTopology(vk_topology);
 
   // Line width?
 
@@ -184,12 +187,19 @@ std::unique_ptr<GPUPipeline> VulkanDevice::CreatePipeline(const GPUPipeline::Gra
                     config.depth.depth_write, compare_mapping[static_cast<u8>(config.depth.depth_test.GetValue())]);
   gpb.SetNoStencilState();
 
-  gpb.SetBlendAttachment(0, config.blend.enable, blend_mapping[static_cast<u8>(config.blend.src_blend.GetValue())],
-                         blend_mapping[static_cast<u8>(config.blend.dst_blend.GetValue())],
-                         op_mapping[static_cast<u8>(config.blend.blend_op.GetValue())],
-                         blend_mapping[static_cast<u8>(config.blend.src_alpha_blend.GetValue())],
-                         blend_mapping[static_cast<u8>(config.blend.dst_alpha_blend.GetValue())],
-                         op_mapping[static_cast<u8>(config.blend.alpha_blend_op.GetValue())], config.blend.write_mask);
+  for (u32 i = 0; i < MAX_RENDER_TARGETS; i++)
+  {
+    if (config.color_formats[i] == GPUTexture::Format::Unknown)
+      break;
+
+    gpb.SetBlendAttachment(i, config.blend.enable, blend_mapping[static_cast<u8>(config.blend.src_blend.GetValue())],
+                           blend_mapping[static_cast<u8>(config.blend.dst_blend.GetValue())],
+                           op_mapping[static_cast<u8>(config.blend.blend_op.GetValue())],
+                           blend_mapping[static_cast<u8>(config.blend.src_alpha_blend.GetValue())],
+                           blend_mapping[static_cast<u8>(config.blend.dst_alpha_blend.GetValue())],
+                           op_mapping[static_cast<u8>(config.blend.alpha_blend_op.GetValue())],
+                           config.blend.write_mask);
+  }
 
   const auto blend_constants = config.blend.GetConstantFloatColor();
   gpb.SetBlendConstants(blend_constants[0], blend_constants[1], blend_constants[2], blend_constants[3]);
@@ -197,17 +207,47 @@ std::unique_ptr<GPUPipeline> VulkanDevice::CreatePipeline(const GPUPipeline::Gra
   gpb.AddDynamicState(VK_DYNAMIC_STATE_VIEWPORT);
   gpb.AddDynamicState(VK_DYNAMIC_STATE_SCISSOR);
 
-  gpb.SetPipelineLayout(m_pipeline_layouts[static_cast<u8>(config.layout)]);
+  gpb.SetPipelineLayout(m_pipeline_layouts[static_cast<size_t>(GetPipelineLayoutType(config.render_pass_flags))]
+                                          [static_cast<size_t>(config.layout)]);
 
-  const VkRenderPass render_pass = GetRenderPass(TEXTURE_FORMAT_MAPPING[static_cast<u8>(config.color_format)],
-                                                 TEXTURE_FORMAT_MAPPING[static_cast<u8>(config.depth_format)],
-                                                 static_cast<VkSampleCountFlagBits>(config.samples));
-  DebugAssert(render_pass);
-  gpb.SetRenderPass(render_pass, 0);
+  if (m_optional_extensions.vk_khr_dynamic_rendering && (m_optional_extensions.vk_khr_dynamic_rendering_local_read ||
+                                                         !(config.render_pass_flags & GPUPipeline::ColorFeedbackLoop)))
+  {
+    gpb.SetDynamicRendering();
 
-  const VkPipeline pipeline = gpb.Create(m_device, m_pipeline_cache, false);
+    for (u32 i = 0; i < MAX_RENDER_TARGETS; i++)
+    {
+      if (config.color_formats[i] == GPUTexture::Format::Unknown)
+        break;
+
+      gpb.AddDynamicRenderingColorAttachment(
+        VulkanDevice::TEXTURE_FORMAT_MAPPING[static_cast<u8>(config.color_formats[i])]);
+    }
+
+    if (config.depth_format != GPUTexture::Format::Unknown)
+    {
+      gpb.SetDynamicRenderingDepthAttachment(VulkanDevice::TEXTURE_FORMAT_MAPPING[static_cast<u8>(config.depth_format)],
+                                             VK_FORMAT_UNDEFINED);
+    }
+
+    if (config.render_pass_flags & GPUPipeline::ColorFeedbackLoop)
+    {
+      DebugAssert(m_optional_extensions.vk_khr_dynamic_rendering_local_read &&
+                  config.color_formats[0] != GPUTexture::Format::Unknown);
+      gpb.AddDynamicRenderingInputAttachment(0);
+    }
+  }
+  else
+  {
+    const VkRenderPass render_pass = GetRenderPass(config);
+    DebugAssert(render_pass != VK_NULL_HANDLE);
+    gpb.SetRenderPass(render_pass, 0);
+  }
+
+  const VkPipeline pipeline = gpb.Create(m_device, m_pipeline_cache, false, error);
   if (!pipeline)
     return {};
 
-  return std::unique_ptr<GPUPipeline>(new VulkanPipeline(pipeline, config.layout));
+  return std::unique_ptr<GPUPipeline>(
+    new VulkanPipeline(pipeline, config.layout, static_cast<u8>(vertices_per_primitive), config.render_pass_flags));
 }

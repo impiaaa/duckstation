@@ -34,6 +34,7 @@ void OpenLeaderboardsWindow();
 bool IsLeaderboardsWindowOpen();
 void ReturnToMainWindow();
 void ReturnToPreviousWindow();
+void SetStandardSelectionFooterText(bool back_instead_of_cancel);
 #endif
 
 void Shutdown();
@@ -41,38 +42,17 @@ void Render();
 void InvalidateCoverCache();
 void TimeToPrintableString(SmallStringBase* str, time_t t);
 
-class ProgressCallback final : public BaseProgressCallback
-{
-public:
-  ProgressCallback(std::string name);
-  ~ProgressCallback() override;
-
-  ALWAYS_INLINE const std::string& GetName() const { return m_name; }
-
-  void PushState() override;
-  void PopState() override;
-
-  void SetCancellable(bool cancellable) override;
-  void SetTitle(const char* title) override;
-  void SetStatusText(const char* text) override;
-  void SetProgressRange(u32 range) override;
-  void SetProgressValue(u32 value) override;
-
-  void DisplayError(const char* message) override;
-  void DisplayWarning(const char* message) override;
-  void DisplayInformation(const char* message) override;
-  void DisplayDebugMessage(const char* message) override;
-
-  void ModalError(const char* message) override;
-  bool ModalConfirmation(const char* message) override;
-  void ModalInformation(const char* message) override;
-
-  void SetCancelled();
-
-private:
-  void Redraw(bool force);
-
-  std::string m_name;
-  int m_last_progress_percent = -1;
-};
 } // namespace FullscreenUI
+
+// Host UI triggers from Big Picture mode.
+namespace Host {
+/// Requests shut down and exit of the hosting application. This may not actually exit,
+/// if the user cancels the shutdown confirmation.
+void RequestExitApplication(bool allow_confirm);
+
+/// Requests Big Picture mode to be shut down, returning to the desktop interface.
+void RequestExitBigPicture();
+
+/// Requests the cover downloader be opened.
+void OnCoverDownloaderOpenRequested();
+} // namespace Host

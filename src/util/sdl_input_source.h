@@ -1,9 +1,11 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
-#include "SDL.h"
 #include "input_source.h"
+
+#include <SDL.h>
+
 #include <array>
 #include <functional>
 #include <mutex>
@@ -27,22 +29,25 @@ public:
   void PollEvents() override;
   std::vector<std::pair<std::string, std::string>> EnumerateDevices() override;
   std::vector<InputBindingKey> EnumerateMotors() override;
-  bool GetGenericBindingMapping(const std::string_view& device, GenericInputBindingMapping* mapping) override;
+  bool GetGenericBindingMapping(std::string_view device, GenericInputBindingMapping* mapping) override;
   void UpdateMotorState(InputBindingKey key, float intensity) override;
   void UpdateMotorState(InputBindingKey large_key, InputBindingKey small_key, float large_intensity,
                         float small_intensity) override;
 
-  std::optional<InputBindingKey> ParseKeyString(const std::string_view& device,
-                                                const std::string_view& binding) override;
+  std::optional<InputBindingKey> ParseKeyString(std::string_view device, std::string_view binding) override;
   TinyString ConvertKeyToString(InputBindingKey key) override;
   TinyString ConvertKeyToIcon(InputBindingKey key) override;
 
   bool ProcessSDLEvent(const SDL_Event* event);
 
-  SDL_Joystick* GetJoystickForDevice(const std::string_view& device);
+  SDL_Joystick* GetJoystickForDevice(std::string_view device);
 
   static u32 GetRGBForPlayerId(SettingsInterface& si, u32 player_id);
-  static u32 ParseRGBForPlayerId(const std::string_view& str, u32 player_id);
+  static u32 ParseRGBForPlayerId(std::string_view str, u32 player_id);
+
+  static bool IsHandledInputEvent(const SDL_Event* ev);
+
+  static bool ALLOW_EVENT_POLLING;
 
 private:
   struct ControllerData
@@ -86,8 +91,15 @@ private:
 
   ControllerDataVector m_controllers;
 
-  bool m_sdl_subsystem_initialized = false;
-  bool m_controller_enhanced_mode = false;
   std::array<u32, MAX_LED_COLORS> m_led_colors{};
   std::vector<std::pair<std::string, std::string>> m_sdl_hints;
+
+  bool m_sdl_subsystem_initialized = false;
+  bool m_controller_enhanced_mode = false;
+  bool m_controller_ps5_player_led = false;
+
+#ifdef __APPLE__
+  bool m_enable_iokit_driver = false;
+  bool m_enable_mfi_driver = false;
+#endif
 };

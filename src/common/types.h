@@ -1,7 +1,8 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -45,9 +46,15 @@ char (&__countof_ArraySizeHelper(T (&array)[N]))[N];
 #endif
 #endif
 
-// offsetof macro
-#ifndef offsetof
-#define offsetof(st, m) ((size_t)((char*)&((st*)(0))->m - (char*)0))
+// offsetof macro. Need to use __builtin_offsetof(), otherwise it doesn't work in constant expressions.
+#if defined(__clang__) || defined(__GNUC__)
+#define OFFSETOF(st, m) __builtin_offsetof(st, m)
+#else
+#ifdef offsetof
+#define OFFSETOF(st, m) offsetof(st, m)
+#else
+#define OFFSETOF(st, m) ((size_t)((char*)&((st*)(0))->m - (char*)0))
+#endif
 #endif
 
 #ifdef __GNUC__
@@ -170,7 +177,11 @@ struct dependent_int_false : std::false_type
 #endif
 
 // Host page sizes.
-#if defined(__APPLE__) && defined(__aarch64__)
+#if defined(OVERRIDE_HOST_PAGE_SIZE)
+static constexpr u32 HOST_PAGE_SIZE = OVERRIDE_HOST_PAGE_SIZE;
+static constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
+static constexpr u32 HOST_PAGE_SHIFT = std::bit_width(HOST_PAGE_MASK);
+#elif defined(__APPLE__) && defined(__aarch64__)
 static constexpr u32 HOST_PAGE_SIZE = 0x4000;
 static constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
 static constexpr u32 HOST_PAGE_SHIFT = 14;
@@ -179,6 +190,16 @@ static constexpr u32 HOST_PAGE_SIZE = 0x1000;
 static constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
 static constexpr u32 HOST_PAGE_SHIFT = 12;
 #endif
+
+// Host cache line sizes.
+#if defined(OVERRIDE_HOST_CACHE_LINE_SIZE)
+static constexpr u32 HOST_CACHE_LINE_SIZE = OVERRIDE_HOST_CACHE_LINE_SIZE;
+#elif defined(__APPLE__) && defined(__aarch64__)
+static constexpr u32 HOST_CACHE_LINE_SIZE = 128; // Apple Silicon uses 128b cache lines.
+#else
+static constexpr u32 HOST_CACHE_LINE_SIZE = 64; // Everything else is 64b.
+#endif
+#define ALIGN_TO_CACHE_LINE alignas(HOST_CACHE_LINE_SIZE)
 
 // Enum class bitwise operators
 #define IMPLEMENT_ENUM_CLASS_BITWISE_OPERATORS(type_)                                                                  \
@@ -219,3 +240,6 @@ static constexpr u32 HOST_PAGE_SHIFT = 12;
                              static_cast<std::underlying_type<type_>::type>(rhs));                                     \
     return lhs;                                                                                                        \
   }
+
+// Compute the address of a base type given a field offset.
+#define BASE_FROM_RECORD_FIELD(ptr, base_type, field) ((base_type*)(((char*)ptr) - offsetof(base_type, field)))

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
@@ -47,14 +47,15 @@ public:
   ALWAYS_INLINE VkFormat GetVkFormat() const { return m_vk_format; }
 
   VkImageLayout GetVkLayout() const;
+  VkClearColorValue GetClearColorValue() const;
+  VkClearDepthStencilValue GetClearDepthValue() const;
 
-  bool IsValid() const override { return (m_image != VK_NULL_HANDLE); }
   bool Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch, u32 layer = 0, u32 level = 0) override;
   bool Map(void** map, u32* map_stride, u32 x, u32 y, u32 width, u32 height, u32 layer = 0, u32 level = 0) override;
   void Unmap() override;
   void MakeReadyForSampling() override;
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
   void TransitionToLayout(Layout layout);
   void CommitClear();
@@ -118,31 +119,12 @@ public:
 
   ALWAYS_INLINE VkSampler GetSampler() const { return m_sampler; }
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
 private:
   VulkanSampler(VkSampler sampler);
 
   VkSampler m_sampler;
-};
-
-class VulkanFramebuffer final : public GPUFramebuffer
-{
-  friend VulkanDevice;
-
-public:
-  ~VulkanFramebuffer() override;
-
-  ALWAYS_INLINE VkFramebuffer GetFramebuffer() const { return m_framebuffer; }
-
-  void SetDebugName(const std::string_view& name) override;
-
-  // TODO: Maybe render passes should be in here to avoid the map lookup...
-
-private:
-  VulkanFramebuffer(GPUTexture* rt, GPUTexture* ds, u32 width, u32 height, VkFramebuffer fb);
-
-  VkFramebuffer m_framebuffer;
 };
 
 class VulkanTextureBuffer final : public GPUTextureBuffer
@@ -163,10 +145,44 @@ public:
   void* Map(u32 required_elements) override;
   void Unmap(u32 used_elements) override;
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
 private:
   VulkanStreamBuffer m_buffer;
   VkBufferView m_buffer_view = VK_NULL_HANDLE;
   VkDescriptorSet m_descriptor_set = VK_NULL_HANDLE;
+};
+
+class VulkanDownloadTexture final : public GPUDownloadTexture
+{
+public:
+  ~VulkanDownloadTexture() override;
+
+  static std::unique_ptr<VulkanDownloadTexture> Create(u32 width, u32 height, GPUTexture::Format format, void* memory,
+                                                       size_t memory_size, u32 memory_stride);
+
+  void CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width, u32 height,
+                       u32 src_layer, u32 src_level, bool use_transfer_pitch) override;
+
+  bool Map(u32 x, u32 y, u32 width, u32 height) override;
+  void Unmap() override;
+
+  void Flush() override;
+
+  void SetDebugName(std::string_view name) override;
+
+private:
+  VulkanDownloadTexture(u32 width, u32 height, GPUTexture::Format format, VmaAllocation allocation,
+                        VkDeviceMemory memory, VkBuffer buffer, VkDeviceSize memory_offset, VkDeviceSize buffer_size,
+                        const u8* map_ptr, u32 map_pitch);
+
+  VmaAllocation m_allocation = VK_NULL_HANDLE;
+  VkDeviceMemory m_memory = VK_NULL_HANDLE;
+  VkBuffer m_buffer = VK_NULL_HANDLE;
+
+  u64 m_copy_fence_counter = 0;
+  VkDeviceSize m_memory_offset = 0;
+  VkDeviceSize m_buffer_size = 0;
+
+  bool m_needs_cache_invalidate = false;
 };

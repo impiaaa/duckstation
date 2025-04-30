@@ -10,9 +10,6 @@
     <height>619</height>
    </rect>
   </property>
-  <property name="windowTitle">
-   <string>Form</string>
-  </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="spacing">
     <number>0</number>
@@ -84,6 +81,29 @@
          </property>
          <property name="icon">
           <iconset theme="function-line">
+           <normaloff>.</normaloff>.</iconset>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+         <property name="autoRaise">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QToolButton" name="viewMergeDiscSets">
+         <property name="minimumSize">
+          <size>
+           <width>32</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>Merge Multi-Disc Games</string>
+         </property>
+         <property name="icon">
+          <iconset theme="play-list-2-line">
            <normaloff>.</normaloff>.</iconset>
          </property>
          <property name="checkable">

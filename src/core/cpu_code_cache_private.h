@@ -10,18 +10,8 @@
 #include "cpu_core_private.h"
 #include "cpu_types.h"
 
-#include "util/jit_code_buffer.h"
-#include "util/page_fault_handler.h"
-
 #include <array>
-#include <map>
-#include <memory>
 #include <unordered_map>
-#include <vector>
-
-#ifdef ENABLE_RECOMPILER
-// #include "cpu_recompiler_types.h"
-#endif
 
 namespace CPU::CodeCache {
 
@@ -58,7 +48,6 @@ struct InstructionInfo
   bool is_load_delay_slot : 1;
   bool is_last_instruction : 1;
   bool has_load_delay : 1;
-  bool can_trap : 1;
 
   u8 reg_flags[static_cast<u8>(Reg::count)];
   // Reg write_reg[3];
@@ -100,6 +89,8 @@ enum class BlockFlags : u8
   ContainsLoadStoreInstructions = (1 << 0),
   SpansPages = (1 << 1),
   BranchDelaySpansPages = (1 << 2),
+  IsUsingICache = (1 << 3),
+  NeedsDynamicFetchTicks = (1 << 4),
 };
 IMPLEMENT_ENUM_CLASS_BITWISE_OPERATORS(BlockFlags);
 
@@ -116,11 +107,6 @@ struct BlockMetadata
   u32 icache_line_count;
   BlockFlags flags;
 };
-
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4324) // C4324: 'CPU::CodeCache::Block': structure was padded due to alignment specifier)
-#endif
 
 struct alignas(16) Block
 {
@@ -142,6 +128,7 @@ struct alignas(16) Block
   TickCount uncached_fetch_ticks;
   u32 icache_line_count;
 
+  u32 host_code_size;
   u32 compile_frame;
   u8 compile_count;
 
@@ -170,10 +157,6 @@ struct alignas(16) Block
   // returns true if the block spans multiple pages
   ALWAYS_INLINE bool SpansPages() const { return StartPageIndex() != EndPageIndex(); }
 };
-
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
 
 using BlockLUTArray = std::array<Block**, LUT_TABLE_COUNT>;
 
@@ -232,20 +215,25 @@ void InterpretUncachedBlock();
 
 void LogCurrentState();
 
-#if defined(ENABLE_RECOMPILER) || defined(ENABLE_NEWREC)
-#define ENABLE_RECOMPILER_SUPPORT 1
-
 #if defined(_DEBUG) || false
 // Enable disassembly of host assembly code.
 #define ENABLE_HOST_DISASSEMBLY 1
 #endif
 
-#if false
-// Enable profiling of JIT blocks.
-#define ENABLE_RECOMPILER_PROFILING 1
-#endif
+/// Access to normal code allocator.
+u8* GetFreeCodePointer();
+u32 GetFreeCodeSpace();
+void CommitCode(u32 length);
 
-JitCodeBuffer& GetCodeBuffer();
+/// Access to far code allocator.
+u8* GetFreeFarCodePointer();
+u32 GetFreeFarCodeSpace();
+void CommitFarCode(u32 length);
+
+/// Adjusts the free code pointer to the specified alignment, padding with bytes.
+/// Assumes alignment is a power-of-two.
+void AlignCode(u32 alignment);
+
 const void* GetInterpretUncachedBlockFunction();
 
 void CompileOrRevalidateBlock(u32 start_pc);
@@ -280,7 +268,5 @@ extern const void* g_discard_and_recompile_block;
 extern PerfScope MIPSPerfScope;
 
 #endif // ENABLE_RECOMPILER_PROFILING
-
-#endif // ENABLE_RECOMPILER
 
 } // namespace CPU::CodeCache

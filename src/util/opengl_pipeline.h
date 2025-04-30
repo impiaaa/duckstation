@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
@@ -16,12 +16,13 @@ class OpenGLShader final : public GPUShader
 public:
   ~OpenGLShader() override;
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
-  bool Compile();
+  bool Compile(Error* error);
 
   ALWAYS_INLINE GLuint GetGLId() const { return m_id.value(); }
   ALWAYS_INLINE const GPUShaderCache::CacheIndexKey& GetKey() const { return m_key; }
+  ALWAYS_INLINE const std::string& GetSource() const { return m_source; }
 
 private:
   OpenGLShader(GPUShaderStage stage, const GPUShaderCache::CacheIndexKey& key, std::string source);
@@ -97,21 +98,21 @@ public:
   ~OpenGLPipeline() override;
 
   ALWAYS_INLINE GLuint GetProgram() const { return m_program; }
-  ALWAYS_INLINE GLuint GetVAO() const { return m_vao; }
+  ALWAYS_INLINE VertexArrayCache::const_iterator GetVAO() const { return m_vao; }
   ALWAYS_INLINE const RasterizationState& GetRasterizationState() const { return m_rasterization_state; }
   ALWAYS_INLINE const DepthState& GetDepthState() const { return m_depth_state; }
   ALWAYS_INLINE const BlendState& GetBlendState() const { return m_blend_state; }
   ALWAYS_INLINE GLenum GetTopology() const { return m_topology; }
 
-  void SetDebugName(const std::string_view& name) override;
+  void SetDebugName(std::string_view name) override;
 
 private:
-  OpenGLPipeline(const ProgramCacheKey& key, GLuint program, GLuint vao, const RasterizationState& rs,
-                 const DepthState& ds, const BlendState& bs, GLenum topology);
+  OpenGLPipeline(const ProgramCacheKey& key, GLuint program, VertexArrayCache::const_iterator vao,
+                 const RasterizationState& rs, const DepthState& ds, const BlendState& bs, GLenum topology);
 
   ProgramCacheKey m_key;
+  VertexArrayCache::const_iterator m_vao;
   GLuint m_program;
-  GLuint m_vao;
   BlendState m_blend_state;
   RasterizationState m_rasterization_state;
   DepthState m_depth_state;

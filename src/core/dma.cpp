@@ -1,13 +1,11 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "dma.h"
 #include "bus.h"
 #include "cdrom.h"
-#include "cpu_code_cache.h"
 #include "cpu_core.h"
 #include "gpu.h"
-#include "host.h"
 #include "imgui.h"
 #include "interrupt_controller.h"
 #include "mdec.h"
@@ -21,6 +19,8 @@
 #include "common/bitfield.h"
 #include "common/log.h"
 #include "common/string_util.h"
+
+#include "fmt/format.h"
 
 #include <array>
 #include <memory>
@@ -40,7 +40,12 @@ enum class SyncMode : u32
 };
 
 static constexpr PhysicalMemoryAddress BASE_ADDRESS_MASK = UINT32_C(0x00FFFFFF);
-// static constexpr PhysicalMemoryAddress ADDRESS_MASK = UINT32_C(0x001FFFFC);
+static constexpr PhysicalMemoryAddress TRANSFER_ADDRESS_MASK = UINT32_C(0x00FFFFFC);
+static constexpr PhysicalMemoryAddress LINKED_LIST_TERMINATOR = UINT32_C(0x00FFFFFF);
+
+static constexpr TickCount LINKED_LIST_HEADER_READ_TICKS = 10;
+static constexpr TickCount LINKED_LIST_BLOCK_SETUP_TICKS = 5;
+static constexpr TickCount SLICE_SIZE_WHEN_TRANSMITTING_PAD = 10;
 
 struct ChannelState
 {
@@ -83,7 +88,7 @@ struct ChannelState
   bool request = false;
 };
 
-union DPCR
+union DPCRRegister
 {
   u32 bits;
 
@@ -113,11 +118,11 @@ union DPCR
 
 static constexpr u32 DICR_WRITE_MASK = 0b00000000'11111111'10000000'00111111;
 static constexpr u32 DICR_RESET_MASK = 0b01111111'00000000'00000000'00000000;
-union DICR
+union DICRRegister
 {
   u32 bits;
 
-  BitField<u32, bool, 15, 1> force_irq;
+  BitField<u32, bool, 15, 1> bus_error;
   BitField<u32, bool, 16, 1> MDECin_irq_enable;
   BitField<u32, bool, 17, 1> MDECout_irq_enable;
   BitField<u32, bool, 18, 1> GPU_irq_enable;
@@ -135,27 +140,33 @@ union DICR
   BitField<u32, bool, 30, 1> OTC_irq_flag;
   BitField<u32, bool, 31, 1> master_flag;
 
-  ALWAYS_INLINE bool IsIRQEnabled(Channel channel) const
+  ALWAYS_INLINE bool GetIRQEnabled(Channel channel) const
   {
-    return ConvertToBoolUnchecked((bits >> (static_cast<u8>(channel) + 16)) & u32(1));
+    return ConvertToBoolUnchecked((bits >> (static_cast<u8>(channel) + 16)) & 1u);
   }
 
   ALWAYS_INLINE bool GetIRQFlag(Channel channel) const
   {
-    return ConvertToBoolUnchecked((bits >> (static_cast<u8>(channel) + 24)) & u32(1));
+    return ConvertToBoolUnchecked((bits >> (static_cast<u8>(channel) + 24)) & 1u);
   }
 
-  ALWAYS_INLINE void SetIRQFlag(Channel channel) { bits |= (u32(1) << (static_cast<u8>(channel) + 24)); }
-  ALWAYS_INLINE void ClearIRQFlag(Channel channel) { bits &= ~(u32(1) << (static_cast<u8>(channel) + 24)); }
+  ALWAYS_INLINE void SetIRQFlag(Channel channel) { bits |= (1u << (static_cast<u8>(channel) + 24)); }
+
+  ALWAYS_INLINE bool ShouldSetIRQFlag(Channel channel)
+  {
+    // bus errors trigger IRQ unconditionally, completion requires the master flag to be enabled
+    return ConvertToBoolUnchecked(((bits >> (static_cast<u8>(channel) + 16)) & ((bits >> 23) & 1u)));
+  }
 
   ALWAYS_INLINE void UpdateMasterFlag()
   {
-    master_flag = master_enable && ((((bits >> 16) & u32(0b1111111)) & ((bits >> 24) & u32(0b1111111))) != 0);
+    master_flag =
+      (((bits & (1u << 15)) != 0u) ||                                             // bus error, or
+       (((bits & (1u << 23)) != 0u) != 0u && (bits & (0b1111111u << 24)) != 0u)); // master enable + irq on any channel
   }
 };
 } // namespace
 
-static u32 GetAddressMask();
 static void ClearState();
 
 // is everything enabled for a channel to operate?
@@ -163,99 +174,123 @@ static bool CanTransferChannel(Channel channel, bool ignore_halt);
 static bool IsTransferHalted();
 static void UpdateIRQ();
 
-// returns false if the DMA should now be halted
-static TickCount GetTransferSliceTicks();
-static TickCount GetTransferHaltTicks();
-static bool TransferChannel(Channel channel);
 static void HaltTransfer(TickCount duration);
 static void UnhaltTransfer(void*, TickCount ticks, TickCount ticks_late);
 
+template<Channel channel>
+static bool TransferChannel();
+
+static bool IsLinkedListTerminator(PhysicalMemoryAddress address);
+static bool CheckForBusError(Channel channel, ChannelState& cs, PhysicalMemoryAddress address, u32 size);
+static void CompleteTransfer(Channel channel, ChannelState& cs);
+
 // from device -> memory
-static TickCount TransferDeviceToMemory(Channel channel, u32 address, u32 increment, u32 word_count);
+template<Channel channel>
+static TickCount TransferDeviceToMemory(u32 address, u32 increment, u32 word_count);
 
 // from memory -> device
-static TickCount TransferMemoryToDevice(Channel channel, u32 address, u32 increment, u32 word_count);
+template<Channel channel>
+static TickCount TransferMemoryToDevice(u32 address, u32 increment, u32 word_count);
+
+static TickCount GetMaxSliceTicks(TickCount max_slice_size);
 
 // configuration
-static TickCount s_max_slice_ticks = 1000;
-static TickCount s_halt_ticks = 100;
+namespace {
+struct DMAState
+{
+  std::vector<u32> transfer_buffer;
+  TimingEvent unhalt_event{"DMA Transfer Unhalt", 1, 1, &DMA::UnhaltTransfer, nullptr};
+  TickCount halt_ticks_remaining = 0;
 
-static std::vector<u32> s_transfer_buffer;
-static std::unique_ptr<TimingEvent> s_unhalt_event;
-static TickCount s_halt_ticks_remaining = 0;
+  std::array<ChannelState, NUM_CHANNELS> channels;
+  DPCRRegister DPCR = {};
+  DICRRegister DICR = {};
+};
+} // namespace
 
-static std::array<ChannelState, NUM_CHANNELS> s_state;
-static DPCR s_DPCR = {};
-static DICR s_DICR = {};
+ALIGN_TO_CACHE_LINE static DMAState s_state;
+
+static constexpr std::array<bool (*)(), NUM_CHANNELS> s_channel_transfer_functions = {{
+  &TransferChannel<Channel::MDECin>,
+  &TransferChannel<Channel::MDECout>,
+  &TransferChannel<Channel::GPU>,
+  &TransferChannel<Channel::CDROM>,
+  &TransferChannel<Channel::SPU>,
+  &TransferChannel<Channel::PIO>,
+  &TransferChannel<Channel::OTC>,
+}};
+
+[[maybe_unused]] static constexpr std::array<const char*, NUM_CHANNELS> s_channel_names = {
+  {"MDECin", "MDECout", "GPU", "CDROM", "SPU", "PIO", "OTC"}};
+
 }; // namespace DMA
 
-u32 DMA::GetAddressMask()
+template<>
+struct fmt::formatter<DMA::Channel> : fmt::formatter<fmt::string_view>
 {
-  return Bus::g_ram_mask & 0xFFFFFFFCu;
-}
+  auto format(DMA::Channel channel, fmt::format_context& ctx) const
+  {
+    return formatter<fmt::string_view>::format(DMA::s_channel_names[static_cast<u32>(channel)], ctx);
+  }
+};
 
 void DMA::Initialize()
 {
-  s_max_slice_ticks = g_settings.dma_max_slice_ticks;
-  s_halt_ticks = g_settings.dma_halt_ticks;
-
-  s_transfer_buffer.resize(32);
-  s_unhalt_event =
-    TimingEvents::CreateTimingEvent("DMA Transfer Unhalt", 1, s_max_slice_ticks, &DMA::UnhaltTransfer, nullptr, false);
+  s_state.unhalt_event.SetInterval(g_settings.dma_halt_ticks);
   Reset();
 }
 
 void DMA::Shutdown()
 {
   ClearState();
-  s_unhalt_event.reset();
+  s_state.unhalt_event.Deactivate();
 }
 
 void DMA::Reset()
 {
   ClearState();
-  s_unhalt_event->Deactivate();
+  s_state.unhalt_event.Deactivate();
 }
 
 void DMA::ClearState()
 {
   for (u32 i = 0; i < NUM_CHANNELS; i++)
   {
-    ChannelState& cs = s_state[i];
+    ChannelState& cs = s_state.channels[i];
     cs.base_address = 0;
     cs.block_control.bits = 0;
     cs.channel_control.bits = 0;
     cs.request = false;
   }
 
-  s_DPCR.bits = 0x07654321;
-  s_DICR.bits = 0;
+  s_state.DPCR.bits = 0x07654321;
+  s_state.DICR.bits = 0;
 
-  s_halt_ticks_remaining = 0;
+  s_state.halt_ticks_remaining = 0;
 }
 
 bool DMA::DoState(StateWrapper& sw)
 {
-  sw.Do(&s_halt_ticks_remaining);
+  sw.Do(&s_state.halt_ticks_remaining);
 
   for (u32 i = 0; i < NUM_CHANNELS; i++)
   {
-    ChannelState& cs = s_state[i];
+    ChannelState& cs = s_state.channels[i];
     sw.Do(&cs.base_address);
     sw.Do(&cs.block_control.bits);
     sw.Do(&cs.channel_control.bits);
     sw.Do(&cs.request);
   }
 
-  sw.Do(&s_DPCR.bits);
-  sw.Do(&s_DICR.bits);
+  sw.Do(&s_state.DPCR.bits);
+  sw.Do(&s_state.DICR.bits);
 
   if (sw.IsReading())
   {
-    if (s_halt_ticks_remaining > 0)
-      s_unhalt_event->SetIntervalAndSchedule(s_halt_ticks_remaining);
+    if (s_state.halt_ticks_remaining > 0)
+      s_state.unhalt_event.SetIntervalAndSchedule(s_state.halt_ticks_remaining);
     else
-      s_unhalt_event->Deactivate();
+      s_state.unhalt_event.Deactivate();
   }
 
   return !sw.HasError();
@@ -270,18 +305,21 @@ u32 DMA::ReadRegister(u32 offset)
     {
       case 0x00:
       {
-        Log_TracePrintf("DMA%u base address -> 0x%08X", channel_index, s_state[channel_index].base_address);
-        return s_state[channel_index].base_address;
+        TRACE_LOG("DMA[{}] base address -> 0x{:08X}", static_cast<Channel>(channel_index),
+                  s_state.channels[channel_index].base_address);
+        return s_state.channels[channel_index].base_address;
       }
       case 0x04:
       {
-        Log_TracePrintf("DMA%u block control -> 0x%08X", channel_index, s_state[channel_index].block_control.bits);
-        return s_state[channel_index].block_control.bits;
+        TRACE_LOG("DMA[{}] block control -> 0x{:08X}", static_cast<Channel>(channel_index),
+                  s_state.channels[channel_index].block_control.bits);
+        return s_state.channels[channel_index].block_control.bits;
       }
       case 0x08:
       {
-        Log_TracePrintf("DMA%u channel control -> 0x%08X", channel_index, s_state[channel_index].channel_control.bits);
-        return s_state[channel_index].channel_control.bits;
+        TRACE_LOG("DMA[{}] channel control -> 0x{:08X}", static_cast<Channel>(channel_index),
+                  s_state.channels[channel_index].channel_control.bits);
+        return s_state.channels[channel_index].channel_control.bits;
       }
       default:
         break;
@@ -291,17 +329,17 @@ u32 DMA::ReadRegister(u32 offset)
   {
     if (offset == 0x70)
     {
-      Log_TracePrintf("DPCR -> 0x%08X", s_DPCR.bits);
-      return s_DPCR.bits;
+      TRACE_LOG("DPCR -> 0x{:08X}", s_state.DPCR.bits);
+      return s_state.DPCR.bits;
     }
     else if (offset == 0x74)
     {
-      Log_TracePrintf("DPCR -> 0x%08X", s_DPCR.bits);
-      return s_DICR.bits;
+      TRACE_LOG("DICR -> 0x{:08X}", s_state.DICR.bits);
+      return s_state.DICR.bits;
     }
   }
 
-  Log_ErrorPrintf("Unhandled register read: %02X", offset);
+  ERROR_LOG("Unhandled register read: {:02X}", offset);
   return UINT32_C(0xFFFFFFFF);
 }
 
@@ -310,18 +348,18 @@ void DMA::WriteRegister(u32 offset, u32 value)
   const u32 channel_index = offset >> 4;
   if (channel_index < 7)
   {
-    ChannelState& state = s_state[channel_index];
+    ChannelState& state = s_state.channels[channel_index];
     switch (offset & UINT32_C(0x0F))
     {
       case 0x00:
       {
         state.base_address = value & BASE_ADDRESS_MASK;
-        Log_TracePrintf("DMA channel %u base address <- 0x%08X", channel_index, state.base_address);
+        TRACE_LOG("DMA channel {} base address <- 0x{:08X}", static_cast<Channel>(channel_index), state.base_address);
         return;
       }
       case 0x04:
       {
-        Log_TracePrintf("DMA channel %u block control <- 0x%08X", channel_index, value);
+        TRACE_LOG("DMA channel {} block control <- 0x{:08X}", static_cast<Channel>(channel_index), value);
         state.block_control.bits = value;
         return;
       }
@@ -336,14 +374,42 @@ void DMA::WriteRegister(u32 offset, u32 value)
 
         state.channel_control.bits = (state.channel_control.bits & ~ChannelState::ChannelControl::WRITE_MASK) |
                                      (value & ChannelState::ChannelControl::WRITE_MASK);
-        Log_TracePrintf("DMA channel %u channel control <- 0x%08X", channel_index, state.channel_control.bits);
+        TRACE_LOG("DMA channel {} channel control <- 0x{:08X}", static_cast<Channel>(channel_index),
+                  state.channel_control.bits);
 
         // start/trigger bit must be enabled for OTC
         if (static_cast<Channel>(channel_index) == Channel::OTC)
           SetRequest(static_cast<Channel>(channel_index), state.channel_control.start_trigger);
 
         if (CanTransferChannel(static_cast<Channel>(channel_index), ignore_halt))
-          TransferChannel(static_cast<Channel>(channel_index));
+        {
+          if (static_cast<Channel>(channel_index) != Channel::OTC &&
+              state.channel_control.sync_mode == SyncMode::Manual && state.channel_control.chopping_enable)
+          {
+            // Figure out how roughly many CPU cycles it'll take for the transfer to complete, and delay the transfer.
+            // Needed for Lagnacure Legend, which sets DICR to enable interrupts after CHCR to kickstart the transfer.
+            // This has an artificial 500 cycle cap, setting it too high causes Namco Museum Vol. 4 and a couple of
+            // other games to crash... so clearly something is missing here.
+            const u32 block_words = (1u << state.channel_control.chopping_dma_window_size);
+            const u32 cpu_cycles_per_block = (1u << state.channel_control.chopping_cpu_window_size);
+            const u32 blocks = state.block_control.manual.word_count / block_words;
+            const TickCount delay_cycles = std::min(static_cast<TickCount>(cpu_cycles_per_block * blocks), 500);
+            if (delay_cycles > 1 && true)
+            {
+              DEV_LOG("Delaying {} transfer by {} cycles due to chopping", static_cast<Channel>(channel_index),
+                      delay_cycles);
+              HaltTransfer(delay_cycles);
+            }
+            else
+            {
+              s_channel_transfer_functions[channel_index]();
+            }
+          }
+          else
+          {
+            s_channel_transfer_functions[channel_index]();
+          }
+        }
         return;
       }
 
@@ -357,14 +423,14 @@ void DMA::WriteRegister(u32 offset, u32 value)
     {
       case 0x70:
       {
-        Log_TracePrintf("DPCR <- 0x%08X", value);
-        s_DPCR.bits = value;
+        TRACE_LOG("DPCR <- 0x{:08X}", value);
+        s_state.DPCR.bits = value;
 
         for (u32 i = 0; i < NUM_CHANNELS; i++)
         {
           if (CanTransferChannel(static_cast<Channel>(i), false))
           {
-            if (!TransferChannel(static_cast<Channel>(i)))
+            if (!s_channel_transfer_functions[i]())
               break;
           }
         }
@@ -374,10 +440,10 @@ void DMA::WriteRegister(u32 offset, u32 value)
 
       case 0x74:
       {
-        Log_TracePrintf("DCIR <- 0x%08X", value);
-        s_DICR.bits = (s_DICR.bits & ~DICR_WRITE_MASK) | (value & DICR_WRITE_MASK);
-        s_DICR.bits = s_DICR.bits & ~(value & DICR_RESET_MASK);
-        s_DICR.UpdateMasterFlag();
+        TRACE_LOG("DICR <- 0x{:08X}", value);
+        s_state.DICR.bits = (s_state.DICR.bits & ~DICR_WRITE_MASK) | (value & DICR_WRITE_MASK);
+        s_state.DICR.bits = s_state.DICR.bits & ~(value & DICR_RESET_MASK);
+        UpdateIRQ();
         return;
       }
 
@@ -386,36 +452,26 @@ void DMA::WriteRegister(u32 offset, u32 value)
     }
   }
 
-  Log_ErrorPrintf("Unhandled register write: %02X <- %08X", offset, value);
+  ERROR_LOG("Unhandled register write: {:02X} <- {:08X}", offset, value);
 }
 
 void DMA::SetRequest(Channel channel, bool request)
 {
-  ChannelState& cs = s_state[static_cast<u32>(channel)];
+  ChannelState& cs = s_state.channels[static_cast<u32>(channel)];
   if (cs.request == request)
     return;
 
   cs.request = request;
   if (CanTransferChannel(channel, false))
-    TransferChannel(channel);
+    s_channel_transfer_functions[static_cast<u32>(channel)]();
 }
 
-void DMA::SetMaxSliceTicks(TickCount ticks)
+ALWAYS_INLINE_RELEASE bool DMA::CanTransferChannel(Channel channel, bool ignore_halt)
 {
-  s_max_slice_ticks = ticks;
-}
-
-void DMA::SetHaltTicks(TickCount ticks)
-{
-  s_halt_ticks = ticks;
-}
-
-bool DMA::CanTransferChannel(Channel channel, bool ignore_halt)
-{
-  if (!s_DPCR.GetMasterEnable(channel))
+  if (!s_state.DPCR.GetMasterEnable(channel))
     return false;
 
-  const ChannelState& cs = s_state[static_cast<u32>(channel)];
+  const ChannelState& cs = s_state.channels[static_cast<u32>(channel)];
   if (!cs.channel_control.enable_busy)
     return false;
 
@@ -427,51 +483,68 @@ bool DMA::CanTransferChannel(Channel channel, bool ignore_halt)
 
 bool DMA::IsTransferHalted()
 {
-  return s_unhalt_event->IsActive();
+  return s_state.unhalt_event.IsActive();
 }
 
 void DMA::UpdateIRQ()
 {
-  s_DICR.UpdateMasterFlag();
-  if (s_DICR.master_flag)
+  [[maybe_unused]] const auto old_dicr = s_state.DICR;
+  s_state.DICR.UpdateMasterFlag();
+  if (!old_dicr.master_flag && s_state.DICR.master_flag)
+    TRACE_LOG("Firing DMA master interrupt");
+  InterruptController::SetLineState(InterruptController::IRQ::DMA, s_state.DICR.master_flag);
+}
+
+ALWAYS_INLINE_RELEASE bool DMA::IsLinkedListTerminator(PhysicalMemoryAddress address)
+{
+  return ((address & LINKED_LIST_TERMINATOR) == LINKED_LIST_TERMINATOR);
+}
+
+ALWAYS_INLINE_RELEASE bool DMA::CheckForBusError(Channel channel, ChannelState& cs, PhysicalMemoryAddress address,
+                                                 u32 size)
+{
+  // Relying on a transfer partially happening at the end of RAM, then hitting a bus error would be pretty silly.
+  if ((address + size) >= Bus::g_ram_mapped_size) [[unlikely]]
   {
-    Log_TracePrintf("Firing DMA master interrupt");
-    InterruptController::InterruptRequest(InterruptController::IRQ::DMA);
+    DEBUG_LOG("DMA bus error on channel {} at address 0x{:08X} size {}", channel, address, size);
+    cs.channel_control.enable_busy = false;
+    s_state.DICR.bus_error = true;
+    s_state.DICR.SetIRQFlag(channel);
+    UpdateIRQ();
+    return true;
+  }
+
+  return false;
+}
+
+ALWAYS_INLINE_RELEASE void DMA::CompleteTransfer(Channel channel, ChannelState& cs)
+{
+  // start/busy bit is cleared on end of transfer
+  DEBUG_LOG("DMA transfer for channel {} complete", channel);
+  cs.channel_control.enable_busy = false;
+  if (s_state.DICR.ShouldSetIRQFlag(channel))
+  {
+    DEBUG_LOG("Setting DMA interrupt for channel {}", channel);
+    s_state.DICR.SetIRQFlag(channel);
+    UpdateIRQ();
   }
 }
 
-// Plenty of games seem to suffer from this issue where they have a linked list DMA going while polling the
-// controller. Using a too-large slice size will result in the serial timing being off, and the game thinking
-// the controller is disconnected. So we don't hurt performance too much for the general case, we reduce this
-// to equal CPU and DMA time when the controller is transferring, but otherwise leave it at the higher size.
-enum : u32
+TickCount DMA::GetMaxSliceTicks(TickCount max_slice_size)
 {
-  SLICE_SIZE_WHEN_TRANSMITTING_PAD = 100,
-  HALT_TICKS_WHEN_TRANSMITTING_PAD = 100
-};
+  const TickCount max = Pad::IsTransmitting() ? SLICE_SIZE_WHEN_TRANSMITTING_PAD : max_slice_size;
+  if (!TimingEvents::IsRunningEvents())
+    return max;
 
-TickCount DMA::GetTransferSliceTicks()
-{
-#ifdef _DEBUG
-  if (Pad::IsTransmitting())
-  {
-    Log_DebugPrintf("DMA transfer while transmitting pad - using lower slice size of %u vs %u",
-                    SLICE_SIZE_WHEN_TRANSMITTING_PAD, s_max_slice_ticks);
-  }
-#endif
-
-  return Pad::IsTransmitting() ? SLICE_SIZE_WHEN_TRANSMITTING_PAD : s_max_slice_ticks;
+  const TickCount remaining_in_event_loop =
+    static_cast<TickCount>(TimingEvents::GetEventRunTickCounter() - TimingEvents::GetGlobalTickCounter());
+  return std::max<TickCount>(max - remaining_in_event_loop, 1);
 }
 
-TickCount DMA::GetTransferHaltTicks()
+template<DMA::Channel channel>
+bool DMA::TransferChannel()
 {
-  return Pad::IsTransmitting() ? HALT_TICKS_WHEN_TRANSMITTING_PAD : s_halt_ticks;
-}
-
-bool DMA::TransferChannel(Channel channel)
-{
-  ChannelState& cs = s_state[static_cast<u32>(channel)];
-  const u32 mask = GetAddressMask();
+  ChannelState& cs = s_state.channels[static_cast<u32>(channel)];
 
   const bool copy_to_device = cs.channel_control.copy_to_device;
 
@@ -485,18 +558,23 @@ bool DMA::TransferChannel(Channel channel)
     case SyncMode::Manual:
     {
       const u32 word_count = cs.block_control.manual.GetWordCount();
-      Log_DebugPrintf("DMA%u: Copying %u words %s 0x%08X", static_cast<u32>(channel), word_count,
-                      copy_to_device ? "from" : "to", current_address & mask);
+      DEBUG_LOG("DMA[{}]: Copying {} words {} 0x{:08X}", channel, word_count, copy_to_device ? "from" : "to",
+                current_address);
+
+      const PhysicalMemoryAddress transfer_addr = current_address & TRANSFER_ADDRESS_MASK;
+      if (CheckForBusError(channel, cs, transfer_addr, (word_count - 1) * increment)) [[unlikely]]
+        return true;
 
       TickCount used_ticks;
       if (copy_to_device)
-        used_ticks = TransferMemoryToDevice(channel, current_address & mask, increment, word_count);
+        used_ticks = TransferMemoryToDevice<channel>(transfer_addr, increment, word_count);
       else
-        used_ticks = TransferDeviceToMemory(channel, current_address & mask, increment, word_count);
+        used_ticks = TransferDeviceToMemory<channel>(transfer_addr, increment, word_count);
 
       CPU::AddPendingTicks(used_ticks);
+      CompleteTransfer(channel, cs);
+      return true;
     }
-    break;
 
     case SyncMode::LinkedList:
     {
@@ -506,47 +584,64 @@ bool DMA::TransferChannel(Channel channel)
         return true;
       }
 
-      Log_DebugPrintf("DMA%u: Copying linked list starting at 0x%08X to device", static_cast<u32>(channel),
-                      current_address & mask);
+      DEBUG_LOG("DMA[{}]: Copying linked list starting at 0x{:08X} to device", channel, current_address);
 
-      u8* ram_pointer = Bus::g_ram;
-      TickCount remaining_ticks = GetTransferSliceTicks();
+      // Prove to the compiler that nothing's going to modify these.
+      const u8* const ram_ptr = Bus::g_ram;
+      const u32 mask = Bus::g_ram_mask;
+
+      const TickCount slice_ticks = GetMaxSliceTicks(g_settings.dma_max_slice_ticks);
+      TickCount remaining_ticks = slice_ticks;
       while (cs.request && remaining_ticks > 0)
       {
         u32 header;
-        std::memcpy(&header, &ram_pointer[current_address & mask], sizeof(header));
-        CPU::AddPendingTicks(10);
-        remaining_ticks -= 10;
+        PhysicalMemoryAddress transfer_addr = current_address & TRANSFER_ADDRESS_MASK;
+        if (CheckForBusError(channel, cs, transfer_addr, sizeof(header))) [[unlikely]]
+        {
+          cs.base_address = current_address;
+          return true;
+        }
 
+        std::memcpy(&header, &ram_ptr[transfer_addr & mask], sizeof(header));
         const u32 word_count = header >> 24;
-        const u32 next_address = header & UINT32_C(0x00FFFFFF);
-        Log_TracePrintf(" .. linked list entry at 0x%08X size=%u(%u words) next=0x%08X", current_address & mask,
-                        word_count * UINT32_C(4), word_count, next_address);
+        const u32 next_address = header & 0x00FFFFFFu;
+        TRACE_LOG(" .. linked list entry at 0x{:08X} size={}({} words) next=0x{:08X}", current_address, word_count * 4,
+                  word_count, next_address);
+
+        const TickCount setup_ticks = (word_count > 0) ?
+                                        (LINKED_LIST_HEADER_READ_TICKS + LINKED_LIST_BLOCK_SETUP_TICKS) :
+                                        LINKED_LIST_HEADER_READ_TICKS;
+        CPU::AddPendingTicks(setup_ticks);
+        remaining_ticks -= setup_ticks;
+
         if (word_count > 0)
         {
-          CPU::AddPendingTicks(5);
-          remaining_ticks -= 5;
+          if (CheckForBusError(channel, cs, transfer_addr, (word_count - 1) * increment)) [[unlikely]]
+          {
+            cs.base_address = current_address;
+            return true;
+          }
 
-          const TickCount block_ticks =
-            TransferMemoryToDevice(channel, (current_address + sizeof(header)) & mask, 4, word_count);
+          const TickCount block_ticks = TransferMemoryToDevice<channel>(transfer_addr + sizeof(header), 4, word_count);
           CPU::AddPendingTicks(block_ticks);
           remaining_ticks -= block_ticks;
         }
 
         current_address = next_address;
-        if (current_address & UINT32_C(0x800000))
-          break;
+        if (IsLinkedListTerminator(current_address))
+        {
+          // Terminator is 24 bits, so is MADR, so it'll always be 0xFFFFFF.
+          cs.base_address = LINKED_LIST_TERMINATOR;
+          CompleteTransfer(channel, cs);
+          return true;
+        }
       }
 
       cs.base_address = current_address;
-
-      if (current_address & UINT32_C(0x800000))
-        break;
-
       if (cs.request)
       {
         // stall the transfer for a bit if we ran for too long
-        HaltTransfer(GetTransferHaltTicks());
+        HaltTransfer(g_settings.dma_halt_ticks);
         return false;
       }
       else
@@ -555,47 +650,62 @@ bool DMA::TransferChannel(Channel channel)
         return true;
       }
     }
-    break;
 
     case SyncMode::Request:
     {
-      Log_DebugPrintf("DMA%u: Copying %u blocks of size %u (%u total words) %s 0x%08X", static_cast<u32>(channel),
-                      cs.block_control.request.GetBlockCount(), cs.block_control.request.GetBlockSize(),
-                      cs.block_control.request.GetBlockCount() * cs.block_control.request.GetBlockSize(),
-                      copy_to_device ? "from" : "to", current_address & mask);
+      DEBUG_LOG("DMA[{}]: Copying {} blocks of size {} ({} total words) {} 0x{:08X}", channel,
+                cs.block_control.request.GetBlockCount(), cs.block_control.request.GetBlockSize(),
+                cs.block_control.request.GetBlockCount() * cs.block_control.request.GetBlockSize(),
+                copy_to_device ? "from" : "to", current_address);
 
       const u32 block_size = cs.block_control.request.GetBlockSize();
       u32 blocks_remaining = cs.block_control.request.GetBlockCount();
-      TickCount ticks_remaining = GetTransferSliceTicks();
+      TickCount ticks_remaining = GetMaxSliceTicks(g_settings.dma_max_slice_ticks);
 
       if (copy_to_device)
       {
         do
         {
+          const PhysicalMemoryAddress transfer_addr = current_address & TRANSFER_ADDRESS_MASK;
+          if (CheckForBusError(channel, cs, transfer_addr, (block_size - 1) * increment)) [[unlikely]]
+          {
+            cs.base_address = current_address;
+            cs.block_control.request.block_count = blocks_remaining;
+            return true;
+          }
+
+          const TickCount ticks = TransferMemoryToDevice<channel>(transfer_addr, increment, block_size);
+          CPU::AddPendingTicks(ticks);
+
+          ticks_remaining -= ticks;
           blocks_remaining--;
 
-          const TickCount ticks = TransferMemoryToDevice(channel, current_address & mask, increment, block_size);
-          CPU::AddPendingTicks(ticks);
-          ticks_remaining -= ticks;
-
-          current_address = (current_address + (increment * block_size));
+          current_address = (transfer_addr + (increment * block_size));
         } while (cs.request && blocks_remaining > 0 && ticks_remaining > 0);
       }
       else
       {
         do
         {
+          const PhysicalMemoryAddress transfer_addr = current_address & TRANSFER_ADDRESS_MASK;
+          if (CheckForBusError(channel, cs, transfer_addr, (block_size - 1) * increment)) [[unlikely]]
+          {
+            cs.base_address = current_address;
+            cs.block_control.request.block_count = blocks_remaining;
+            return true;
+          }
+
+          const TickCount ticks = TransferDeviceToMemory<channel>(transfer_addr, increment, block_size);
+          CPU::AddPendingTicks(ticks);
+
+          ticks_remaining -= ticks;
           blocks_remaining--;
 
-          const TickCount ticks = TransferDeviceToMemory(channel, current_address & mask, increment, block_size);
-          CPU::AddPendingTicks(ticks);
-          ticks_remaining -= ticks;
-
-          current_address = (current_address + (increment * block_size));
+          current_address = (transfer_addr + (increment * block_size));
         } while (cs.request && blocks_remaining > 0 && ticks_remaining > 0);
       }
 
-      cs.base_address = current_address & BASE_ADDRESS_MASK;
+      cs.base_address = current_address;
       cs.block_control.request.block_count = blocks_remaining;
 
       // finish transfer later if the request was cleared
@@ -604,50 +714,42 @@ bool DMA::TransferChannel(Channel channel)
         if (cs.request)
         {
           // we got halted
-          if (!s_unhalt_event->IsActive())
-            HaltTransfer(GetTransferHaltTicks());
+          if (!s_state.unhalt_event.IsActive())
+            HaltTransfer(g_settings.dma_halt_ticks);
 
           return false;
         }
 
         return true;
       }
+
+      CompleteTransfer(channel, cs);
+      return true;
     }
-    break;
 
     default:
       Panic("Unimplemented sync mode");
-      break;
   }
 
-  // start/busy bit is cleared on end of transfer
-  cs.channel_control.enable_busy = false;
-  if (s_DICR.IsIRQEnabled(channel))
-  {
-    Log_DebugPrintf("Set DMA interrupt for channel %u", static_cast<u32>(channel));
-    s_DICR.SetIRQFlag(channel);
-    UpdateIRQ();
-  }
-
-  return true;
+  UnreachableCode();
 }
 
 void DMA::HaltTransfer(TickCount duration)
 {
-  s_halt_ticks_remaining += duration;
-  Log_DebugPrintf("Halting DMA for %d ticks", s_halt_ticks_remaining);
-  if (s_unhalt_event->IsActive())
+  s_state.halt_ticks_remaining += duration;
+  DEBUG_LOG("Halting DMA for {} ticks", s_state.halt_ticks_remaining);
+  if (s_state.unhalt_event.IsActive())
     return;
 
-  DebugAssert(!s_unhalt_event->IsActive());
-  s_unhalt_event->SetIntervalAndSchedule(s_halt_ticks_remaining);
+  DebugAssert(!s_state.unhalt_event.IsActive());
+  s_state.unhalt_event.SetIntervalAndSchedule(s_state.halt_ticks_remaining);
 }
 
 void DMA::UnhaltTransfer(void*, TickCount ticks, TickCount ticks_late)
 {
-  Log_DebugPrintf("Resuming DMA after %d ticks, %d ticks late", ticks, -(s_halt_ticks_remaining - ticks));
-  s_halt_ticks_remaining -= ticks;
-  s_unhalt_event->Deactivate();
+  DEBUG_LOG("Resuming DMA after {} ticks, {} ticks late", ticks, -(s_state.halt_ticks_remaining - ticks));
+  s_state.halt_ticks_remaining -= ticks;
+  s_state.unhalt_event.Deactivate();
 
   // TODO: Use channel priority. But doing it in ascending order is probably good enough.
   // Main thing is that OTC happens after GPU, because otherwise it'll wipe out the LL.
@@ -655,32 +757,42 @@ void DMA::UnhaltTransfer(void*, TickCount ticks, TickCount ticks_late)
   {
     if (CanTransferChannel(static_cast<Channel>(i), false))
     {
-      if (!TransferChannel(static_cast<Channel>(i)))
+      if (!s_channel_transfer_functions[i]())
         return;
     }
   }
 
   // We didn't run too long, so reset timer.
-  s_halt_ticks_remaining = 0;
+  s_state.halt_ticks_remaining = 0;
 }
 
-TickCount DMA::TransferMemoryToDevice(Channel channel, u32 address, u32 increment, u32 word_count)
+template<DMA::Channel channel>
+TickCount DMA::TransferMemoryToDevice(u32 address, u32 increment, u32 word_count)
 {
-  const u32* src_pointer = reinterpret_cast<u32*>(Bus::g_ram + address);
-  const u32 mask = GetAddressMask();
-  if (channel != Channel::GPU &&
-      (static_cast<s32>(increment) < 0 || ((address + (increment * word_count)) & mask) <= address))
-  {
-    // Use temp buffer if it's wrapping around
-    if (s_transfer_buffer.size() < word_count)
-      s_transfer_buffer.resize(word_count);
-    src_pointer = s_transfer_buffer.data();
+  const u32 mask = Bus::g_ram_mask;
+#ifdef _DEBUG
+  if ((address & mask) != address)
+    DEBUG_LOG("DMA TO {} from masked RAM address 0x{:08X} => 0x{:08X}", channel, address, (address & mask));
+#endif
 
-    u8* ram_pointer = Bus::g_ram;
-    for (u32 i = 0; i < word_count; i++)
+  address &= mask;
+
+  const u32* src_pointer = reinterpret_cast<u32*>(Bus::g_ram + address);
+  if constexpr (channel != Channel::GPU)
+  {
+    if (static_cast<s32>(increment) < 0 || ((address + (increment * word_count)) & mask) <= address) [[unlikely]]
     {
-      std::memcpy(&s_transfer_buffer[i], &ram_pointer[address], sizeof(u32));
-      address = (address + increment) & mask;
+      // Use temp buffer if it's wrapping around
+      if (s_state.transfer_buffer.size() < word_count)
+        s_state.transfer_buffer.resize(word_count);
+      src_pointer = s_state.transfer_buffer.data();
+
+      u8* ram_pointer = Bus::g_ram;
+      for (u32 i = 0; i < word_count; i++)
+      {
+        std::memcpy(&s_state.transfer_buffer[i], &ram_pointer[address], sizeof(u32));
+        address = (address + increment) & mask;
+      }
     }
   }
 
@@ -688,7 +800,7 @@ TickCount DMA::TransferMemoryToDevice(Channel channel, u32 address, u32 incremen
   {
     case Channel::GPU:
     {
-      if (g_gpu->BeginDMAWrite())
+      if (g_gpu->BeginDMAWrite()) [[likely]]
       {
         u8* ram_pointer = Bus::g_ram;
         for (u32 i = 0; i < word_count; i++)
@@ -715,27 +827,35 @@ TickCount DMA::TransferMemoryToDevice(Channel channel, u32 address, u32 incremen
     case Channel::MDECout:
     case Channel::PIO:
     default:
-      Log_ErrorPrintf("Unhandled DMA channel %u for device write", static_cast<u32>(channel));
+      ERROR_LOG("Unhandled DMA channel {} for device write", static_cast<u32>(channel));
       break;
   }
 
   return Bus::GetDMARAMTickCount(word_count);
 }
 
-TickCount DMA::TransferDeviceToMemory(Channel channel, u32 address, u32 increment, u32 word_count)
+template<DMA::Channel channel>
+TickCount DMA::TransferDeviceToMemory(u32 address, u32 increment, u32 word_count)
 {
-  const u32 mask = GetAddressMask();
+  const u32 mask = Bus::g_ram_mask;
+#ifdef _DEBUG
+  if ((address & mask) != address)
+    DEBUG_LOG("DMA FROM {} to masked RAM address 0x{:08X} => 0x{:08X}", channel, address, (address & mask));
+#endif
 
-  if (channel == Channel::OTC)
+  // TODO: This might not be correct for OTC.
+  address &= mask;
+
+  if constexpr (channel == Channel::OTC)
   {
     // clear ordering table
     u8* ram_pointer = Bus::g_ram;
     const u32 word_count_less_1 = word_count - 1;
     for (u32 i = 0; i < word_count_less_1; i++)
     {
-      u32 value = ((address - 4) & mask);
-      std::memcpy(&ram_pointer[address], &value, sizeof(value));
-      address = (address - 4) & mask;
+      u32 next = ((address - 4) & mask);
+      std::memcpy(&ram_pointer[address], &next, sizeof(next));
+      address = next;
     }
 
     const u32 terminator = UINT32_C(0xFFFFFF);
@@ -744,12 +864,12 @@ TickCount DMA::TransferDeviceToMemory(Channel channel, u32 address, u32 incremen
   }
 
   u32* dest_pointer = reinterpret_cast<u32*>(&Bus::g_ram[address]);
-  if (static_cast<s32>(increment) < 0 || ((address + (increment * word_count)) & mask) <= address)
+  if (static_cast<s32>(increment) < 0 || ((address + (increment * word_count)) & mask) <= address) [[unlikely]]
   {
     // Use temp buffer if it's wrapping around
-    if (s_transfer_buffer.size() < word_count)
-      s_transfer_buffer.resize(word_count);
-    dest_pointer = s_transfer_buffer.data();
+    if (s_state.transfer_buffer.size() < word_count)
+      s_state.transfer_buffer.resize(word_count);
+    dest_pointer = s_state.transfer_buffer.data();
   }
 
   // Read from device.
@@ -772,17 +892,17 @@ TickCount DMA::TransferDeviceToMemory(Channel channel, u32 address, u32 incremen
       break;
 
     default:
-      Log_ErrorPrintf("Unhandled DMA channel %u for device read", static_cast<u32>(channel));
+      ERROR_LOG("Unhandled DMA channel {} for device read", static_cast<u32>(channel));
       std::fill_n(dest_pointer, word_count, UINT32_C(0xFFFFFFFF));
       break;
   }
 
-  if (dest_pointer == s_transfer_buffer.data())
+  if (dest_pointer == s_state.transfer_buffer.data()) [[unlikely]]
   {
     u8* ram_pointer = Bus::g_ram;
     for (u32 i = 0; i < word_count; i++)
     {
-      std::memcpy(&ram_pointer[address], &s_transfer_buffer[i], sizeof(u32));
+      std::memcpy(&ram_pointer[address], &s_state.transfer_buffer[i], sizeof(u32));
       address = (address + increment) & mask;
     }
   }
@@ -795,11 +915,9 @@ void DMA::DrawDebugStateWindow()
   static constexpr u32 NUM_COLUMNS = 10;
   static constexpr std::array<const char*, NUM_COLUMNS> column_names = {
     {"#", "Req", "Direction", "Chopping", "Mode", "Busy", "Enable", "Priority", "IRQ", "Flag"}};
-  static constexpr std::array<const char*, NUM_CHANNELS> channel_names = {
-    {"MDECin", "MDECout", "GPU", "CDROM", "SPU", "PIO", "OTC"}};
   static constexpr std::array<const char*, 4> sync_mode_names = {{"Manual", "Request", "LinkedList", "Reserved"}};
 
-  const float framebuffer_scale = Host::GetOSDScale();
+  const float framebuffer_scale = ImGuiManager::GetGlobalScale();
 
   ImGui::SetNextWindowSize(ImVec2(850.0f * framebuffer_scale, 250.0f * framebuffer_scale), ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("DMA State", nullptr))
@@ -831,9 +949,9 @@ void DMA::DrawDebugStateWindow()
 
   for (u32 i = 0; i < NUM_CHANNELS; i++)
   {
-    const ChannelState& cs = s_state[i];
+    const ChannelState& cs = s_state.channels[i];
 
-    ImGui::TextColored(cs.channel_control.enable_busy ? active : inactive, "%u[%s]", i, channel_names[i]);
+    ImGui::TextColored(cs.channel_control.enable_busy ? active : inactive, "%u[%s]", i, s_channel_names[i]);
     ImGui::NextColumn();
     ImGui::TextColored(cs.request ? active : inactive, cs.request ? "Yes" : "No");
     ImGui::NextColumn();
@@ -851,20 +969,43 @@ void DMA::DrawDebugStateWindow()
                        cs.channel_control.enable_busy ? "Busy" : "Idle",
                        cs.channel_control.start_trigger ? " (Trigger)" : "");
     ImGui::NextColumn();
-    ImGui::TextColored(s_DPCR.GetMasterEnable(static_cast<Channel>(i)) ? active : inactive,
-                       s_DPCR.GetMasterEnable(static_cast<Channel>(i)) ? "Enabled" : "Disabled");
+    ImGui::TextColored(s_state.DPCR.GetMasterEnable(static_cast<Channel>(i)) ? active : inactive,
+                       s_state.DPCR.GetMasterEnable(static_cast<Channel>(i)) ? "Enabled" : "Disabled");
     ImGui::NextColumn();
-    ImGui::TextColored(s_DPCR.GetMasterEnable(static_cast<Channel>(i)) ? active : inactive, "%u",
-                       s_DPCR.GetPriority(static_cast<Channel>(i)));
+    ImGui::TextColored(s_state.DPCR.GetMasterEnable(static_cast<Channel>(i)) ? active : inactive, "%u",
+                       s_state.DPCR.GetPriority(static_cast<Channel>(i)));
     ImGui::NextColumn();
-    ImGui::TextColored(s_DICR.IsIRQEnabled(static_cast<Channel>(i)) ? active : inactive,
-                       s_DICR.IsIRQEnabled(static_cast<Channel>(i)) ? "Enabled" : "Disabled");
+    ImGui::TextColored(s_state.DICR.GetIRQEnabled(static_cast<Channel>(i)) ? active : inactive,
+                       s_state.DICR.GetIRQEnabled(static_cast<Channel>(i)) ? "Enabled" : "Disabled");
     ImGui::NextColumn();
-    ImGui::TextColored(s_DICR.GetIRQFlag(static_cast<Channel>(i)) ? active : inactive,
-                       s_DICR.GetIRQFlag(static_cast<Channel>(i)) ? "IRQ" : "");
+    ImGui::TextColored(s_state.DICR.GetIRQFlag(static_cast<Channel>(i)) ? active : inactive,
+                       s_state.DICR.GetIRQFlag(static_cast<Channel>(i)) ? "IRQ" : "");
     ImGui::NextColumn();
   }
 
   ImGui::Columns(1);
   ImGui::End();
 }
+
+// Instantiate channel functions.
+template TickCount DMA::TransferDeviceToMemory<DMA::Channel::MDECin>(u32 address, u32 increment, u32 word_count);
+template TickCount DMA::TransferMemoryToDevice<DMA::Channel::MDECin>(u32 address, u32 increment, u32 word_count);
+template bool DMA::TransferChannel<DMA::Channel::MDECin>();
+template TickCount DMA::TransferDeviceToMemory<DMA::Channel::MDECout>(u32 address, u32 increment, u32 word_count);
+template TickCount DMA::TransferMemoryToDevice<DMA::Channel::MDECout>(u32 address, u32 increment, u32 word_count);
+template bool DMA::TransferChannel<DMA::Channel::MDECout>();
+template TickCount DMA::TransferDeviceToMemory<DMA::Channel::GPU>(u32 address, u32 increment, u32 word_count);
+template TickCount DMA::TransferMemoryToDevice<DMA::Channel::GPU>(u32 address, u32 increment, u32 word_count);
+template bool DMA::TransferChannel<DMA::Channel::GPU>();
+template TickCount DMA::TransferDeviceToMemory<DMA::Channel::CDROM>(u32 address, u32 increment, u32 word_count);
+template TickCount DMA::TransferMemoryToDevice<DMA::Channel::CDROM>(u32 address, u32 increment, u32 word_count);
+template bool DMA::TransferChannel<DMA::Channel::CDROM>();
+template TickCount DMA::TransferDeviceToMemory<DMA::Channel::SPU>(u32 address, u32 increment, u32 word_count);
+template TickCount DMA::TransferMemoryToDevice<DMA::Channel::SPU>(u32 address, u32 increment, u32 word_count);
+template bool DMA::TransferChannel<DMA::Channel::SPU>();
+template TickCount DMA::TransferDeviceToMemory<DMA::Channel::PIO>(u32 address, u32 increment, u32 word_count);
+template TickCount DMA::TransferMemoryToDevice<DMA::Channel::PIO>(u32 address, u32 increment, u32 word_count);
+template bool DMA::TransferChannel<DMA::Channel::PIO>();
+template TickCount DMA::TransferDeviceToMemory<DMA::Channel::OTC>(u32 address, u32 increment, u32 word_count);
+template TickCount DMA::TransferMemoryToDevice<DMA::Channel::OTC>(u32 address, u32 increment, u32 word_count);
+template bool DMA::TransferChannel<DMA::Channel::OTC>();

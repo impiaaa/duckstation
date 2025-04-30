@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #include "cd_image.h"
@@ -6,11 +6,7 @@
 
 #include "common/error.h"
 #include "common/file_system.h"
-#include "common/log.h"
-
-#include <cerrno>
-
-Log_SetChannel(CDImageBin);
+#include "common/path.h"
 
 namespace {
 
@@ -24,6 +20,8 @@ public:
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
   bool HasNonStandardSubchannel() const override;
+
+  s64 GetSizeOnDisk() const override;
 
 protected:
   bool ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_in_index) override;
@@ -48,12 +46,10 @@ CDImageBin::~CDImageBin()
 bool CDImageBin::Open(const char* filename, Error* error)
 {
   m_filename = filename;
-  m_fp = FileSystem::OpenCFile(filename, "rb");
+  m_fp = FileSystem::OpenSharedCFile(filename, "rb", FileSystem::FileShareMode::DenyWrite, error);
   if (!m_fp)
   {
-    Log_ErrorPrintf("Failed to open binfile '%s': errno %d", filename, errno);
-    if (error)
-      error->SetErrno(errno);
+    Error::AddPrefixFmt(error, "Failed to open binfile '{}': ", Path::GetFileName(filename));
     return false;
   }
 
@@ -143,6 +139,11 @@ bool CDImageBin::ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_i
 
   m_file_position += index.file_sector_size;
   return true;
+}
+
+s64 CDImageBin::GetSizeOnDisk() const
+{
+  return FileSystem::FSize64(m_fp);
 }
 
 std::unique_ptr<CDImage> CDImage::OpenBinImage(const char* filename, Error* error)

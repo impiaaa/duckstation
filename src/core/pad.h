@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
+
 #include "types.h"
+
 #include <memory>
 
 class StateWrapper;
@@ -12,8 +14,6 @@ class MemoryCard;
 class Multitap;
 
 namespace Pad {
-
-static constexpr u32 NUM_SLOTS = 2;
 
 void Initialize();
 void Shutdown();

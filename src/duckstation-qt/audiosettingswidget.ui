@@ -6,12 +6,9 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>516</width>
-    <height>435</height>
+    <width>523</width>
+    <height>504</height>
    </rect>
-  </property>
-  <property name="windowTitle">
-   <string>Form</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="leftMargin">
@@ -32,33 +29,52 @@
       <string>Configuration</string>
      </property>
      <layout class="QGridLayout" name="gridLayout">
-      <item row="4" column="1">
-       <widget class="QSlider" name="bufferMS">
-        <property name="minimum">
-         <number>15</number>
-        </property>
-        <property name="maximum">
-         <number>500</number>
-        </property>
-        <property name="singleStep">
-         <number>1</number>
-        </property>
-        <property name="pageStep">
-         <number>5</number>
-        </property>
-        <property name="value">
-         <number>50</number>
-        </property>
-        <property name="orientation">
-         <enum>Qt::Horizontal</enum>
-        </property>
-        <property name="tickPosition">
-         <enum>QSlider::TicksBothSides</enum>
-        </property>
-        <property name="tickInterval">
-         <number>20</number>
+      <item row="5" column="0">
+       <widget class="QLabel" name="label_5">
+        <property name="text">
+         <string>Output Latency:</string>
         </property>
        </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QComboBox" name="outputDevice"/>
+      </item>
+      <item row="5" column="1">
+       <layout class="QHBoxLayout" name="horizontalLayout_3">
+        <item>
+         <widget class="QSlider" name="outputLatencyMS">
+          <property name="minimum">
+           <number>1</number>
+          </property>
+          <property name="maximum">
+           <number>500</number>
+          </property>
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
+          </property>
+          <property name="tickPosition">
+           <enum>QSlider::TickPosition::TicksBothSides</enum>
+          </property>
+          <property name="tickInterval">
+           <number>20</number>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="outputLatencyLabel">
+          <property name="text">
+           <string>0 ms</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QCheckBox" name="outputLatencyMinimal">
+          <property name="text">
+           <string>Minimal</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
       </item>
       <item row="1" column="1">
        <widget class="QComboBox" name="driver"/>
@@ -77,78 +93,30 @@
         </property>
        </widget>
       </item>
-      <item row="3" column="1">
-       <widget class="QComboBox" name="stretchMode">
+      <item row="4" column="1">
+       <layout class="QHBoxLayout" name="horizontalLayout_4" stretch="1,0">
         <item>
-         <property name="text">
-          <string>Off (Noisy)</string>
-         </property>
-        </item>
-        <item>
-         <property name="text">
-          <string>Resampling (Pitch Shift)</string>
-         </property>
-        </item>
-        <item>
-         <property name="text">
-          <string>Time Stretch (Tempo Change, Best Sound)</string>
-         </property>
-        </item>
-       </widget>
-      </item>
-      <item row="6" column="0" colspan="2">
-       <widget class="QLabel" name="bufferingLabel">
-        <property name="text">
-         <string>Maximum latency: 0 frames (0.00ms)</string>
-        </property>
-        <property name="alignment">
-         <set>Qt::AlignCenter</set>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="0">
-       <widget class="QLabel" name="label">
-        <property name="text">
-         <string>Backend:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="QComboBox" name="audioBackend"/>
-      </item>
-      <item row="5" column="0">
-       <widget class="QLabel" name="label_5">
-        <property name="text">
-         <string>Output Latency:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="label_6">
-        <property name="text">
-         <string>Driver:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="7" column="0" colspan="2">
-       <widget class="QCheckBox" name="startDumpingOnBoot">
-        <property name="text">
-         <string>Start Dumping On Boot</string>
-        </property>
-       </widget>
-      </item>
-      <item row="5" column="1">
-       <layout class="QHBoxLayout" name="horizontalLayout_3">
-        <item>
-         <widget class="QSlider" name="outputLatencyMS">
+         <widget class="QSlider" name="bufferMS">
+          <property name="minimum">
+           <number>15</number>
+          </property>
           <property name="maximum">
            <number>500</number>
           </property>
+          <property name="singleStep">
+           <number>1</number>
+          </property>
+          <property name="pageStep">
+           <number>5</number>
+          </property>
+          <property name="value">
+           <number>50</number>
+          </property>
           <property name="orientation">
-           <enum>Qt::Horizontal</enum>
+           <enum>Qt::Orientation::Horizontal</enum>
           </property>
           <property name="tickPosition">
-           <enum>QSlider::TicksBothSides</enum>
+           <enum>QSlider::TickPosition::TicksBothSides</enum>
           </property>
           <property name="tickInterval">
            <number>20</number>
@@ -156,9 +124,26 @@
          </widget>
         </item>
         <item>
-         <widget class="QCheckBox" name="outputLatencyMinimal">
+         <widget class="QLabel" name="bufferMSLabel">
           <property name="text">
-           <string>Minimal</string>
+           <string>0 ms</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="3" column="1">
+       <layout class="QHBoxLayout" name="horizontalLayout_6" stretch="1,0">
+        <item>
+         <widget class="QComboBox" name="stretchMode"/>
+        </item>
+        <item>
+         <widget class="QToolButton" name="stretchSettings">
+          <property name="toolTip">
+           <string>Stretch Settings</string>
+          </property>
+          <property name="icon">
+           <iconset theme="settings-3-line"/>
           </property>
          </widget>
         </item>
@@ -171,8 +156,32 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
-       <widget class="QComboBox" name="outputDevice"/>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="audioBackend"/>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_6">
+        <property name="text">
+         <string>Driver:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="0" colspan="2">
+       <widget class="QLabel" name="bufferingLabel">
+        <property name="text">
+         <string>Maximum latency: 0 frames (0.00ms)</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="0">
+       <widget class="QLabel" name="label">
+        <property name="text">
+         <string>Backend:</string>
+        </property>
+       </widget>
       </item>
      </layout>
     </widget>
@@ -195,16 +204,16 @@
         <item>
          <widget class="QSlider" name="volume">
           <property name="maximum">
-           <number>100</number>
+           <number>200</number>
           </property>
           <property name="value">
            <number>100</number>
           </property>
           <property name="orientation">
-           <enum>Qt::Horizontal</enum>
+           <enum>Qt::Orientation::Horizontal</enum>
           </property>
           <property name="tickPosition">
-           <enum>QSlider::TicksBothSides</enum>
+           <enum>QSlider::TickPosition::TicksBothSides</enum>
           </property>
           <property name="tickInterval">
            <number>10</number>
@@ -223,27 +232,44 @@
            <string>100%</string>
           </property>
           <property name="alignment">
-           <set>Qt::AlignCenter</set>
+           <set>Qt::AlignmentFlag::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QToolButton" name="resetVolume">
+          <property name="toolTip">
+           <string>Reset Volume</string>
+          </property>
+          <property name="icon">
+           <iconset theme="refresh-line"/>
           </property>
          </widget>
         </item>
        </layout>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_4">
+        <property name="text">
+         <string>Fast Forward Volume:</string>
+        </property>
+       </widget>
       </item>
       <item row="1" column="1">
        <layout class="QHBoxLayout" name="horizontalLayout_2">
         <item>
          <widget class="QSlider" name="fastForwardVolume">
           <property name="maximum">
-           <number>100</number>
+           <number>200</number>
           </property>
           <property name="value">
            <number>100</number>
           </property>
           <property name="orientation">
-           <enum>Qt::Horizontal</enum>
+           <enum>Qt::Orientation::Horizontal</enum>
           </property>
           <property name="tickPosition">
-           <enum>QSlider::TicksBothSides</enum>
+           <enum>QSlider::TickPosition::TicksBothSides</enum>
           </property>
           <property name="tickInterval">
            <number>10</number>
@@ -262,32 +288,39 @@
            <string>100%</string>
           </property>
           <property name="alignment">
-           <set>Qt::AlignCenter</set>
+           <set>Qt::AlignmentFlag::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QToolButton" name="resetFastForwardVolume">
+          <property name="toolTip">
+           <string>Reset Fast Forward Volume</string>
+          </property>
+          <property name="icon">
+           <iconset theme="refresh-line"/>
           </property>
          </widget>
         </item>
        </layout>
       </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="label_4">
-        <property name="text">
-         <string>Fast Forward Volume:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0">
-       <widget class="QCheckBox" name="muted">
-        <property name="text">
-         <string>Mute All Sound</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="0">
-       <widget class="QCheckBox" name="muteCDAudio">
-        <property name="text">
-         <string>Mute CD Audio</string>
-        </property>
-       </widget>
+      <item row="2" column="0" colspan="2">
+       <layout class="QGridLayout" name="gridLayout_2">
+        <item row="0" column="0">
+         <widget class="QCheckBox" name="muted">
+          <property name="text">
+           <string>Mute All Sound</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QCheckBox" name="muteCDAudio">
+          <property name="text">
+           <string>Mute CD Audio</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
       </item>
      </layout>
     </widget>
@@ -295,7 +328,7 @@
    <item>
     <spacer name="verticalSpacer">
      <property name="orientation">
-      <enum>Qt::Vertical</enum>
+      <enum>Qt::Orientation::Vertical</enum>
      </property>
      <property name="sizeHint" stdset="0">
       <size>
@@ -308,7 +341,7 @@
   </layout>
  </widget>
  <resources>
-  <include location="resources/resources.qrc"/>
+  <include location="resources/duckstation-qt.qrc"/>
  </resources>
  <connections/>
 </ui>

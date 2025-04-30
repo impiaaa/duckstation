@@ -1,23 +1,40 @@
-// SPDX-FileCopyrightText: 2019-2022 Connor McLaughlin <stenzek@gmail.com>
-// SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
+#include "common/align.h"
 #include "common/types.h"
+
 #include <array>
 #include <atomic>
+#include <complex>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4324) // warning C4324: structure was padded due to alignment specifier
-#endif
+class Error;
+class SettingsInterface;
 
 namespace soundtouch {
 class SoundTouch;
 }
+
+struct kiss_fftr_state;
+
+enum class AudioBackend : u8
+{
+  Null,
+#ifndef __ANDROID__
+  Cubeb,
+  SDL,
+#else
+  AAudio,
+  OpenSLES,
+#endif
+  Count
+};
 
 enum class AudioStretchMode : u8
 {
@@ -27,15 +44,67 @@ enum class AudioStretchMode : u8
   Count
 };
 
+struct AudioStreamParameters
+{
+  AudioStretchMode stretch_mode = DEFAULT_STRETCH_MODE;
+  u16 buffer_ms = DEFAULT_BUFFER_MS;
+  u16 output_latency_ms = DEFAULT_OUTPUT_LATENCY_MS;
+  bool output_latency_minimal = DEFAULT_OUTPUT_LATENCY_MINIMAL;
+  bool pad1 = false;
+
+  u16 stretch_sequence_length_ms = DEFAULT_STRETCH_SEQUENCE_LENGTH;
+  u16 stretch_seekwindow_ms = DEFAULT_STRETCH_SEEKWINDOW;
+  u16 stretch_overlap_ms = DEFAULT_STRETCH_OVERLAP;
+  bool stretch_use_quickseek = DEFAULT_STRETCH_USE_QUICKSEEK;
+  bool stretch_use_aa_filter = DEFAULT_STRETCH_USE_AA_FILTER;
+
+  static constexpr AudioStretchMode DEFAULT_STRETCH_MODE = AudioStretchMode::TimeStretch;
+#ifndef __ANDROID__
+  static constexpr u16 DEFAULT_BUFFER_MS = 50;
+  static constexpr u16 DEFAULT_OUTPUT_LATENCY_MS = 20;
+#else
+  static constexpr u16 DEFAULT_BUFFER_MS = 100;
+  static constexpr u16 DEFAULT_OUTPUT_LATENCY_MS = 20;
+#endif
+  static constexpr bool DEFAULT_OUTPUT_LATENCY_MINIMAL = false;
+
+  static constexpr u16 DEFAULT_STRETCH_SEQUENCE_LENGTH = 30;
+  static constexpr u16 DEFAULT_STRETCH_SEEKWINDOW = 20;
+  static constexpr u16 DEFAULT_STRETCH_OVERLAP = 10;
+
+  static constexpr bool DEFAULT_STRETCH_USE_QUICKSEEK = false;
+  static constexpr bool DEFAULT_STRETCH_USE_AA_FILTER = false;
+
+  void Load(SettingsInterface& si, const char* section);
+  void Save(SettingsInterface& si, const char* section) const;
+  void Clear(SettingsInterface& si, const char* section);
+
+  bool operator==(const AudioStreamParameters& rhs) const;
+  bool operator!=(const AudioStreamParameters& rhs) const;
+};
+
 class AudioStream
 {
 public:
   using SampleType = s16;
 
-  enum : u32
+  static constexpr u32 NUM_CHANNELS = 2;
+  static constexpr u32 CHUNK_SIZE = 64;
+
+#ifndef __ANDROID__
+  static constexpr AudioBackend DEFAULT_BACKEND = AudioBackend::Cubeb;
+#else
+  static constexpr AudioBackend DEFAULT_BACKEND = AudioBackend::AAudio;
+#endif
+
+  struct DeviceInfo
   {
-    CHUNK_SIZE = 64,
-    MAX_CHANNELS = 2
+    std::string name;
+    std::string display_name;
+    u32 minimum_latency_frames;
+
+    DeviceInfo(std::string name_, std::string display_name_, u32 minimum_latency_);
+    ~DeviceInfo();
   };
 
 public:
@@ -45,12 +114,15 @@ public:
   static u32 GetBufferSizeForMS(u32 sample_rate, u32 ms);
   static u32 GetMSForBufferSize(u32 sample_rate, u32 buffer_size);
 
+  static std::optional<AudioBackend> ParseBackendName(const char* str);
+  static const char* GetBackendName(AudioBackend backend);
+  static const char* GetBackendDisplayName(AudioBackend backend);
+
   static const char* GetStretchModeName(AudioStretchMode mode);
   static const char* GetStretchModeDisplayName(AudioStretchMode mode);
   static std::optional<AudioStretchMode> ParseStretchMode(const char* name);
 
   ALWAYS_INLINE u32 GetSampleRate() const { return m_sample_rate; }
-  ALWAYS_INLINE u32 GetChannels() const { return m_channels; }
   ALWAYS_INLINE u32 GetBufferSize() const { return m_buffer_size; }
   ALWAYS_INLINE u32 GetTargetBufferSize() const { return m_target_buffer_size; }
   ALWAYS_INLINE u32 GetOutputVolume() const { return m_volume; }
@@ -62,10 +134,9 @@ public:
   /// Temporarily pauses the stream, preventing it from requesting data.
   virtual void SetPaused(bool paused);
 
-  virtual void SetOutputVolume(u32 volume);
+  void SetOutputVolume(u32 volume);
 
   void BeginWrite(SampleType** buffer_ptr, u32* num_frames);
-  void WriteFrames(const SampleType* frames, u32 num_frames);
   void EndWrite(u32 num_frames);
 
   void EmptyBuffer();
@@ -73,56 +144,60 @@ public:
   /// Nominal rate is used for both resampling and timestretching, input samples are assumed to be this amount faster
   /// than the sample rate.
   void SetNominalRate(float tempo);
-  void UpdateTargetTempo(float tempo);
 
   void SetStretchMode(AudioStretchMode mode);
 
-  static std::unique_ptr<AudioStream> CreateNullStream(u32 sample_rate, u32 channels, u32 buffer_ms);
-
-#ifdef ENABLE_CUBEB
-  static std::unique_ptr<AudioStream> CreateCubebAudioStream(u32 sample_rate, u32 channels, u32 buffer_ms,
-                                                             u32 latency_ms, AudioStretchMode stretch);
-  static std::vector<std::string> GetCubebDriverNames();
-  static std::vector<std::pair<std::string, std::string>> GetCubebOutputDevices(const char* driver);
-#endif
-#ifdef _WIN32
-  static std::unique_ptr<AudioStream> CreateXAudio2Stream(u32 sample_rate, u32 channels, u32 buffer_ms, u32 latency_ms,
-                                                          AudioStretchMode stretch);
-#endif
+  static std::vector<std::pair<std::string, std::string>> GetDriverNames(AudioBackend backend);
+  static std::vector<DeviceInfo> GetOutputDevices(AudioBackend backend, const char* driver, u32 sample_rate);
+  static std::unique_ptr<AudioStream> CreateStream(AudioBackend backend, u32 sample_rate,
+                                                   const AudioStreamParameters& parameters, const char* driver_name,
+                                                   const char* device_name, Error* error = nullptr);
+  static std::unique_ptr<AudioStream> CreateNullStream(u32 sample_rate, u32 buffer_ms);
 
 protected:
-  AudioStream(u32 sample_rate, u32 channels, u32 buffer_ms, AudioStretchMode stretch);
+  AudioStream(u32 sample_rate, const AudioStreamParameters& parameters);
   void BaseInitialize();
 
-  void ReadFrames(s16* bData, u32 nSamples);
+  void ReadFrames(SampleType* samples, u32 num_frames);
 
   u32 m_sample_rate = 0;
-  u32 m_channels = 0;
-  u32 m_buffer_ms = 0;
-  u32 m_volume = 0;
-
-  AudioStretchMode m_stretch_mode = AudioStretchMode::Off;
+  u32 m_volume = 100;
+  AudioStreamParameters m_parameters;
   bool m_stretch_inactive = false;
   bool m_filling = false;
   bool m_paused = false;
 
 private:
-  enum : u32
-  {
-    AVERAGING_BUFFER_SIZE = 256,
-    AVERAGING_WINDOW = 50,
-    STRETCH_RESET_THRESHOLD = 5,
-    TARGET_IPS = 691,
-  };
+  static constexpr u32 AVERAGING_BUFFER_SIZE = 256;
+  static constexpr u32 AVERAGING_WINDOW = 50;
+  static constexpr u32 STRETCH_RESET_THRESHOLD = 5;
+  static constexpr u32 TARGET_IPS = 691;
+
+#ifndef __ANDROID__
+  static std::vector<std::pair<std::string, std::string>> GetCubebDriverNames();
+  static std::vector<DeviceInfo> GetCubebOutputDevices(const char* driver, u32 sample_rate);
+  static std::unique_ptr<AudioStream> CreateCubebAudioStream(u32 sample_rate, const AudioStreamParameters& parameters,
+                                                             const char* driver_name, const char* device_name,
+                                                             Error* error);
+  static std::unique_ptr<AudioStream> CreateSDLAudioStream(u32 sample_rate, const AudioStreamParameters& parameters,
+                                                           Error* error);
+#else
+  static std::unique_ptr<AudioStream> CreateAAudioAudioStream(u32 sample_rate, const AudioStreamParameters& parameters,
+                                                              Error* error);
+  static std::unique_ptr<AudioStream> CreateOpenSLESAudioStream(u32 sample_rate,
+                                                                const AudioStreamParameters& parameters, Error* error);
+#endif
+
+  ALWAYS_INLINE bool IsStretchEnabled() const { return m_parameters.stretch_mode != AudioStretchMode::Off; }
 
   void AllocateBuffer();
   void DestroyBuffer();
 
-  void InternalWriteFrames(s32* bData, u32 nFrames);
+  void InternalWriteFrames(SampleType* samples, u32 num_frames);
 
   void StretchAllocate();
   void StretchDestroy();
-  void StretchWrite();
+  void StretchWriteBlock(const float* block);
   void StretchUnderrun();
   void StretchOverrun();
 
@@ -130,12 +205,12 @@ private:
   void UpdateStretchTempo();
 
   u32 m_buffer_size = 0;
-  std::unique_ptr<s32[]> m_buffer;
+  Common::unique_aligned_ptr<s16[]> m_buffer;
 
   std::atomic<u32> m_rpos{0};
   std::atomic<u32> m_wpos{0};
 
-  std::unique_ptr<soundtouch::SoundTouch> m_soundtouch;
+  void* m_soundtouch = nullptr;
 
   u32 m_target_buffer_size = 0;
   u32 m_stretch_reset = STRETCH_RESET_THRESHOLD;
@@ -151,12 +226,8 @@ private:
   std::array<float, AVERAGING_BUFFER_SIZE> m_average_fullness = {};
 
   // temporary staging buffer, used for timestretching
-  alignas(16) std::array<s32, CHUNK_SIZE> m_staging_buffer;
+  Common::unique_aligned_ptr<s16[]> m_staging_buffer;
 
   // float buffer, soundtouch only accepts float samples as input
-  alignas(16) std::array<float, CHUNK_SIZE * MAX_CHANNELS> m_float_buffer;
+  Common::unique_aligned_ptr<float[]> m_float_buffer;
 };
-
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif

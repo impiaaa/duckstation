@@ -1,10 +1,12 @@
-// SPDX-FileCopyrightText: 2019-2023 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: (GPL-3.0 OR CC-BY-NC-ND-4.0)
 
 #pragma once
 
 #include "bus.h"
 #include "cpu_types.h"
+
+class Error;
 
 namespace CPU::CodeCache {
 
@@ -15,7 +17,7 @@ bool IsUsingAnyRecompiler();
 bool IsUsingFastmem();
 
 /// Allocates resources, call once at startup.
-void ProcessStartup();
+bool ProcessStartup(Error* error);
 
 /// Frees resources, call once at shutdown.
 void ProcessShutdown();

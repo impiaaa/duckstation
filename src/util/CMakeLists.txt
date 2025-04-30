@@ -17,12 +17,13 @@ add_library(util
   cd_image_ppf.cpp
   cd_subchannel_replacement.cpp
   cd_subchannel_replacement.h
-  cd_xa.cpp
-  cd_xa.h
+  compress_helpers.cpp
+  compress_helpers.h
   cue_parser.cpp
   cue_parser.h
   gpu_device.cpp
   gpu_device.h
+  gpu_framebuffer_manager.h
   gpu_shader_cache.cpp
   gpu_shader_cache.h
   gpu_texture.cpp
@@ -31,6 +32,8 @@ add_library(util
   host.h
   http_downloader.cpp
   http_downloader.h
+  image.cpp
+  image.h
   imgui_fullscreen.cpp
   imgui_fullscreen.h
   imgui_manager.cpp
@@ -43,8 +46,8 @@ add_library(util
   input_source.h
   iso_reader.cpp
   iso_reader.h
-  jit_code_buffer.cpp
-  jit_code_buffer.h
+  media_capture.cpp
+  media_capture.h
   page_fault_handler.cpp
   page_fault_handler.h
   platform_misc.h
@@ -60,6 +63,8 @@ add_library(util
   shadergen.h
   shiftjis.cpp
   shiftjis.h
+  sockets.cpp
+  sockets.h
   state_wrapper.cpp
   state_wrapper.h
   wav_writer.cpp
@@ -72,15 +77,7 @@ target_precompile_headers(util PRIVATE "pch.h")
 target_include_directories(util PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_include_directories(util PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(util PUBLIC common simpleini imgui)
-target_link_libraries(util PRIVATE stb libchdr zlib soundtouch Zstd::Zstd reshadefx)
-
-if(ENABLE_CUBEB)
-  target_sources(util PRIVATE
-    cubeb_audio_stream.cpp
-  )
-  target_compile_definitions(util PUBLIC "ENABLE_CUBEB=1")
-  target_link_libraries(util PRIVATE cubeb)
-endif()
+target_link_libraries(util PRIVATE libchdr JPEG::JPEG PNG::PNG WebP::libwebp ZLIB::ZLIB SoundTouch::SoundTouchDLL xxhash Zstd::Zstd reshadefx)
 
 if(ENABLE_X11)
   target_compile_definitions(util PRIVATE "-DENABLE_X11=1")
@@ -93,8 +90,8 @@ endif()
 
 if(ENABLE_OPENGL)
   target_sources(util PRIVATE
-    gl/context.cpp
-    gl/context.h
+    opengl_context.cpp
+    opengl_context.h
     opengl_device.cpp
     opengl_device.h
     opengl_loader.h
@@ -110,34 +107,29 @@ if(ENABLE_OPENGL)
 
   if(WIN32)
     target_sources(util PRIVATE
-      gl/context_wgl.cpp
-      gl/context_wgl.h
+      opengl_context_wgl.cpp
+      opengl_context_wgl.h
     )
     target_link_libraries(util PRIVATE "opengl32.lib")
   endif()
 
-  if(LINUX OR FREEBSD OR ANDROID)
+  if(LINUX OR BSD OR ANDROID)
     target_sources(util PRIVATE
-      gl/context_egl.cpp
-      gl/context_egl.h
+      opengl_context_egl.cpp
+      opengl_context_egl.h
     )
     target_compile_definitions(util PRIVATE "-DENABLE_EGL=1")
 
     if(ENABLE_X11)
       target_sources(util PRIVATE
-        gl/context_egl_x11.cpp
-        gl/context_egl_x11.h
+        opengl_context_egl_x11.cpp
+        opengl_context_egl_x11.h
       )
-
-      # We set EGL_NO_X11 because otherwise X comes in with its macros and breaks
-      # a bunch of files from compiling, if we include the EGL headers. This just
-      # makes the data types opaque, we can still use it with X11 if needed.
-      target_compile_definitions(util PRIVATE "-DEGL_NO_X11=1")
     endif()
     if(ENABLE_WAYLAND)
       target_sources(util PRIVATE
-        gl/context_egl_wayland.cpp
-        gl/context_egl_wayland.h
+        opengl_context_egl_wayland.cpp
+        opengl_context_egl_wayland.h
       )
     endif()
     if(ANDROID)
@@ -147,21 +139,10 @@ if(ENABLE_OPENGL)
 
   if(APPLE)
     target_sources(util PRIVATE
-      gl/context_agl.mm
-      gl/context_agl.h
+      opengl_context_agl.mm
+      opengl_context_agl.h
     )
-    set_source_files_properties(gl/context_agl.mm PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
-  endif()
-endif()
-
-if(ENABLE_VULKAN OR APPLE)
-  target_sources(util PRIVATE
-    spirv_compiler.cpp
-    spirv_compiler.h
-  )
-  target_link_libraries(util PRIVATE glslang)
-  if(APPLE)
-    target_link_libraries(util PRIVATE spirv-cross)
+    set_source_files_properties(opengl_context_agl.mm PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
   endif()
 endif()
 
@@ -188,25 +169,25 @@ if(ENABLE_VULKAN)
   target_link_libraries(util PUBLIC vulkan-headers)
 endif()
 
-if(ENABLE_SDL2)
-  target_sources(util PRIVATE 
+if(ENABLE_VULKAN OR APPLE)
+  # shaderc is loaded dynamically to reduce module loads on startup.
+  get_target_property(SHADERC_INCLUDE_DIR Shaderc::shaderc_shared INTERFACE_INCLUDE_DIRECTORIES)
+  target_include_directories(util PUBLIC ${SHADERC_INCLUDE_DIR})
+endif()
+
+if(NOT ANDROID)
+  target_sources(util PRIVATE
+    cubeb_audio_stream.cpp
+    sdl_audio_stream.cpp
     sdl_input_source.cpp
     sdl_input_source.h
   )
-  target_compile_definitions(util PUBLIC "ENABLE_SDL2=1")
-  target_link_libraries(util PUBLIC SDL2::SDL2)
-
-  # Copy bundled SDL2 to output on Windows.
-  if(WIN32)
-    # Copy SDL2 DLL to binary directory.
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-      get_property(SDL2_DLL_PATH TARGET SDL2::SDL2 PROPERTY IMPORTED_LOCATION_DEBUG)
-    else()
-      get_property(SDL2_DLL_PATH TARGET SDL2::SDL2 PROPERTY IMPORTED_LOCATION_RELEASE)
-    endif()
-    add_custom_command(TARGET util POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SDL2_DLL_PATH}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/SDL2.dll")
-  endif()
+  target_link_libraries(util PUBLIC
+    cubeb
+    SDL2::SDL2
+  )
+  # FFmpeg loaded dynamically on demand.
+  target_include_directories(util PUBLIC ${FFMPEG_INCLUDE_DIRS})
 endif()
 
 if(WIN32)
@@ -240,7 +221,6 @@ if(WIN32)
     platform_misc_win32.cpp
     win32_raw_input_source.cpp
     win32_raw_input_source.h
-    xaudio2_audio_stream.cpp
     xinput_source.cpp
     xinput_source.h
   )
@@ -279,6 +259,10 @@ elseif(NOT ANDROID)
   pkg_check_modules(DBUS REQUIRED dbus-1)
   target_include_directories(util PRIVATE ${DBUS_INCLUDE_DIRS})
   target_link_libraries(util PRIVATE ${DBUS_LINK_LIBRARIES})
+
+  if(LINUX)
+    target_link_libraries(util PRIVATE UDEV::UDEV)
+  endif()
 endif()
 
 if(NOT WIN32 AND NOT ANDROID)
@@ -309,5 +293,27 @@ function(add_util_resources target)
     else()
       message(WARNING "MoltenVK not found in path, it will depend on the target system having it.")
     endif()
+
+    # Copy shaderc/spirv-cross into the bundle
+    get_target_property(SPIRV_CROSS_LIBRARY spirv-cross-c-shared IMPORTED_SONAME_RELEASE)
+    get_target_property(SHADERC_LIBRARY Shaderc::shaderc_shared IMPORTED_LOCATION_RELEASE)
+    target_sources(${target} PRIVATE "${SHADERC_LIBRARY}" "${SPIRV_CROSS_LIBRARY}")
+    set_source_files_properties("${SHADERC_LIBRARY}" "${SPIRV_CROSS_LIBRARY}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+
+    # Copy FFmpeg libraries into the bundle
+    foreach(component avcodec avformat avutil swresample swscale)
+      string(REGEX REPLACE "\([0-9]+\)\.[0-9]+\.[0-9]+" "\\1" major "${FFMPEG_${component}_VERSION}")
+      string(REPLACE "lib${component}.dylib" "lib${component}.${major}.dylib" version_lib "${FFMPEG_${component}_LIBRARIES}")
+      target_sources(${target} PRIVATE ${version_lib})
+      set_source_files_properties(${target} PRIVATE ${version_lib} PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+    endforeach()
+  elseif(ALLOW_INSTALL)
+    # Ensure we look for dependency libraries in the installation directory.
+    set_target_properties(${target} PROPERTIES INSTALL_RPATH "$ORIGIN")
+
+    # Copy dependency libraries to installation directory.
+    install_imported_dep_library(Shaderc::shaderc_shared)
+    install_imported_dep_library(spirv-cross-c-shared)
+    install_imported_dep_library(SoundTouch::SoundTouchDLL)
   endif()
 endfunction()
